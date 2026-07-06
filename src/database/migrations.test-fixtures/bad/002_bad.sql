@@ -1,0 +1,1 @@
+CREATE TABLE __bad_table (id INTP PRIMARY KEY);
