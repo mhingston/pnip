@@ -31,9 +31,19 @@ const migrationSqlPath = fileURLToPath(
     import.meta.url,
   ),
 );
+const migration006SqlPath = fileURLToPath(
+  new URL(
+    "../../database/migrations/006_add_depends_on_to_processing_jobs.sql",
+    import.meta.url,
+  ),
+);
 
 function readMigrationSql(): Promise<string> {
   return readFile(migrationSqlPath, "utf8");
+}
+
+function readMigration006Sql(): Promise<string> {
+  return readFile(migration006SqlPath, "utf8");
 }
 
 function schemaName(prefix: string): string {
@@ -56,11 +66,13 @@ describe("WorkerRuntime", () => {
     kyselyPool = createPool(url);
 
     const sqlText = await readMigrationSql();
+    const sql006Text = await readMigration006Sql();
     const client = await pool.connect();
     try {
       await client.query(`CREATE SCHEMA ${schema}`);
       await client.query(`SET search_path TO ${schema}, public`);
       await client.query(sqlText);
+      await client.query(sql006Text);
     } finally {
       client.release();
     }

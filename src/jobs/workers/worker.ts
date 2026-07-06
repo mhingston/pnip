@@ -7,6 +7,7 @@ export interface EnqueueJobInput {
   editionId?: string;
   target?: unknown;
   nextEligibleAt?: Date;
+  dependsOn?: string[];
 }
 
 export interface WorkerContext {

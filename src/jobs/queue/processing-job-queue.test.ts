@@ -26,9 +26,19 @@ import {
 const migrationSqlPath = fileURLToPath(
   new URL("../../database/migrations/002_create_processing_jobs.sql", import.meta.url),
 );
+const migration006SqlPath = fileURLToPath(
+  new URL(
+    "../../database/migrations/006_add_depends_on_to_processing_jobs.sql",
+    import.meta.url,
+  ),
+);
 
 function readMigrationSql(): Promise<string> {
   return readFile(migrationSqlPath, "utf8");
+}
+
+function readMigration006Sql(): Promise<string> {
+  return readFile(migration006SqlPath, "utf8");
 }
 
 function schemaName(prefix: string): string {
@@ -51,11 +61,13 @@ describe("ProcessingJobQueue", () => {
     kyselyPool = createPool(url);
 
     const sqlText = await readMigrationSql();
+    const sql006Text = await readMigration006Sql();
     const client = await pool.connect();
     try {
       await client.query(`CREATE SCHEMA ${schema}`);
       await client.query(`SET search_path TO ${schema}, public`);
       await client.query(sqlText);
+      await client.query(sql006Text);
     } finally {
       client.release();
     }
@@ -249,6 +261,92 @@ describe("ProcessingJobQueue", () => {
       await client.query(`DROP SCHEMA IF EXISTS ${tmp} CASCADE`);
       client.release();
     }
+  });
+
+  it("default claimable: a job enqueued with no dependsOn is immediately claimable and has empty depends_on", async () => {
+    const enqueued = await queue.enqueue({ jobType: "nodep" });
+    expect(enqueued.depends_on).toEqual([]);
+
+    const claimed = await queue.claim("w1");
+    expect(claimed).not.toBeNull();
+    expect(claimed!.id).toBe(enqueued.id);
+    expect(claimed!.status).toBe("running");
+  });
+
+  it("blocked by incomplete dep: B dependsOn=[A], claim returns A then null while A incomplete", async () => {
+    const A = await queue.enqueue({ jobType: "a" });
+    const B = await queue.enqueue({ jobType: "b", dependsOn: [A.id] });
+    expect(B.depends_on).toEqual([A.id]);
+
+    const claimedA = await queue.claim("w1");
+    expect(claimedA).not.toBeNull();
+    expect(claimedA!.id).toBe(A.id);
+
+    const second = await queue.claim("w1");
+    expect(second).toBeNull();
+  });
+
+  it("unblocks on completion: after A completes, B becomes claimable and is marked running", async () => {
+    const A = await queue.enqueue({ jobType: "a" });
+    const B = await queue.enqueue({ jobType: "b", dependsOn: [A.id] });
+
+    const claimedA = await queue.claim("w1");
+    expect(claimedA!.id).toBe(A.id);
+    await queue.complete(A.id);
+
+    const claimedB = await queue.claim("w1");
+    expect(claimedB).not.toBeNull();
+    expect(claimedB!.id).toBe(B.id);
+    expect(claimedB!.status).toBe("running");
+  });
+
+  it("failed dep stays blocked: A='failed' keeps B blocked (only 'completed' unblocks)", async () => {
+    const A = await queue.enqueue({ jobType: "a" });
+    await queue.enqueue({ jobType: "b", dependsOn: [A.id] });
+
+    const claimedA = await queue.claim("w1");
+    expect(claimedA!.id).toBe(A.id);
+
+    await pool.query(
+      `UPDATE ${schema}.processing_jobs SET status='failed' WHERE id = $1`,
+      [A.id],
+    );
+
+    const claimed = await queue.claim("w1");
+    expect(claimed).toBeNull();
+  });
+
+  it("multiple deps: B dependsOn=[A,C] unblocks only when BOTH completed", async () => {
+    const A = await queue.enqueue({ jobType: "a" });
+    const C = await queue.enqueue({ jobType: "c" });
+    const B = await queue.enqueue({ jobType: "b", dependsOn: [A.id, C.id] });
+    expect(B.depends_on).toEqual([A.id, C.id]);
+
+    const claimedA = await queue.claim("w1");
+    expect(claimedA!.id).toBe(A.id);
+    await queue.complete(A.id);
+
+    const mid = await queue.claim("w1");
+    expect(mid).not.toBeNull();
+    expect(mid!.id).toBe(C.id);
+
+    const stillBlocked = await queue.claim("w1");
+    expect(stillBlocked).toBeNull();
+
+    await queue.complete(C.id);
+
+    const claimedB = await queue.claim("w1");
+    expect(claimedB).not.toBeNull();
+    expect(claimedB!.id).toBe(B.id);
+    expect(claimedB!.status).toBe("running");
+  });
+
+  it("GIN index processing_jobs_depends_on_idx exists in the per-run schema", async () => {
+    const r = await pool.query(
+      `SELECT indexname FROM pg_indexes WHERE schemaname = $1 AND indexname = 'processing_jobs_depends_on_idx'`,
+      [schema],
+    );
+    expect(r.rows.length).toBe(1);
   });
 });
 

@@ -7,6 +7,7 @@ export interface EnqueueInput {
   editionId?: string;
   target?: unknown;
   nextEligibleAt?: Date;
+  dependsOn?: string[];
 }
 
 export interface ProcessingJobQueue {
@@ -31,6 +32,7 @@ export function createProcessingJobQueue(db: Kysely<Database>): ProcessingJobQue
           target: input.target === undefined ? null : JSON.stringify(input.target),
           status: "pending",
           next_eligible_at: input.nextEligibleAt ?? sql`now()`,
+          depends_on: input.dependsOn ?? [],
         })
         .returningAll()
         .executeTakeFirstOrThrow();
@@ -44,6 +46,9 @@ export function createProcessingJobQueue(db: Kysely<Database>): ProcessingJobQue
           .selectAll()
           .where("status", "=", "pending")
           .where(sql<SqlBool>`next_eligible_at <= now()`)
+          .where(
+            sql<SqlBool>`NOT EXISTS (SELECT 1 FROM unnest(depends_on) AS d(id) JOIN processing_jobs dep ON dep.id = d.id WHERE dep.status <> 'completed')`,
+          )
           .orderBy("next_eligible_at", "asc")
           .orderBy("created_at", "asc")
           .limit(1)

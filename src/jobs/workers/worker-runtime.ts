@@ -175,7 +175,13 @@ export function createWorkerRuntime(
       await db.transaction().execute(async (trx) => {
         const txQueue = createProcessingJobQueue(trx);
         for (const c of outcome.childJobs ?? []) {
-          await txQueue.enqueue(c);
+          await txQueue.enqueue({
+            jobType: c.jobType,
+            editionId: c.editionId,
+            target: c.target,
+            nextEligibleAt: c.nextEligibleAt,
+            dependsOn: c.dependsOn,
+          });
         }
         await txQueue.complete(job.id);
       });

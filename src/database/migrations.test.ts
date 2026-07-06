@@ -44,6 +44,7 @@ describe("migration runner", () => {
       "003_create_editions.sql",
       "004_create_prompt_versions.sql",
       "005_create_document_lineage.sql",
+      "006_add_depends_on_to_processing_jobs.sql",
     ]);
     expect(res.skipped).toEqual([]);
 
@@ -53,6 +54,7 @@ describe("migration runner", () => {
       "003_create_editions.sql",
       "004_create_prompt_versions.sql",
       "005_create_document_lineage.sql",
+      "006_add_depends_on_to_processing_jobs.sql",
     ]);
 
     const r = await pool.query("SELECT to_regclass('__smoke') AS exists");
@@ -89,6 +91,7 @@ describe("migration runner", () => {
       "003_create_editions.sql",
       "004_create_prompt_versions.sql",
       "005_create_document_lineage.sql",
+      "006_add_depends_on_to_processing_jobs.sql",
     ]);
 
     expect(await getAppliedMigrations(pool)).toEqual([
@@ -97,6 +100,7 @@ describe("migration runner", () => {
       "003_create_editions.sql",
       "004_create_prompt_versions.sql",
       "005_create_document_lineage.sql",
+      "006_add_depends_on_to_processing_jobs.sql",
     ]);
   });
 

@@ -32,6 +32,7 @@ export interface ProcessingJob {
   created_at: Date;
   updated_at: Date;
   completed_at: Date | null;
+  depends_on: string[];
 }
 
 export interface PromptVersion {
@@ -75,6 +76,7 @@ export interface Database {
     created_at: Generated<Date>;
     updated_at: Generated<Date>;
     completed_at: Date | null;
+    depends_on: Generated<string[]>;
   };
   editions: {
     id: Generated<string>;
