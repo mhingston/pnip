@@ -121,6 +121,34 @@ export interface Database {
     metadata: unknown | null;
     created_at: Generated<Date>;
   };
+  documents: {
+    id: Generated<string>;
+    edition_id: string;
+    source_type: string;
+    source_url: string;
+    canonical_url: string | null;
+    title: string | null;
+    subtitle: string | null;
+    authors: unknown;
+    publisher: string | null;
+    published_at: Date | null;
+    language: Generated<string>;
+    content_markdown: string | null;
+    content_text: string | null;
+    metadata: unknown;
+    created_at: Generated<Date>;
+  };
+  document_sections: {
+    id: Generated<string>;
+    document_id: string;
+    section_order: number;
+    heading: string | null;
+    section_type: Generated<string>;
+    content_markdown: string | null;
+    content_text: string | null;
+    metadata: unknown;
+    created_at: Generated<Date>;
+  };
   discovery_events: {
     id: Generated<string>;
     edition_id: string;
