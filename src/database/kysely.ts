@@ -34,6 +34,15 @@ export interface ProcessingJob {
   completed_at: Date | null;
 }
 
+export interface PromptVersion {
+  id: string;
+  name: string;
+  version: number;
+  template: string;
+  purpose: string;
+  created_at: Date;
+}
+
 export interface Database {
   processing_jobs: {
     id: Generated<string>;
@@ -61,6 +70,14 @@ export interface Database {
     failed_at: Date | null;
     failure_reason: string | null;
     metadata: unknown | null;
+  };
+  prompt_versions: {
+    id: Generated<string>;
+    name: string;
+    version: number;
+    template: string;
+    purpose: string;
+    created_at: Generated<Date>;
   };
 }
 

@@ -11,7 +11,7 @@ const goodFixtures = resolve(here, "migrations.test-fixtures", "good");
 const badFixtures = resolve(here, "migrations.test-fixtures", "bad");
 
 const CLEANUP =
-  "DROP TABLE IF EXISTS _migrations, __smoke, __fixture_smoke, __bad_table, processing_jobs, editions CASCADE";
+  "DROP TABLE IF EXISTS _migrations, __smoke, __fixture_smoke, __bad_table, processing_jobs, editions, prompt_versions CASCADE";
 
 describe("migration runner", () => {
   let pool: PgPool;
@@ -42,6 +42,7 @@ describe("migration runner", () => {
       "001_create_smoke_table.sql",
       "002_create_processing_jobs.sql",
       "003_create_editions.sql",
+      "004_create_prompt_versions.sql",
     ]);
     expect(res.skipped).toEqual([]);
 
@@ -49,6 +50,7 @@ describe("migration runner", () => {
       "001_create_smoke_table.sql",
       "002_create_processing_jobs.sql",
       "003_create_editions.sql",
+      "004_create_prompt_versions.sql",
     ]);
 
     const r = await pool.query("SELECT to_regclass('__smoke') AS exists");
@@ -63,6 +65,11 @@ describe("migration runner", () => {
       "SELECT to_regclass('editions') AS exists",
     );
     expect(editions.rows[0].exists).not.toBeNull();
+
+    const prompts = await pool.query(
+      "SELECT to_regclass('prompt_versions') AS exists",
+    );
+    expect(prompts.rows[0].exists).not.toBeNull();
   });
 
   it("is idempotent: a second runMigrations skips already-applied migrations", async () => {
@@ -73,12 +80,14 @@ describe("migration runner", () => {
       "001_create_smoke_table.sql",
       "002_create_processing_jobs.sql",
       "003_create_editions.sql",
+      "004_create_prompt_versions.sql",
     ]);
 
     expect(await getAppliedMigrations(pool)).toEqual([
       "001_create_smoke_table.sql",
       "002_create_processing_jobs.sql",
       "003_create_editions.sql",
+      "004_create_prompt_versions.sql",
     ]);
   });
 
