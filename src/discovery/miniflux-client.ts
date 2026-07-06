@@ -111,7 +111,7 @@ export function createMinifluxClient(opts: {
           "Content-Type": "application/json",
           Accept: "application/json",
         },
-        body: JSON.stringify({ ids: entryIds, status: "read" }),
+        body: JSON.stringify({ entry_ids: entryIds, status: "read" }),
       });
       await ensureOk(res, url, "PUT");
     },

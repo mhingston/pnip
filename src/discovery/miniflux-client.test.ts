@@ -172,10 +172,10 @@ describe("miniflux-client", () => {
       expect(header(call.init?.headers, "X-Auth-Token")).toBe(TOKEN);
       expect(header(call.init?.headers, "Content-Type")).toBe("application/json");
       expect(header(call.init?.headers, "Accept")).toBe("application/json");
-      expect(JSON.parse(call.init?.body as string)).toEqual({ ids: [10], status: "read" });
+      expect(JSON.parse(call.init?.body as string)).toEqual({ entry_ids: [10], status: "read" });
     });
 
-    it("markEntriesRead([10,11]) PUTs ids=[10,11] status=read", async () => {
+    it("markEntriesRead([10,11]) PUTs entry_ids=[10,11] status=read", async () => {
       const { fetch, calls } = makeFakeFetch(() => jsonResponse({}, 200));
       const client = createMinifluxClient({
         baseUrl: "http://127.0.0.1:8080",
@@ -187,7 +187,7 @@ describe("miniflux-client", () => {
 
       expect(calls).toHaveLength(1);
       expect(calls[0].init?.method).toBe("PUT");
-      expect(JSON.parse(calls[0].init?.body as string)).toEqual({ ids: [10, 11], status: "read" });
+      expect(JSON.parse(calls[0].init?.body as string)).toEqual({ entry_ids: [10, 11], status: "read" });
     });
 
     it("markEntriesRead([]) does not call fetch", async () => {
