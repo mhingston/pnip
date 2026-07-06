@@ -1,0 +1,87 @@
+import type { Worker, WorkerContext, WorkerOutcome } from "../jobs/workers/worker.js";
+import type { ProcessingJob } from "../database/kysely.js";
+import type { DocumentRepository } from "./document-repository.js";
+import type { SectionRepository } from "./section-repository.js";
+import type { PluginRegistry } from "./plugin-registry.js";
+import type { ProvenanceRepository } from "../provenance/provenance-repository.js";
+
+interface ExpandTarget {
+  discoveryEventId: string;
+  url: string;
+}
+
+function parseTarget(target: unknown): ExpandTarget {
+  if (!target || typeof target !== "object") {
+    throw new Error("invalid target: expected object with discoveryEventId and url");
+  }
+  const t = target as Record<string, unknown>;
+  if (typeof t.discoveryEventId !== "string" || typeof t.url !== "string") {
+    throw new Error("invalid target: missing discoveryEventId or url");
+  }
+  return { discoveryEventId: t.discoveryEventId, url: t.url };
+}
+
+export function createExpandDocumentWorker(deps: {
+  docRepo: DocumentRepository;
+  sectionRepo: SectionRepository;
+  pluginRegistry: PluginRegistry;
+  provenanceRepo: ProvenanceRepository;
+}): Worker {
+  return {
+    supports(jobType: string): boolean {
+      return jobType === "expand_document";
+    },
+
+    async execute(job: ProcessingJob, ctx: WorkerContext): Promise<WorkerOutcome> {
+      const { discoveryEventId, url } = parseTarget(job.target);
+
+      const plugin = deps.pluginRegistry.select(url);
+      if (!plugin) {
+        throw new Error(`no plugin supports URL: ${url}`);
+      }
+
+      const result = await plugin.expand({
+        url,
+        editionId: job.edition_id!,
+        discoveryEventId,
+      });
+
+      const doc = await deps.docRepo.create({
+        editionId: job.edition_id!,
+        sourceType: result.sourceType,
+        sourceUrl: url,
+        title: result.title,
+        contentMarkdown: result.content,
+        contentText: result.plainText,
+        canonicalUrl: result.canonicalUrl,
+        authors: result.authors,
+        publishedAt: result.publishedAt,
+        language: result.language,
+        metadata: result.metadata,
+      });
+
+      if (result.sections.length > 0) {
+        await deps.sectionRepo.createBatch(
+          result.sections.map((s) => ({
+            documentId: doc.id,
+            order: s.order,
+            heading: s.heading,
+            type: s.section_type,
+            contentMarkdown: s.content_markdown,
+            contentText: s.content_text,
+          })),
+        );
+      }
+
+      await deps.provenanceRepo.recordLineage({
+        sourceType: "discovery_event",
+        sourceId: discoveryEventId,
+        targetType: "document",
+        targetId: doc.id,
+        relation: "expanded_from",
+      });
+
+      return {};
+    },
+  };
+}
