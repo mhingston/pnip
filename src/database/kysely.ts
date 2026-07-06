@@ -3,6 +3,20 @@ import type { PgPool } from "./pool.js";
 
 export type JobStatus = "pending" | "running" | "completed" | "failed" | "archived";
 
+export type EditionStatus = "building" | "ready" | "publishing" | "published" | "failed";
+
+export interface Edition {
+  id: string;
+  publication_date: Date;
+  status: EditionStatus;
+  created_at: Date;
+  updated_at: Date;
+  published_at: Date | null;
+  failed_at: Date | null;
+  failure_reason: string | null;
+  metadata: unknown | null;
+}
+
 export interface ProcessingJob {
   id: string;
   job_type: string;
@@ -36,6 +50,17 @@ export interface Database {
     created_at: Generated<Date>;
     updated_at: Generated<Date>;
     completed_at: Date | null;
+  };
+  editions: {
+    id: Generated<string>;
+    publication_date: Date;
+    status: Generated<EditionStatus>;
+    created_at: Generated<Date>;
+    updated_at: Generated<Date>;
+    published_at: Date | null;
+    failed_at: Date | null;
+    failure_reason: string | null;
+    metadata: unknown | null;
   };
 }
 
