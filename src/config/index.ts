@@ -20,6 +20,7 @@ const configSchema = z.object({
   NOTEBOOKLM_HEADLESS: z.string().optional(),
   EDITION_SCHEDULE: z.string().optional(),
   REDDIT_REFRESH_STRATEGY: z.string().optional(),
+  FABRIC_BIN: z.string().optional(),
   WORKER_CONCURRENCY: z.string().optional(),
   RETRY_MAX_ATTEMPTS: z.string().optional(),
 });
