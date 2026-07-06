@@ -11,7 +11,7 @@ const goodFixtures = resolve(here, "migrations.test-fixtures", "good");
 const badFixtures = resolve(here, "migrations.test-fixtures", "bad");
 
 const CLEANUP =
-  "DROP TABLE IF EXISTS _migrations, __smoke, __fixture_smoke, __bad_table CASCADE";
+  "DROP TABLE IF EXISTS _migrations, __smoke, __fixture_smoke, __bad_table, processing_jobs CASCADE";
 
 describe("migration runner", () => {
   let pool: PgPool;
@@ -38,25 +38,38 @@ describe("migration runner", () => {
 
   it("applies the 001 migration from the real migrations dir and records it in _migrations", async () => {
     const res = await runMigrations(pool, { directory: realDir });
-    expect(res.applied).toEqual(["001_create_smoke_table.sql"]);
+    expect(res.applied).toEqual([
+      "001_create_smoke_table.sql",
+      "002_create_processing_jobs.sql",
+    ]);
     expect(res.skipped).toEqual([]);
 
     expect(await getAppliedMigrations(pool)).toEqual([
       "001_create_smoke_table.sql",
+      "002_create_processing_jobs.sql",
     ]);
 
     const r = await pool.query("SELECT to_regclass('__smoke') AS exists");
     expect(r.rows[0].exists).not.toBeNull();
+
+    const jobs = await pool.query(
+      "SELECT to_regclass('processing_jobs') AS exists",
+    );
+    expect(jobs.rows[0].exists).not.toBeNull();
   });
 
   it("is idempotent: a second runMigrations skips already-applied migrations", async () => {
     await runMigrations(pool, { directory: realDir });
     const res2 = await runMigrations(pool, { directory: realDir });
     expect(res2.applied).toEqual([]);
-    expect(res2.skipped).toEqual(["001_create_smoke_table.sql"]);
+    expect(res2.skipped).toEqual([
+      "001_create_smoke_table.sql",
+      "002_create_processing_jobs.sql",
+    ]);
 
     expect(await getAppliedMigrations(pool)).toEqual([
       "001_create_smoke_table.sql",
+      "002_create_processing_jobs.sql",
     ]);
   });
 
