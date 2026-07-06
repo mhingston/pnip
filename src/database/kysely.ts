@@ -43,6 +43,22 @@ export interface PromptVersion {
   created_at: Date;
 }
 
+export interface LineageEdge {
+  id: string;
+  source_type: string;
+  source_id: string;
+  target_type: string;
+  target_id: string;
+  relation: string;
+  metadata: unknown | null;
+  created_at: Date;
+}
+
+export interface EntityRef {
+  type: string;
+  id: string;
+}
+
 export interface Database {
   processing_jobs: {
     id: Generated<string>;
@@ -77,6 +93,16 @@ export interface Database {
     version: number;
     template: string;
     purpose: string;
+    created_at: Generated<Date>;
+  };
+  document_lineage: {
+    id: Generated<string>;
+    source_type: string;
+    source_id: string;
+    target_type: string;
+    target_id: string;
+    relation: string;
+    metadata: unknown | null;
     created_at: Generated<Date>;
   };
 }
