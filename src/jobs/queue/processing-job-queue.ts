@@ -1,5 +1,5 @@
 import { Kysely, sql, type SqlBool } from "kysely";
-import type { Database, ProcessingJob } from "../../database/kysely.js";
+import type { Database, JobStatus, ProcessingJob } from "../../database/kysely.js";
 import { DEFAULT_MAX_ATTEMPTS } from "./backoff.js";
 
 export interface EnqueueInput {
@@ -19,6 +19,11 @@ export interface ProcessingJobQueue {
     olderThanMs: number,
     opts?: { maxAttempts?: number },
   ): Promise<number>;
+  archiveJobs(opts: {
+    statuses?: JobStatus[];
+    olderThanMs?: number;
+    limit?: number;
+  }): Promise<number>;
 }
 
 export function createProcessingJobQueue(db: Kysely<Database>): ProcessingJobQueue {
@@ -119,6 +124,35 @@ export function createProcessingJobQueue(db: Kysely<Database>): ProcessingJobQue
         WHERE status = 'running'
           AND locked_at IS NOT NULL
           AND locked_at < now() - (${olderThanMs} * interval '1 millisecond')
+        RETURNING id`.execute(db);
+      return result.rows.length;
+    },
+
+    async archiveJobs(opts: {
+      statuses?: JobStatus[];
+      olderThanMs?: number;
+      limit?: number;
+    }): Promise<number> {
+      const statuses = opts.statuses ?? ["completed", "failed"];
+      const olderThanMs = opts.olderThanMs ?? 0;
+      const limit = opts.limit;
+      const statusList = sql.join(statuses.map((s) => sql`${s}`));
+      const ageClause =
+        olderThanMs > 0
+          ? sql`AND updated_at < now() - (${olderThanMs} * interval '1 millisecond')`
+          : sql``;
+      const limitClause =
+        typeof limit === "number" && limit > 0 ? sql`LIMIT ${limit}` : sql``;
+      const result = await sql`UPDATE processing_jobs
+        SET status = 'archived', updated_at = now()
+        WHERE id IN (
+          SELECT id FROM processing_jobs
+          WHERE status IN (${statusList})
+            AND status <> 'archived'
+            ${ageClause}
+          ORDER BY updated_at
+          ${limitClause}
+        )
         RETURNING id`.execute(db);
       return result.rows.length;
     },

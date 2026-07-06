@@ -348,6 +348,173 @@ describe("ProcessingJobQueue", () => {
     );
     expect(r.rows.length).toBe(1);
   });
+
+  it("archiveJobs archives a completed job and bumps updated_at", async () => {
+    const enqueued = await queue.enqueue({ jobType: "done" });
+    await pool.query(
+      `UPDATE ${schema}.processing_jobs SET status='completed', completed_at=now(), updated_at = now() - interval '1 hour' WHERE id = $1`,
+      [enqueued.id],
+    );
+    const before = await queue.getJob(enqueued.id);
+    expect(before!.status).toBe("completed");
+
+    const count = await queue.archiveJobs({});
+    expect(count).toBe(1);
+
+    const after = await queue.getJob(enqueued.id);
+    expect(after!.status).toBe("archived");
+    expect(after!.updated_at.getTime()).toBeGreaterThan(before!.updated_at.getTime());
+  });
+
+  it("default statuses covers completed AND failed", async () => {
+    const c = await queue.enqueue({ jobType: "c" });
+    const f = await queue.enqueue({ jobType: "f" });
+    await pool.query(
+      `UPDATE ${schema}.processing_jobs SET status='completed', completed_at=now() WHERE id = $1`,
+      [c.id],
+    );
+    await pool.query(
+      `UPDATE ${schema}.processing_jobs SET status='failed' WHERE id = $1`,
+      [f.id],
+    );
+
+    const count = await queue.archiveJobs({});
+    expect(count).toBe(2);
+
+    const cAfter = await queue.getJob(c.id);
+    expect(cAfter!.status).toBe("archived");
+    const fAfter = await queue.getJob(f.id);
+    expect(fAfter!.status).toBe("archived");
+  });
+
+  it("pending and running jobs are not archived", async () => {
+    const completed = await queue.enqueue({ jobType: "done" });
+    const pending = await queue.enqueue({ jobType: "pend" });
+    const running = await queue.enqueue({ jobType: "run" });
+    await pool.query(
+      `UPDATE ${schema}.processing_jobs SET status='completed', completed_at=now() WHERE id = $1`,
+      [completed.id],
+    );
+    await pool.query(
+      `UPDATE ${schema}.processing_jobs SET status='running', locked_by='w1', locked_at=now() WHERE id = $1`,
+      [running.id],
+    );
+
+    const count = await queue.archiveJobs({});
+    expect(count).toBe(1);
+
+    const cAfter = await queue.getJob(completed.id);
+    expect(cAfter!.status).toBe("archived");
+    const pAfter = await queue.getJob(pending.id);
+    expect(pAfter!.status).toBe("pending");
+    const rAfter = await queue.getJob(running.id);
+    expect(rAfter!.status).toBe("running");
+  });
+
+  it("age filter archives only jobs older than olderThanMs", async () => {
+    const old = await queue.enqueue({ jobType: "old" });
+    const recent = await queue.enqueue({ jobType: "recent" });
+    await pool.query(
+      `UPDATE ${schema}.processing_jobs SET status='completed', completed_at=now(), updated_at = now() - interval '1 hour' WHERE id = $1`,
+      [old.id],
+    );
+    await pool.query(
+      `UPDATE ${schema}.processing_jobs SET status='completed', completed_at=now(), updated_at = now() WHERE id = $1`,
+      [recent.id],
+    );
+
+    const count = await queue.archiveJobs({ olderThanMs: 30 * 60 * 1000 });
+    expect(count).toBe(1);
+
+    const oldAfter = await queue.getJob(old.id);
+    expect(oldAfter!.status).toBe("archived");
+    const recentAfter = await queue.getJob(recent.id);
+    expect(recentAfter!.status).toBe("completed");
+  });
+
+  it("limit archives only the N oldest matching jobs by updated_at", async () => {
+    const a = await queue.enqueue({ jobType: "a" });
+    const b = await queue.enqueue({ jobType: "b" });
+    const c = await queue.enqueue({ jobType: "c" });
+    await pool.query(
+      `UPDATE ${schema}.processing_jobs SET status='completed', completed_at=now(), updated_at = now() - interval '1 hour' WHERE id = $1`,
+      [a.id],
+    );
+    await pool.query(
+      `UPDATE ${schema}.processing_jobs SET status='completed', completed_at=now(), updated_at = now() - interval '2 hours' WHERE id = $1`,
+      [b.id],
+    );
+    await pool.query(
+      `UPDATE ${schema}.processing_jobs SET status='completed', completed_at=now(), updated_at = now() - interval '3 hours' WHERE id = $1`,
+      [c.id],
+    );
+
+    const count = await queue.archiveJobs({ limit: 2 });
+    expect(count).toBe(2);
+
+    const aAfter = await queue.getJob(a.id);
+    const bAfter = await queue.getJob(b.id);
+    const cAfter = await queue.getJob(c.id);
+    expect(aAfter!.status).toBe("completed");
+    expect(bAfter!.status).toBe("archived");
+    expect(cAfter!.status).toBe("archived");
+  });
+
+  it("archiveJobs is idempotent: a second call returns 0", async () => {
+    const c = await queue.enqueue({ jobType: "done" });
+    await pool.query(
+      `UPDATE ${schema}.processing_jobs SET status='completed', completed_at=now() WHERE id = $1`,
+      [c.id],
+    );
+
+    const first = await queue.archiveJobs({});
+    expect(first).toBe(1);
+
+    const second = await queue.archiveJobs({});
+    expect(second).toBe(0);
+
+    const after = await queue.getJob(c.id);
+    expect(after!.status).toBe("archived");
+  });
+
+  it("archived jobs are not claimable", async () => {
+    const archived = await queue.enqueue({ jobType: "done" });
+    await pool.query(
+      `UPDATE ${schema}.processing_jobs SET status='completed', completed_at=now() WHERE id = $1`,
+      [archived.id],
+    );
+    await queue.archiveJobs({});
+
+    const none = await queue.claim("w1");
+    expect(none).toBeNull();
+
+    const pending = await queue.enqueue({ jobType: "fresh" });
+    const claimed = await queue.claim("w1");
+    expect(claimed).not.toBeNull();
+    expect(claimed!.id).toBe(pending.id);
+    expect(claimed!.status).toBe("running");
+  });
+
+  it("custom statuses: archiveJobs({ statuses: ['completed'] }) leaves failed untouched", async () => {
+    const c = await queue.enqueue({ jobType: "c" });
+    const f = await queue.enqueue({ jobType: "f" });
+    await pool.query(
+      `UPDATE ${schema}.processing_jobs SET status='completed', completed_at=now() WHERE id = $1`,
+      [c.id],
+    );
+    await pool.query(
+      `UPDATE ${schema}.processing_jobs SET status='failed' WHERE id = $1`,
+      [f.id],
+    );
+
+    const count = await queue.archiveJobs({ statuses: ["completed"] });
+    expect(count).toBe(1);
+
+    const cAfter = await queue.getJob(c.id);
+    expect(cAfter!.status).toBe("archived");
+    const fAfter = await queue.getJob(f.id);
+    expect(fAfter!.status).toBe("failed");
+  });
 });
 
 describe("createKysely / closeKysely", () => {
