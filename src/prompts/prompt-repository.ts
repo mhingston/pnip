@@ -1,4 +1,4 @@
-import { Kysely, sql, type SqlBool } from "kysely";
+import { Kysely, sql } from "kysely";
 import type { Database, PromptVersion } from "../database/kysely.js";
 
 export class PromptVersionConflictError extends Error {
@@ -87,6 +87,7 @@ export function createPromptRepository(db: Kysely<Database>): PromptRepository {
 
     async createNewVersion(input): Promise<PromptVersion> {
       return db.transaction().execute(async (trx) => {
+        await sql`SELECT pg_advisory_xact_lock(hashtext(${input.name}))`.execute(trx);
         const latest = await trx
           .selectFrom("prompt_versions")
           .selectAll()
