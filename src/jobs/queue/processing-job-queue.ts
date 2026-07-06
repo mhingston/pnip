@@ -1,5 +1,6 @@
 import { Kysely, sql, type SqlBool } from "kysely";
 import type { Database, ProcessingJob } from "../../database/kysely.js";
+import { DEFAULT_MAX_ATTEMPTS } from "./backoff.js";
 
 export interface EnqueueInput {
   jobType: string;
@@ -13,6 +14,10 @@ export interface ProcessingJobQueue {
   claim(workerId: string): Promise<ProcessingJob | null>;
   complete(jobId: string): Promise<void>;
   getJob(jobId: string): Promise<ProcessingJob | undefined>;
+  recoverStaleJobs(
+    olderThanMs: number,
+    opts?: { maxAttempts?: number },
+  ): Promise<number>;
 }
 
 export function createProcessingJobQueue(db: Kysely<Database>): ProcessingJobQueue {
@@ -85,6 +90,32 @@ export function createProcessingJobQueue(db: Kysely<Database>): ProcessingJobQue
         .selectAll()
         .where("id", "=", jobId)
         .executeTakeFirst();
+    },
+
+    async recoverStaleJobs(
+      olderThanMs: number,
+      opts?: { maxAttempts?: number },
+    ): Promise<number> {
+      const maxAttempts = opts?.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
+      const staleError = JSON.stringify({
+        type: "StaleJobError",
+        message: `job stuck in running for >${olderThanMs}ms`,
+        recovered_at: new Date().toISOString(),
+      });
+      const result = await sql`UPDATE processing_jobs
+        SET retry_count = retry_count + 1,
+            status = CASE WHEN retry_count + 1 < ${maxAttempts} THEN 'pending' ELSE 'failed' END,
+            next_eligible_at = CASE WHEN retry_count + 1 < ${maxAttempts} THEN now() ELSE next_eligible_at END,
+            last_error = ${staleError}::jsonb,
+            locked_by = NULL,
+            locked_at = NULL,
+            last_attempt_at = now(),
+            updated_at = now()
+        WHERE status = 'running'
+          AND locked_at IS NOT NULL
+          AND locked_at < now() - (${olderThanMs} * interval '1 millisecond')
+        RETURNING id`.execute(db);
+      return result.rows.length;
     },
   };
 }

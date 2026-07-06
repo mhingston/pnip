@@ -9,7 +9,7 @@ import {
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { Kysely, PostgresDialect, CompiledQuery } from "kysely";
+import { Kysely, PostgresDialect, CompiledQuery, sql } from "kysely";
 import { loadConfig } from "../../config/index.js";
 import { createPool, closePool, type PgPool } from "../../database/pool.js";
 import {
@@ -161,7 +161,7 @@ describe("WorkerRuntime", () => {
     expect(await rowCount()).toBe(1);
   });
 
-  it("worker throws: job failed with error payload, retry_count=1, no children", async () => {
+  it("worker throws with maxAttempts=1: permanent failure, retry_count=1, no children", async () => {
     const boomWorker: Worker = {
       supports: (t) => t === "boom",
       execute: async () => {
@@ -173,6 +173,7 @@ describe("WorkerRuntime", () => {
       queue,
       workers: [boomWorker],
       logger: silentLogger(),
+      retry: { maxAttempts: 1 },
     });
 
     const enqueued = await queue.enqueue({ jobType: "boom" });
@@ -191,6 +192,98 @@ describe("WorkerRuntime", () => {
     expect(err.message).toBe("boom");
     expect(typeof err.stack).toBe("string");
     expect(err.stack!.length).toBeGreaterThan(0);
+    expect(job!.retry_count).toBe(1);
+
+    expect(await rowCount()).toBe(1);
+  });
+
+  it("worker throws with retries remaining: pending + future next_eligible_at, retry→permanent boundary", async () => {
+    const boomWorker: Worker = {
+      supports: (t) => t === "boom",
+      execute: async () => {
+        throw new Error("boom");
+      },
+    };
+    const runtime = createWorkerRuntime({
+      db,
+      queue,
+      workers: [boomWorker],
+      logger: silentLogger(),
+      retry: { maxAttempts: 3, jitter: false },
+    });
+
+    const enqueued = await queue.enqueue({ jobType: "boom" });
+
+    // Attempt 1: retry_count 0→1, 1 < 3 → pending, next_eligible_at ≈ now+30s
+    await runtime.runOne("w1");
+    let job = await queue.getJob(enqueued.id);
+    expect(job!.status).toBe("pending");
+    expect(job!.retry_count).toBe(1);
+    expect(job!.locked_by).toBeNull();
+    expect(job!.locked_at).toBeNull();
+    const err1 = job!.last_error as { type: string; message: string };
+    expect(err1.type).toBe("Error");
+    expect(err1.message).toBe("boom");
+    const now1 = Date.now();
+    const next1 = job!.next_eligible_at.getTime();
+    expect(next1).toBeGreaterThan(now1 + 29_000);
+    expect(next1).toBeLessThan(now1 + 31_000);
+
+    // Not claimable yet (future next_eligible_at)
+    const notYet = await queue.claim("w1");
+    expect(notYet).toBeNull();
+
+    // Simulate time passing: make it eligible
+    await db
+      .updateTable("processing_jobs")
+      .set({ next_eligible_at: sql`now()` })
+      .where("id", "=", enqueued.id)
+      .execute();
+
+    // Attempt 2: retry_count 1→2, 2 < 3 → pending, next_eligible_at ≈ now+120s
+    await runtime.runOne("w1");
+    job = await queue.getJob(enqueued.id);
+    expect(job!.status).toBe("pending");
+    expect(job!.retry_count).toBe(2);
+    expect(job!.locked_by).toBeNull();
+    const now2 = Date.now();
+    const next2 = job!.next_eligible_at.getTime();
+    expect(next2).toBeGreaterThan(now2 + 119_000);
+    expect(next2).toBeLessThan(now2 + 121_000);
+
+    // Make eligible again
+    await db
+      .updateTable("processing_jobs")
+      .set({ next_eligible_at: sql`now()` })
+      .where("id", "=", enqueued.id)
+      .execute();
+
+    // Attempt 3: retry_count 2→3, 3 < 3 false → failed (permanent)
+    await runtime.runOne("w1");
+    job = await queue.getJob(enqueued.id);
+    expect(job!.status).toBe("failed");
+    expect(job!.retry_count).toBe(3);
+
+    expect(await rowCount()).toBe(1);
+  });
+
+  it("no worker for type stays permanent failed even with maxAttempts configured", async () => {
+    const runtime = createWorkerRuntime({
+      db,
+      queue,
+      workers: [],
+      logger: silentLogger(),
+      retry: { maxAttempts: 3 },
+    });
+
+    const enqueued = await queue.enqueue({ jobType: "mystery" });
+    const result = await runtime.runOne("w1");
+    expect(result).toBe(true);
+
+    const job = await queue.getJob(enqueued.id);
+    expect(job).toBeDefined();
+    expect(job!.status).toBe("failed");
+    expect((job!.last_error as { type: string }).type).toBe("NoWorkerError");
     expect(job!.retry_count).toBe(1);
 
     expect(await rowCount()).toBe(1);

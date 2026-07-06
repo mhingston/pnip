@@ -5,6 +5,11 @@ import {
   createProcessingJobQueue,
   type ProcessingJobQueue,
 } from "../queue/processing-job-queue.js";
+import {
+  DEFAULT_BACKOFF_SCHEDULE_MS,
+  DEFAULT_MAX_ATTEMPTS,
+  nextEligibleDelayMs,
+} from "../queue/backoff.js";
 import type {
   Worker,
   WorkerContext,
@@ -16,11 +21,26 @@ export interface WorkerRuntime {
   runOne(workerId: string): Promise<boolean>;
 }
 
+export interface RetryConfig {
+  maxAttempts?: number;
+  schedule?: readonly number[];
+  jitter?: boolean;
+  rng?: () => number;
+}
+
+interface ResolvedRetryConfig {
+  maxAttempts: number;
+  schedule: readonly number[];
+  jitter: boolean;
+  rng: () => number;
+}
+
 export interface CreateWorkerRuntimeDeps {
   db: Kysely<Database>;
   queue: ProcessingJobQueue;
   workers: Worker[];
   logger?: Logger;
+  retry?: RetryConfig;
 }
 
 export function serializeError(err: unknown): WorkerErrorPayload {
@@ -35,6 +55,12 @@ export function createWorkerRuntime(
 ): WorkerRuntime {
   const { db, queue, workers } = deps;
   const logger = deps.logger ?? createLogger();
+  const retry: ResolvedRetryConfig = {
+    maxAttempts: deps.retry?.maxAttempts ?? DEFAULT_MAX_ATTEMPTS,
+    schedule: deps.retry?.schedule ?? DEFAULT_BACKOFF_SCHEDULE_MS,
+    jitter: deps.retry?.jitter ?? true,
+    rng: deps.retry?.rng ?? Math.random,
+  };
 
   async function markFailed(
     job: { id: string; retry_count: number },
@@ -53,6 +79,54 @@ export function createWorkerRuntime(
         .where("id", "=", job.id)
         .execute();
     });
+  }
+
+  async function scheduleRetryOrFail(
+    job: { id: string; retry_count: number },
+    payload: WorkerErrorPayload,
+    log: Logger,
+  ): Promise<void> {
+    const newRetryCount = job.retry_count + 1;
+    if (newRetryCount < retry.maxAttempts) {
+      const delayMs = nextEligibleDelayMs(newRetryCount, {
+        schedule: retry.schedule,
+        jitter: retry.jitter,
+        rng: retry.rng,
+      });
+      await db
+        .updateTable("processing_jobs")
+        .set({
+          status: "pending",
+          retry_count: newRetryCount,
+          next_eligible_at: sql`now() + (${delayMs} * interval '1 millisecond')`,
+          last_error: JSON.stringify(payload),
+          last_attempt_at: sql`now()`,
+          locked_by: null,
+          locked_at: null,
+          updated_at: sql`now()`,
+        })
+        .where("id", "=", job.id)
+        .execute();
+      log.info("worker execute failed, retry scheduled", {
+        retryCount: newRetryCount,
+        nextEligibleAt: new Date(Date.now() + delayMs).toISOString(),
+      });
+    } else {
+      await db
+        .updateTable("processing_jobs")
+        .set({
+          status: "failed",
+          retry_count: newRetryCount,
+          last_error: JSON.stringify(payload),
+          last_attempt_at: sql`now()`,
+          updated_at: sql`now()`,
+        })
+        .where("id", "=", job.id)
+        .execute();
+      log.error("worker execute failed, permanent failure", {
+        retryCount: newRetryCount,
+      });
+    }
   }
 
   return {
@@ -93,7 +167,7 @@ export function createWorkerRuntime(
             stack: payload.stack,
           },
         });
-        await markFailed(job, payload);
+        await scheduleRetryOrFail(job, payload, log);
         return true;
       }
       const durationMs = Date.now() - start;

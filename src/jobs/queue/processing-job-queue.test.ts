@@ -133,6 +133,92 @@ describe("ProcessingJobQueue", () => {
     expect(afterRunning).toBeNull();
   });
 
+  it("recoverStaleJobs resets a stale running job to pending and makes it re-claimable", async () => {
+    const enqueued = await queue.enqueue({ jobType: "stale" });
+    await pool.query(
+      `UPDATE ${schema}.processing_jobs SET status='running', locked_by='dead', locked_at = now() - interval '10 minutes' WHERE id = $1`,
+      [enqueued.id],
+    );
+
+    const count = await queue.recoverStaleJobs(5 * 60 * 1000);
+    expect(count).toBe(1);
+
+    const job = await queue.getJob(enqueued.id);
+    expect(job!.status).toBe("pending");
+    expect(job!.retry_count).toBe(1);
+    expect(job!.locked_by).toBeNull();
+    expect(job!.locked_at).toBeNull();
+    expect(job!.last_attempt_at).toBeInstanceOf(Date);
+    const err = job!.last_error as {
+      type: string;
+      message: string;
+      recovered_at: string;
+    };
+    expect(err.type).toBe("StaleJobError");
+    expect(err.message).toContain("running");
+    expect(typeof err.recovered_at).toBe("string");
+    expect(err.recovered_at.length).toBeGreaterThan(0);
+
+    const claimed = await queue.claim("w1");
+    expect(claimed).not.toBeNull();
+    expect(claimed!.id).toBe(enqueued.id);
+    expect(claimed!.status).toBe("running");
+  });
+
+  it("recoverStaleJobs leaves recent running jobs untouched", async () => {
+    const enqueued = await queue.enqueue({ jobType: "recent" });
+    await pool.query(
+      `UPDATE ${schema}.processing_jobs SET status='running', locked_by='w1', locked_at = now() WHERE id = $1`,
+      [enqueued.id],
+    );
+
+    const count = await queue.recoverStaleJobs(5 * 60 * 1000);
+    expect(count).toBe(0);
+
+    const job = await queue.getJob(enqueued.id);
+    expect(job!.status).toBe("running");
+    expect(job!.locked_by).toBe("w1");
+    expect(job!.retry_count).toBe(0);
+  });
+
+  it("recoverStaleJobs fails a stale job once retry_count reaches maxAttempts", async () => {
+    const enqueued = await queue.enqueue({ jobType: "stalemax" });
+    await pool.query(
+      `UPDATE ${schema}.processing_jobs SET status='running', locked_by='dead', locked_at = now() - interval '10 minutes', retry_count = 2 WHERE id = $1`,
+      [enqueued.id],
+    );
+
+    const count = await queue.recoverStaleJobs(5 * 60 * 1000, { maxAttempts: 3 });
+    expect(count).toBe(1);
+
+    const job = await queue.getJob(enqueued.id);
+    expect(job!.status).toBe("failed");
+    expect(job!.retry_count).toBe(3);
+    expect((job!.last_error as { type: string }).type).toBe("StaleJobError");
+
+    const notClaimable = await queue.claim("w1");
+    expect(notClaimable).toBeNull();
+  });
+
+  it("recoverStaleJobs only touches running jobs (pending/completed untouched)", async () => {
+    const pending = await queue.enqueue({ jobType: "pend" });
+    const completed = await queue.enqueue({ jobType: "done" });
+    await pool.query(
+      `UPDATE ${schema}.processing_jobs SET status='completed', completed_at = now(), locked_at = now() - interval '10 minutes' WHERE id = $1`,
+      [completed.id],
+    );
+
+    const count = await queue.recoverStaleJobs(5 * 60 * 1000);
+    expect(count).toBe(0);
+
+    const p = await queue.getJob(pending.id);
+    expect(p!.status).toBe("pending");
+    expect(p!.retry_count).toBe(0);
+    const c = await queue.getJob(completed.id);
+    expect(c!.status).toBe("completed");
+    expect(c!.retry_count).toBe(0);
+  });
+
   it("002 migration creates processing_jobs with required columns in a fresh schema", async () => {
     const tmp = schemaName("queue_mig_");
     const client = await pool.connect();
