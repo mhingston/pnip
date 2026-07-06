@@ -11,7 +11,7 @@ const goodFixtures = resolve(here, "migrations.test-fixtures", "good");
 const badFixtures = resolve(here, "migrations.test-fixtures", "bad");
 
 const CLEANUP =
-  "DROP TABLE IF EXISTS _migrations, __smoke, __fixture_smoke, __bad_table, processing_jobs, editions, prompt_versions, document_lineage CASCADE";
+  "DROP TABLE IF EXISTS _migrations, __smoke, __fixture_smoke, __bad_table, processing_jobs, discovery_events, editions, prompt_versions, document_lineage CASCADE";
 
 describe("migration runner", () => {
   let pool: PgPool;
@@ -45,6 +45,7 @@ describe("migration runner", () => {
       "004_create_prompt_versions.sql",
       "005_create_document_lineage.sql",
       "006_add_depends_on_to_processing_jobs.sql",
+      "007_create_discovery_events.sql",
     ]);
     expect(res.skipped).toEqual([]);
 
@@ -55,6 +56,7 @@ describe("migration runner", () => {
       "004_create_prompt_versions.sql",
       "005_create_document_lineage.sql",
       "006_add_depends_on_to_processing_jobs.sql",
+      "007_create_discovery_events.sql",
     ]);
 
     const r = await pool.query("SELECT to_regclass('__smoke') AS exists");
@@ -79,6 +81,11 @@ describe("migration runner", () => {
       "SELECT to_regclass('document_lineage') AS exists",
     );
     expect(lineage.rows[0].exists).not.toBeNull();
+
+    const discovery = await pool.query(
+      "SELECT to_regclass('discovery_events') AS exists",
+    );
+    expect(discovery.rows[0].exists).not.toBeNull();
   });
 
   it("is idempotent: a second runMigrations skips already-applied migrations", async () => {
@@ -92,6 +99,7 @@ describe("migration runner", () => {
       "004_create_prompt_versions.sql",
       "005_create_document_lineage.sql",
       "006_add_depends_on_to_processing_jobs.sql",
+      "007_create_discovery_events.sql",
     ]);
 
     expect(await getAppliedMigrations(pool)).toEqual([
@@ -101,6 +109,7 @@ describe("migration runner", () => {
       "004_create_prompt_versions.sql",
       "005_create_document_lineage.sql",
       "006_add_depends_on_to_processing_jobs.sql",
+      "007_create_discovery_events.sql",
     ]);
   });
 

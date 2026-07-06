@@ -55,6 +55,20 @@ export interface LineageEdge {
   created_at: Date;
 }
 
+export interface DiscoveryEvent {
+  id: string;
+  edition_id: string;
+  miniflux_entry_id: string;
+  feed_id: string;
+  title: string | null;
+  url: string;
+  hash: string | null;
+  published_at: Date | null;
+  discovered_at: Date;
+  metadata: unknown | null;
+  created_at: Date;
+}
+
 export interface EntityRef {
   type: string;
   id: string;
@@ -104,6 +118,19 @@ export interface Database {
     target_type: string;
     target_id: string;
     relation: string;
+    metadata: unknown | null;
+    created_at: Generated<Date>;
+  };
+  discovery_events: {
+    id: Generated<string>;
+    edition_id: string;
+    miniflux_entry_id: string;
+    feed_id: string;
+    title: string | null;
+    url: string;
+    hash: string | null;
+    published_at: Date | null;
+    discovered_at: Generated<Date>;
     metadata: unknown | null;
     created_at: Generated<Date>;
   };
