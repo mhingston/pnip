@@ -149,6 +149,104 @@ export interface Database {
     metadata: unknown;
     created_at: Generated<Date>;
   };
+  document_chunks: {
+    id: string;
+    document_id: string;
+    section_id: string;
+    chunk_sequence: number;
+    content_text: string;
+    token_count: number;
+    start_offset: number;
+    end_offset: number;
+    paragraph_start: number;
+    paragraph_end: number;
+    timestamp_start: number | null;
+    timestamp_end: number | null;
+    created_at: Generated<Date>;
+  };
+  summaries: {
+    id: Generated<string>;
+    chunk_id: string;
+    document_id: string;
+    content: string;
+    prompt_id: string;
+    prompt_version: number;
+    model: string;
+    provider: string;
+    input_hash: string;
+    created_at: Generated<Date>;
+  };
+  summary_citations: {
+    id: Generated<string>;
+    summary_id: string;
+    chunk_id: string;
+    claim_text: string;
+    claim_order: number;
+    created_at: Generated<Date>;
+  };
+  entities: {
+    id: Generated<string>;
+    chunk_id: string;
+    document_id: string;
+    name: string;
+    entity_type: string;
+    prompt_id: string;
+    prompt_version: number;
+    model: string;
+    provider: string;
+    input_hash: string;
+    created_at: Generated<Date>;
+  };
+  entity_mentions: {
+    id: Generated<string>;
+    entity_id: string;
+    chunk_id: string;
+    mention_text: string;
+    created_at: Generated<Date>;
+  };
+  topics: {
+    id: Generated<string>;
+    chunk_id: string;
+    document_id: string;
+    topic: string;
+    confidence: number;
+    prompt_id: string;
+    prompt_version: number;
+    model: string;
+    provider: string;
+    input_hash: string;
+    created_at: Generated<Date>;
+  };
+  topic_assignments: {
+    id: Generated<string>;
+    topic_id: string;
+    chunk_id: string;
+    relevance: number;
+    created_at: Generated<Date>;
+  };
+  quality_classifications: {
+    id: Generated<string>;
+    chunk_id: string;
+    document_id: string;
+    label: string;
+    confidence: number;
+    reasoning: string | null;
+    prompt_id: string;
+    prompt_version: number;
+    model: string;
+    provider: string;
+    input_hash: string;
+    created_at: Generated<Date>;
+  };
+  embeddings: {
+    id: Generated<string>;
+    chunk_id: string;
+    vector: unknown;
+    model: string;
+    provider: string;
+    input_hash: string;
+    created_at: Generated<Date>;
+  };
   discovery_events: {
     id: Generated<string>;
     edition_id: string;

@@ -11,7 +11,7 @@ const goodFixtures = resolve(here, "migrations.test-fixtures", "good");
 const badFixtures = resolve(here, "migrations.test-fixtures", "bad");
 
 const CLEANUP =
-  "DROP TABLE IF EXISTS _migrations, __smoke, __fixture_smoke, __bad_table, processing_jobs, discovery_events, editions, prompt_versions, document_lineage, documents, document_sections CASCADE";
+  "DROP TABLE IF EXISTS _migrations, __smoke, __fixture_smoke, __bad_table, embeddings, quality_classifications, topic_assignments, topics, entity_mentions, entities, summary_citations, summaries, processing_jobs, discovery_events, editions, prompt_versions, document_lineage, documents, document_sections, document_chunks CASCADE";
 
 describe("migration runner", () => {
   let pool: PgPool;
@@ -48,6 +48,13 @@ describe("migration runner", () => {
       "007_create_discovery_events.sql",
       "008_create_documents.sql",
       "009_create_document_sections.sql",
+      "010_create_document_chunks.sql",
+      "011_create_pgvector_extension.sql",
+      "012_create_summaries.sql",
+      "013_create_entities.sql",
+      "014_create_topics.sql",
+      "015_create_quality_classifications.sql",
+      "016_create_embeddings.sql",
     ]);
     expect(res.skipped).toEqual([]);
 
@@ -61,6 +68,13 @@ describe("migration runner", () => {
       "007_create_discovery_events.sql",
       "008_create_documents.sql",
       "009_create_document_sections.sql",
+      "010_create_document_chunks.sql",
+      "011_create_pgvector_extension.sql",
+      "012_create_summaries.sql",
+      "013_create_entities.sql",
+      "014_create_topics.sql",
+      "015_create_quality_classifications.sql",
+      "016_create_embeddings.sql",
     ]);
 
     const r = await pool.query("SELECT to_regclass('__smoke') AS exists");
@@ -106,6 +120,13 @@ describe("migration runner", () => {
       "007_create_discovery_events.sql",
       "008_create_documents.sql",
       "009_create_document_sections.sql",
+      "010_create_document_chunks.sql",
+      "011_create_pgvector_extension.sql",
+      "012_create_summaries.sql",
+      "013_create_entities.sql",
+      "014_create_topics.sql",
+      "015_create_quality_classifications.sql",
+      "016_create_embeddings.sql",
     ]);
 
     expect(await getAppliedMigrations(pool)).toEqual([
@@ -118,6 +139,13 @@ describe("migration runner", () => {
       "007_create_discovery_events.sql",
       "008_create_documents.sql",
       "009_create_document_sections.sql",
+      "010_create_document_chunks.sql",
+      "011_create_pgvector_extension.sql",
+      "012_create_summaries.sql",
+      "013_create_entities.sql",
+      "014_create_topics.sql",
+      "015_create_quality_classifications.sql",
+      "016_create_embeddings.sql",
     ]);
   });
 
