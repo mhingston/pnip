@@ -1,4 +1,4 @@
-import { Kysely } from "kysely";
+import { Kysely, sql } from "kysely";
 import type { Database } from "../database/kysely.js";
 
 export interface DocumentSectionRow {
@@ -26,6 +26,11 @@ export interface CreateSectionInput {
 export interface SectionRepository {
   createBatch(inputs: CreateSectionInput[]): Promise<DocumentSectionRow[]>;
   getByDocumentId(documentId: string): Promise<DocumentSectionRow[]>;
+  getMaxOrder(documentId: string): Promise<number>;
+  getByDocumentIdAndType(
+    documentId: string,
+    sectionType: string,
+  ): Promise<DocumentSectionRow[]>;
 }
 
 export function createSectionRepository(db: Kysely<Database>): SectionRepository {
@@ -42,6 +47,7 @@ export function createSectionRepository(db: Kysely<Database>): SectionRepository
             section_type: i.type ?? "paragraph",
             content_markdown: i.contentMarkdown ?? null,
             content_text: i.contentText ?? null,
+            metadata: i.metadata ? JSON.stringify(i.metadata) : "{}",
           })),
         )
         .returningAll()
@@ -53,6 +59,25 @@ export function createSectionRepository(db: Kysely<Database>): SectionRepository
         .selectFrom("document_sections")
         .selectAll()
         .where("document_id", "=", documentId)
+        .orderBy("section_order", "asc")
+        .execute();
+    },
+
+    async getMaxOrder(documentId) {
+      const row = await db
+        .selectFrom("document_sections")
+        .where("document_id", "=", documentId)
+        .select(sql<number>`coalesce(max(section_order), 0)`.as("max_order"))
+        .executeTakeFirst();
+      return Number(row?.max_order ?? 0);
+    },
+
+    async getByDocumentIdAndType(documentId, sectionType) {
+      return db
+        .selectFrom("document_sections")
+        .selectAll()
+        .where("document_id", "=", documentId)
+        .where("section_type", "=", sectionType)
         .orderBy("section_order", "asc")
         .execute();
     },

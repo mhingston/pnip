@@ -69,14 +69,15 @@ async function main(): Promise<number> {
       const registry = createPluginRegistry();
       registry.register(createArticlePlugin());
 
+      const queue = createProcessingJobQueue(db);
       const expandWorker = createExpandDocumentWorker({
         docRepo,
         sectionRepo,
         pluginRegistry: registry,
         provenanceRepo,
+        queue,
       });
 
-      const queue = createProcessingJobQueue(db);
       const runtime = createWorkerRuntime({
         db,
         queue,

@@ -153,4 +153,55 @@ describe("SectionRepository", () => {
       ]),
     ).rejects.toThrow();
   });
+
+  it("createBatch stores metadata as JSONB and returns it", async () => {
+    const sections = await sectionRepo.createBatch([
+      {
+        documentId,
+        order: 0,
+        type: "reddit_comment",
+        contentMarkdown: "comment body",
+        metadata: { redditCommentId: "cmt-abc" },
+      },
+    ]);
+    expect(sections[0].metadata).toEqual({ redditCommentId: "cmt-abc" });
+    const fetched = await sectionRepo.getByDocumentId(documentId);
+    expect(fetched[0].metadata).toEqual({ redditCommentId: "cmt-abc" });
+  });
+
+  it("createBatch defaults metadata to {} when not provided", async () => {
+    const sections = await sectionRepo.createBatch([
+      { documentId, order: 0, contentMarkdown: "no meta" },
+    ]);
+    expect(sections[0].metadata).toEqual({});
+  });
+
+  it("getMaxOrder returns the max section_order for a document", async () => {
+    await sectionRepo.createBatch([
+      { documentId, order: 0 },
+      { documentId, order: 5 },
+      { documentId, order: 2 },
+    ]);
+    expect(await sectionRepo.getMaxOrder(documentId)).toBe(5);
+  });
+
+  it("getMaxOrder returns 0 when the document has no sections", async () => {
+    expect(await sectionRepo.getMaxOrder(documentId)).toBe(0);
+  });
+
+  it("getByDocumentIdAndType filters by section_type", async () => {
+    await sectionRepo.createBatch([
+      { documentId, order: 0, type: "reddit_submission", contentMarkdown: "sub" },
+      { documentId, order: 1, type: "reddit_comment", contentMarkdown: "c1" },
+      { documentId, order: 2, type: "reddit_comment", contentMarkdown: "c2" },
+    ]);
+    const comments = await sectionRepo.getByDocumentIdAndType(
+      documentId,
+      "reddit_comment",
+    );
+    expect(comments).toHaveLength(2);
+    expect(comments[0].section_type).toBe("reddit_comment");
+    expect(comments[1].section_type).toBe("reddit_comment");
+    expect(comments.map((s) => s.section_order)).toEqual([1, 2]);
+  });
 });
