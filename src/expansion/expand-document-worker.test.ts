@@ -221,65 +221,6 @@ describe("ExpandDocumentWorker", () => {
     ).rejects.toThrow(/invalid target/i);
   });
 
-  it("does NOT enqueue a refresh_reddit_comments job after a successful reddit expansion", async () => {
-    const plugin = fakePlugin("reddit", true, "reddit");
-    const pluginRegistry: PluginRegistry = {
-      register: vi.fn(),
-      select: vi.fn(() => plugin),
-    };
-
-    const docRepo: DocumentRepository = {
-      create: vi.fn().mockResolvedValue({ id: "doc-1", edition_id: "edition-1", source_url: "https://www.reddit.com/r/test/comments/1upftp9/title/" }),
-      getById: vi.fn(),
-      getByEdition: vi.fn(),
-      getByEditionAndUrl: vi.fn().mockResolvedValue(undefined),
-    };
-
-    const sectionRepo: SectionRepository = {
-      createBatch: vi.fn().mockResolvedValue([]),
-      getByDocumentId: vi.fn(),
-      getMaxOrder: vi.fn(),
-      getByDocumentIdAndType: vi.fn(),
-    };
-
-    const provenanceRepo: ProvenanceRepository = {
-      recordLineage: vi.fn().mockResolvedValue(undefined),
-      recordLineageBatch: vi.fn(),
-      getSources: vi.fn(),
-      getConsumers: vi.fn(),
-      resolveCitations: vi.fn(),
-      resolveToDocuments: vi.fn(),
-    };
-
-    const queue = fakeQueue();
-
-    const worker = createExpandDocumentWorker({
-      docRepo,
-      sectionRepo,
-      pluginRegistry,
-      provenanceRepo,
-      queue,
-    });
-
-    const redditUrl = "https://www.reddit.com/r/test/comments/1upftp9/title/";
-    const outcome = await worker.execute(
-      makeJob({ target: { discoveryEventId: "event-1", url: redditUrl } }),
-      { db: {} as any, logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn(), child: vi.fn() } as any },
-    );
-
-    expect(docRepo.create).toHaveBeenCalled();
-    expect(queue.enqueue).not.toHaveBeenCalled();
-    expect(outcome).toEqual({
-      childJobs: [
-        {
-          jobType: "chunk_document",
-          editionId: "edition-1",
-          target: { documentId: "doc-1" },
-        },
-      ],
-    });
-  });
-
   it("on RedditRateLimitError re-enqueues expand_document with delayed nextEligibleAt and returns {}", async () => {
     const plugin: ExpansionPlugin = {
       name: "reddit",

@@ -1497,53 +1497,30 @@ One chunk may support multiple claims.
 
 # 26. Reddit Expansion
 
-Reddit differs from other source types.
+Reddit differs from other source types because the extraction source is an
+Atom RSS feed (Reddit JSON API is 403-blocked by Reddit for Jina-scraped
+URLs, and Reddit requires structured comment metadata — scores, sticky and
+moderator flags — that scraping cannot provide).
 
-Initial expansion includes:
+Initial expansion captures:
 
-* submission
-* title
-* body
-* metadata
+* submission (title, body, author, score, subreddit, created timestamp)
+* top-N comments via the initial RSS fetch
 
-Comment enrichment continues while the Edition is mutable.
+To keep chunks tractable on threads with hundreds of comments, the initial
+expansion caps the comment set at 25 using the top-N strategy in
+`selectComments` (`src/expansion/comment-selection.ts`). The plugin does not
+perform any further comment fetching: the Edition contains whatever the
+initial RSS fetch returned.
 
-> **Deferred (M2-S9b).** Comment refresh is currently deferred — the initial RSS fetch already captures the submission and all current comments at discovery time, so refresh jobs add little value at high cost. The 30m/2h/6h schedule below is infeasible under Reddit's RSS rate limits (~1 req/50s, ~1,700 req/day): hundreds of threads/day would each want four fetches, far exceeding the daily budget. The refresh infrastructure (`refresh-reddit-comments-worker.ts`, `comment-selection.ts`) remains in the codebase for future reactivation if a higher-rate Reddit access method becomes available. Initial expansion now caps comment sections at 25 via `selectComments` (strategy "top-n").
-
-Refresh schedule:
-
-```
-30 minutes
-
-↓
-
-2 hours
-
-↓
-
-6 hours
-
-↓
-
-Immediately before publication
-
-↓
-
-Stop
-```
-
-Each refresh appends newly selected comments without duplicating existing ones.
-
-Comment selection is configurable.
-
-Supported strategies include:
-
-* Top N
-* Minimum score
-* Moderator comments
-* Stickied comments
-
-Publication immediately terminates future refreshes.
+Comment refresh is **not** performed. The refresh infrastructure
+(30m / 2h / 6h schedule, dedup, top-N selection) was retired because
+Reddit's RSS rate limit (~1 req/50s, ~1,700 req/day) makes timed refresh
+infeasible across hundreds of threads/day — hundreds of threads × four
+fetches each far exceeds the daily budget. If a higher-rate Reddit access
+method becomes available in the future, refresh can be reintroduced as a
+new worker without changing the schema (sections already support an
+append-only `reddit_comment` model).
 
 ---
 
@@ -1802,8 +1779,6 @@ document_sections
 document_chunks
 
 document_lineage
-
-document_attachments
 
 summaries
 
@@ -3007,8 +2982,8 @@ of the same day attach to the same edition.
 * Fabric integration as the default extraction engine for Article/YouTube/Podcast; MarkItDown for PDF; native extraction for Reddit (§18) — see Expansion Plugin Extraction Map ✓
 * Five plugins: Article, YouTube, Podcast, PDF, Reddit (§19) ✓
 * Sectioning (§16, §22) and immutable Canonical Document persistence (§20) ✓
-* Expansion metadata, document lineage (§20, §21, §35) ✓ (attachment records deferred — no M2 plugin emits attachments yet)
-* Reddit comment refresh scheduling — built (30m → 2h → 6h schedule + dedup + comment selection) then **deferred**: the initial RSS fetch already captures all current comments, and Reddit's RSS rate limit (~1 req/50s) makes timed refresh infeasible across hundreds of threads/day. Infrastructure retained for future reactivation. Initial expansion caps comments at 25. (§26)
+* Expansion metadata, document lineage (§20, §21, §35) ✓ (no document attachments emitted by any M2 plugin; `document_attachments` is not in the schema — see §35)
+* Reddit comment refresh: not implemented (§26). Initial expansion caps comments at 25 via `selectComments` (top-N).
 * Idempotency: canonical document is not recreated on rerun (§53) ✓
 * Reddit rate-limit handling: `RedditRateLimitError` thrown on 429/exhausted budget; expand worker re-enqueues the job with a delayed `nextEligibleAt` ✓
 * CLI: all 5 plugins wired into `digestive process` in correct first-match order (YouTube → Reddit → Podcast → PDF → Article) ✓

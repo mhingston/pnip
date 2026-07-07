@@ -10,8 +10,14 @@ const realDir = resolve(here, "migrations");
 const goodFixtures = resolve(here, "migrations.test-fixtures", "good");
 const badFixtures = resolve(here, "migrations.test-fixtures", "bad");
 
-const CLEANUP =
-  "DROP TABLE IF EXISTS _migrations, __smoke, __fixture_smoke, __bad_table, embeddings, quality_classifications, topic_assignments, topics, entity_mentions, entities, summary_citations, summaries, processing_jobs, discovery_events, editions, prompt_versions, document_lineage, documents, document_sections, document_chunks CASCADE";
+async function dropAllTablesInPublicSchema(pool: PgPool): Promise<void> {
+  const result = await pool.query<{ tablename: string }>(
+    "SELECT tablename FROM pg_tables WHERE schemaname = 'public'",
+  );
+  if (result.rows.length === 0) return;
+  const names = result.rows.map((r) => `"${r.tablename}"`).join(", ");
+  await pool.query(`DROP TABLE IF EXISTS ${names} CASCADE`);
+}
 
 describe("migration runner", () => {
   let pool: PgPool;
@@ -25,11 +31,11 @@ describe("migration runner", () => {
   });
 
   beforeEach(async () => {
-    await pool.query(CLEANUP);
+    await dropAllTablesInPublicSchema(pool);
   });
 
   afterEach(async () => {
-    await pool.query(CLEANUP);
+    await dropAllTablesInPublicSchema(pool);
   });
 
   afterAll(async () => {
