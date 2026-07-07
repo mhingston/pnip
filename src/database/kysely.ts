@@ -14,6 +14,7 @@ export interface Edition {
   published_at: Date | null;
   failed_at: Date | null;
   failure_reason: string | null;
+  cluster_stories_enqueued_at: Date | null;
   metadata: unknown | null;
 }
 
@@ -290,6 +291,63 @@ export interface Database {
     completed_at: Date | null;
     created_at: Generated<Date>;
     updated_at: Generated<Date>;
+  };
+  markdown_digests: {
+    id: Generated<string>;
+    edition_id: string;
+    content: string;
+    story_count: Generated<number>;
+    document_count: Generated<number>;
+    citation_count: Generated<number>;
+    created_at: Generated<Date>;
+  };
+  email_digests: {
+    id: Generated<string>;
+    edition_id: string;
+    subject: string;
+    html_content: string;
+    text_content: string;
+    from_address: string;
+    to_addresses: unknown;
+    provider_kind: Generated<string>;
+    delivery_status: Generated<string>;
+    attempt_count: Generated<number>;
+    provider_response: unknown | null;
+    provider_message_id: string | null;
+    failure_reason: string | null;
+    attempted_at: Date | null;
+    completed_at: Date | null;
+    created_at: Generated<Date>;
+  };
+  notebooks: {
+    id: Generated<string>;
+    edition_id: string;
+    notebook_external_id: string;
+    title: string;
+    url: string;
+    source_count: Generated<number>;
+    status: Generated<string>;
+    provider_response: unknown | null;
+    created_at: Generated<Date>;
+    completed_at: Date | null;
+  };
+  podcasts: {
+    id: Generated<string>;
+    edition_id: string;
+    notebook_id: string;
+    artifact_external_id: string;
+    url: string | null;
+    title: string | null;
+    duration_seconds: number | null;
+    format: string | null;
+    language: string | null;
+    status: Generated<string>;
+    local_path: string | null;
+    provider_response: unknown | null;
+    failure_reason: string | null;
+    started_at: Date | null;
+    completed_at: Date | null;
+    created_at: Generated<Date>;
   };
   discovery_events: {
     id: Generated<string>;

@@ -1,0 +1,509 @@
+import type { Logger } from "../../logging/logger.js";
+import type { Kysely } from "kysely";
+import type { Database, Edition } from "../../database/kysely.js";
+import type { EditionRepository } from "../../editions/edition-repository.js";
+import type {
+  MarkdownDigestRepository,
+  MarkdownDigestRow,
+} from "../markdown/markdown-digest-repository.js";
+import type { DocumentRepository } from "../../expansion/document-repository.js";
+import type {
+  NotebookRepository,
+  NotebookRow,
+} from "./notebook-repository.js";
+import { NotebookConflictError } from "./notebook-repository.js";
+import type {
+  AddSourceInput,
+  CreateNotebookResult,
+  NotebookLmClient,
+} from "./notebooklm-client.js";
+import { NotebookLmError } from "./notebooklm-client.js";
+
+export interface NotebookServiceConfig {
+  sourceWaitTimeoutSec?: number;
+  sourcePollIntervalMs?: number;
+  titleTemplate?: (publicationDate: string) => string;
+}
+
+export interface NotebookServiceDeps {
+  db: Kysely<Database>;
+  editionRepo: EditionRepository;
+  markdownDigestRepo: MarkdownDigestRepository;
+  docRepo: DocumentRepository;
+  notebookRepo: NotebookRepository;
+  notebookLm: NotebookLmClient;
+  config?: NotebookServiceConfig;
+  logger?: Logger;
+}
+
+export interface NotebookServiceResult {
+  notebookId: string;
+  edition: Edition;
+  notebookExternalId: string;
+  url: string;
+  sourceCount: number;
+  status: "ready" | "pending" | "failed";
+  alreadyExisted: boolean;
+  failureReason: string | null;
+  mode: "wait" | "fire-and-forget";
+}
+
+export interface GenerateNotebookInput {
+  editionId: string;
+  wait?: boolean;
+}
+
+export interface NotebookService {
+  generate(input: GenerateNotebookInput): Promise<NotebookServiceResult>;
+  generateForDate(input: {
+    editionDate: string | Date;
+    wait?: boolean;
+  }): Promise<NotebookServiceResult>;
+}
+
+export interface UploadedSource {
+  sourceExternalId: string;
+  docId: string | null;
+  displayName: string;
+}
+
+export interface NotebookProviderState {
+  phase: "pending" | "ready" | "failed";
+  createNotebook?: CreateNotebookResult;
+  uploadedSources?: UploadedSource[];
+  error?: string;
+}
+
+function formatPublicationDate(value: Date | string): string {
+  if (typeof value === "string") return value.slice(0, 10);
+  const y = value.getFullYear();
+  const m = String(value.getMonth() + 1).padStart(2, "0");
+  const d = String(value.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+function rowToResult(
+  row: NotebookRow,
+  edition: Edition,
+  options: {
+    alreadyExisted: boolean;
+    mode: "wait" | "fire-and-forget";
+  },
+): NotebookServiceResult {
+  const state = parseProviderState(row.provider_response);
+  return {
+    notebookId: row.id,
+    edition,
+    notebookExternalId: row.notebook_external_id,
+    url: row.url,
+    sourceCount: row.source_count,
+    status: row.status as "ready" | "pending" | "failed",
+    alreadyExisted: options.alreadyExisted,
+    failureReason: state?.error ?? null,
+    mode: options.mode,
+  };
+}
+
+function localPathFromMetadata(metadata: unknown): string | undefined {
+  if (!metadata || typeof metadata !== "object") return undefined;
+  const candidate = (metadata as { local_path?: unknown }).local_path;
+  return typeof candidate === "string" && candidate.length > 0
+    ? candidate
+    : undefined;
+}
+
+function failureReasonOf(err: unknown): string {
+  if (err instanceof NotebookLmError) return err.message;
+  if (err instanceof Error) return err.message;
+  return String(err);
+}
+
+function parseProviderState(raw: unknown): NotebookProviderState | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Partial<NotebookProviderState> & {
+    uploaded_sources?: Array<{
+      source_external_id?: unknown;
+      doc_id?: unknown;
+      display_name?: unknown;
+    }>;
+  };
+  if (!r.createNotebook) return null;
+  const uploaded = Array.isArray(r.uploadedSources)
+    ? r.uploadedSources
+    : Array.isArray(r.uploaded_sources)
+      ? r.uploaded_sources.map((s) => ({
+          sourceExternalId:
+            typeof s.source_external_id === "string"
+              ? s.source_external_id
+              : "",
+          docId: typeof s.doc_id === "string" ? s.doc_id : null,
+          displayName:
+            typeof s.display_name === "string"
+              ? s.display_name
+              : "Untitled",
+        }))
+      : [];
+  return {
+    phase: r.phase ?? "pending",
+    createNotebook: r.createNotebook as CreateNotebookResult,
+    uploadedSources: uploaded,
+    error: r.error,
+  };
+}
+
+async function tryCreateForEdition(
+  deps: { notebookRepo: NotebookRepository },
+  input: Parameters<NotebookRepository["createForEdition"]>[0],
+): Promise<{ row: NotebookRow; created: boolean }> {
+  try {
+    const row = await deps.notebookRepo.createForEdition(input);
+    return { row, created: true };
+  } catch (err) {
+    if (err instanceof NotebookConflictError) {
+      const existing = await deps.notebookRepo.getByEdition(input.editionId);
+      if (existing) return { row: existing, created: false };
+    }
+    throw err;
+  }
+}
+
+export function createNotebookService(
+  deps: NotebookServiceDeps,
+): NotebookService {
+  function resolveEdition(editionId: string): Promise<Edition> {
+    return deps.editionRepo.getById(editionId).then((ed) => {
+      if (!ed) throw new Error(`edition not found: ${editionId}`);
+      return ed;
+    });
+  }
+
+  async function markFailed(input: {
+    row: NotebookRow | null;
+    createdResult: CreateNotebookResult | null;
+    editionId: string;
+    reason: string;
+  }): Promise<void> {
+    if (input.row) {
+      await deps.notebookRepo.updateDelivery(input.row.id, {
+        status: "failed",
+        completedAt: new Date(),
+        providerResponse: {
+          phase: "failed",
+          error: input.reason,
+          createNotebook: input.createdResult ?? undefined,
+        } satisfies NotebookProviderState,
+      });
+      return;
+    }
+    try {
+      await deps.notebookRepo.createForEdition({
+        editionId: input.editionId,
+        notebookExternalId:
+          input.createdResult?.notebookExternalId ?? "unknown",
+        title: input.createdResult?.title ?? "Unknown",
+        url:
+          input.createdResult?.url ??
+          "https://notebooklm.google.com/notebook/unknown",
+        status: "failed",
+        sourceCount: 0,
+        providerResponse: {
+          phase: "failed",
+          error: input.reason,
+        } satisfies NotebookProviderState,
+      });
+    } catch (err) {
+      if (err instanceof NotebookConflictError) {
+        const after = await deps.notebookRepo.getByEdition(input.editionId);
+        if (after) {
+          await deps.notebookRepo.updateDelivery(after.id, {
+            status: "failed",
+            completedAt: new Date(),
+            providerResponse: {
+              phase: "failed",
+              error: input.reason,
+            } satisfies NotebookProviderState,
+          });
+        }
+        return;
+      }
+      throw err;
+    }
+  }
+
+  async function createAndUpload(input: {
+    editionId: string;
+  }): Promise<{
+    row: NotebookRow;
+    createNotebook: CreateNotebookResult;
+    uploadedSources: UploadedSource[];
+    recovered: boolean;
+  }> {
+    const markdown: MarkdownDigestRow | undefined =
+      await deps.markdownDigestRepo.getByEdition(input.editionId);
+    if (!markdown) {
+      throw new Error(
+        `no markdown digest found for edition ${input.editionId}; ` +
+          `run "digestive generate-digest --date ${formatPublicationDate((await deps.editionRepo.getById(input.editionId))!.publication_date)}" first`,
+      );
+    }
+
+    const documents = await deps.docRepo.getByEdition(input.editionId);
+    const uploadableDocs = documents.filter(
+      (d) =>
+        (d.canonical_url !== null && d.canonical_url.length > 0) ||
+        (d.source_url !== null && d.source_url.length > 0),
+    );
+    if (uploadableDocs.length === 0) {
+      throw new Error(
+        `edition ${input.editionId} has no curated source documents with uploadable URLs`,
+      );
+    }
+
+    const edition = await deps.editionRepo.getById(input.editionId);
+    if (!edition) throw new Error(`edition not found: ${input.editionId}`);
+    const publicationDate = formatPublicationDate(edition.publication_date);
+    const title = deps.config?.titleTemplate
+      ? deps.config.titleTemplate(publicationDate)
+      : `Daily Digest — ${publicationDate}`;
+
+    const createNotebook = await deps.notebookLm.createNotebook({ title });
+
+    const inserted = await tryCreateForEdition(deps, {
+      editionId: input.editionId,
+      notebookExternalId: createNotebook.notebookExternalId,
+      title: createNotebook.title,
+      url: createNotebook.url,
+      status: "pending",
+      sourceCount: 0,
+      providerResponse: {
+        phase: "pending",
+        createNotebook,
+        uploadedSources: [],
+      } satisfies NotebookProviderState,
+    });
+    let row = inserted.row;
+
+    const uploadedSources: UploadedSource[] = [];
+    for (const doc of uploadableDocs) {
+      const localPath =
+        doc.source_type === "pdf"
+          ? localPathFromMetadata(doc.metadata)
+          : undefined;
+      const url = doc.canonical_url ?? doc.source_url;
+      if (!url && !localPath) continue;
+      const sourceInput: AddSourceInput = localPath
+        ? {
+            notebookExternalId: createNotebook.notebookExternalId,
+            filePath: localPath,
+            displayName: doc.title ?? "Untitled",
+          }
+        : {
+            notebookExternalId: createNotebook.notebookExternalId,
+            url,
+            displayName: doc.title ?? "Untitled",
+          };
+      const src = await deps.notebookLm.addSource(sourceInput);
+      uploadedSources.push({
+        sourceExternalId: src.sourceExternalId,
+        docId: doc.id,
+        displayName: doc.title ?? "Untitled",
+      });
+    }
+
+    const digestSource = await deps.notebookLm.addSource({
+      notebookExternalId: createNotebook.notebookExternalId,
+      markdownContent: markdown.content,
+      displayName: `Daily Digest ${publicationDate}`,
+    });
+    uploadedSources.push({
+      sourceExternalId: digestSource.sourceExternalId,
+      docId: null,
+      displayName: `Daily Digest ${publicationDate}`,
+    });
+
+    row = await deps.notebookRepo.updateDelivery(row.id, {
+      sourceCount: uploadedSources.length,
+      providerResponse: {
+        phase: "pending",
+        createNotebook,
+        uploadedSources,
+      } satisfies NotebookProviderState,
+    });
+
+    return { row, createNotebook, uploadedSources, recovered: !inserted.created };
+  }
+
+  async function pollUntilReady(input: {
+    row: NotebookRow;
+    uploadedSources: UploadedSource[];
+  }): Promise<NotebookRow> {
+    for (const src of input.uploadedSources) {
+      const waited = await deps.notebookLm.waitForSource({
+        notebookExternalId: input.row.notebook_external_id,
+        sourceExternalId: src.sourceExternalId,
+        timeoutSec: deps.config?.sourceWaitTimeoutSec,
+        pollIntervalMs: deps.config?.sourcePollIntervalMs,
+      });
+      if (waited.status === "error") {
+        const reason = `source "${src.displayName}" (${src.sourceExternalId}) failed to ingest`;
+        deps.logger?.error("notebook source failed", {
+          editionId: input.row.edition_id,
+          notebookId: input.row.id,
+          sourceExternalId: src.sourceExternalId,
+          displayName: src.displayName,
+        });
+        return deps.notebookRepo.updateDelivery(input.row.id, {
+          status: "failed",
+          sourceCount: input.row.source_count || input.uploadedSources.length,
+          completedAt: new Date(),
+          providerResponse: {
+            phase: "failed",
+            error: reason,
+            createNotebook: parseProviderState(input.row.provider_response)
+              ?.createNotebook,
+            uploadedSources: input.uploadedSources,
+          } satisfies NotebookProviderState,
+        });
+      }
+      if (waited.status === "timeout") {
+        const reason = `source "${src.displayName}" (${src.sourceExternalId}) did not finish ingesting within the timeout`;
+        deps.logger?.error("notebook source timed out", {
+          editionId: input.row.edition_id,
+          notebookId: input.row.id,
+          sourceExternalId: src.sourceExternalId,
+          displayName: src.displayName,
+        });
+        return deps.notebookRepo.updateDelivery(input.row.id, {
+          status: "failed",
+          sourceCount: input.row.source_count || input.uploadedSources.length,
+          completedAt: new Date(),
+          providerResponse: {
+            phase: "failed",
+            error: reason,
+            createNotebook: parseProviderState(input.row.provider_response)
+              ?.createNotebook,
+            uploadedSources: input.uploadedSources,
+          } satisfies NotebookProviderState,
+        });
+      }
+    }
+
+    return deps.notebookRepo.updateDelivery(input.row.id, {
+      status: "ready",
+      sourceCount: input.row.source_count || input.uploadedSources.length,
+      completedAt: new Date(),
+      providerResponse: {
+        phase: "ready",
+        createNotebook: parseProviderState(input.row.provider_response)
+          ?.createNotebook,
+        uploadedSources: input.uploadedSources,
+      } satisfies NotebookProviderState,
+    });
+  }
+
+  async function generate(
+    input: GenerateNotebookInput,
+  ): Promise<NotebookServiceResult> {
+    const edition = await resolveEdition(input.editionId);
+    const wait = input.wait ?? false;
+    const mode: "wait" | "fire-and-forget" = wait ? "wait" : "fire-and-forget";
+
+    const existing = await deps.notebookRepo.getByEdition(input.editionId);
+    if (existing && existing.status === "ready") {
+      deps.logger?.info(
+        "notebook already ready for edition; idempotent return",
+        { editionId: input.editionId, notebookId: existing.id },
+      );
+      return rowToResult(existing, edition, { alreadyExisted: true, mode });
+    }
+
+    if (existing && existing.status === "pending" && !wait) {
+      deps.logger?.info(
+        "notebook already pending for edition; fire-and-forget no-op",
+        { editionId: input.editionId, notebookId: existing.id },
+      );
+      return rowToResult(existing, edition, { alreadyExisted: true, mode });
+    }
+
+    let created: {
+      row: NotebookRow;
+      createNotebook: CreateNotebookResult;
+      uploadedSources: UploadedSource[];
+      recovered: boolean;
+    };
+
+    try {
+      if (existing && existing.status === "pending" && wait) {
+        const state = parseProviderState(existing.provider_response);
+        if (!state || !state.createNotebook || !state.uploadedSources) {
+          throw new Error(
+            `notebook row for edition ${input.editionId} is in 'pending' state but has no provider_response with uploaded sources; delete the row and re-run`,
+          );
+        }
+        created = {
+          row: existing,
+          createNotebook: state.createNotebook,
+          uploadedSources: state.uploadedSources,
+          recovered: true,
+        };
+      } else {
+        if (existing && existing.status === "failed") {
+          await deps.notebookRepo.deleteByEdition(input.editionId);
+        }
+        created = await createAndUpload({
+          editionId: input.editionId,
+        });
+      }
+    } catch (err) {
+      const reason = failureReasonOf(err);
+      await markFailed({
+        row: existing ?? null,
+        createdResult: null,
+        editionId: input.editionId,
+        reason,
+      });
+      throw err;
+    }
+
+    if (!wait) {
+      deps.logger?.info("notebook sources uploaded; fire-and-forget", {
+        editionId: input.editionId,
+        notebookId: created.row.id,
+        sourceCount: created.uploadedSources.length,
+        recovered: created.recovered,
+      });
+      return rowToResult(created.row, edition, {
+        alreadyExisted: created.recovered,
+        mode,
+      });
+    }
+
+    const updated = await pollUntilReady({
+      row: created.row,
+      uploadedSources: created.uploadedSources,
+    });
+
+    deps.logger?.info("notebook ready", {
+      editionId: input.editionId,
+      notebookId: updated.id,
+      sourceCount: updated.source_count,
+      recovered: created.recovered,
+    });
+
+    return rowToResult(updated, edition, {
+      alreadyExisted: created.recovered,
+      mode,
+    });
+  }
+
+  return {
+    async generateForDate({ editionDate, wait }) {
+      const edition = await deps.editionRepo.getByDate(editionDate);
+      if (!edition) {
+        throw new Error(`no edition found for date ${String(editionDate)}`);
+      }
+      return generate({ editionId: edition.id, wait });
+    },
+    generate,
+  };
+}

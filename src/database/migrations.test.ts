@@ -64,6 +64,10 @@ describe("migration runner", () => {
       "017_create_story_clusters.sql",
       "018_create_document_enrichment_status.sql",
       "019_add_cluster_stories_enqueued_at_to_editions.sql",
+      "020_create_markdown_digests.sql",
+      "021_create_email_digests.sql",
+      "022_create_notebooks.sql",
+      "023_create_podcasts.sql",
     ]);
     expect(res.skipped).toEqual([]);
 
@@ -87,6 +91,10 @@ describe("migration runner", () => {
       "017_create_story_clusters.sql",
       "018_create_document_enrichment_status.sql",
       "019_add_cluster_stories_enqueued_at_to_editions.sql",
+      "020_create_markdown_digests.sql",
+      "021_create_email_digests.sql",
+      "022_create_notebooks.sql",
+      "023_create_podcasts.sql",
     ]);
 
     const r = await pool.query("SELECT to_regclass('__smoke') AS exists");
@@ -142,6 +150,10 @@ describe("migration runner", () => {
       "017_create_story_clusters.sql",
       "018_create_document_enrichment_status.sql",
       "019_add_cluster_stories_enqueued_at_to_editions.sql",
+      "020_create_markdown_digests.sql",
+      "021_create_email_digests.sql",
+      "022_create_notebooks.sql",
+      "023_create_podcasts.sql",
     ]);
 
     expect(await getAppliedMigrations(pool)).toEqual([
@@ -164,6 +176,10 @@ describe("migration runner", () => {
       "017_create_story_clusters.sql",
       "018_create_document_enrichment_status.sql",
       "019_add_cluster_stories_enqueued_at_to_editions.sql",
+      "020_create_markdown_digests.sql",
+      "021_create_email_digests.sql",
+      "022_create_notebooks.sql",
+      "023_create_podcasts.sql",
     ]);
   });
 

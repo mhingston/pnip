@@ -1,0 +1,95 @@
+import { describe, it, expect } from "vitest";
+import { buildEmailTemplate } from "./email-template.js";
+
+const baseInput = {
+  publicationDate: "2026-07-07",
+  title: "Daily Digest — 2026-07-07",
+  renderedHtmlBody: "<p>Body content here.</p>",
+  editionId: "ed-1",
+};
+
+describe("buildEmailTemplate", () => {
+  it("builds a subject that matches the publication date", () => {
+    const t = buildEmailTemplate(baseInput);
+    expect(t.subject).toBe("Daily Digest — 2026-07-07");
+  });
+
+  it("emits a complete HTML document", () => {
+    const t = buildEmailTemplate(baseInput);
+    expect(t.html).toMatch(/^<!doctype html>/i);
+    expect(t.html).toContain("<html");
+    expect(t.html).toContain("</html>");
+    expect(t.html).toContain("</body>");
+  });
+
+  it("embeds the rendered Markdown body inside the email content area", () => {
+    const t = buildEmailTemplate(baseInput);
+    expect(t.html).toContain("<p>Body content here.</p>");
+  });
+
+  it("preserves the publication date in the email body", () => {
+    const t = buildEmailTemplate(baseInput);
+    expect(t.html).toContain("2026-07-07");
+  });
+
+  it("escapes Edition ID attribute embedding", () => {
+    const t = buildEmailTemplate({
+      ...baseInput,
+      editionId: '"><script>alert(1)</script>',
+    });
+    expect(t.html).not.toContain("<script>alert(1)</script>");
+    expect(t.html).toContain("&quot;");
+  });
+
+  it("renders a supplementary Talk & Listen section when notebook URL is provided", () => {
+    const t = buildEmailTemplate({
+      ...baseInput,
+      notebookUrl: "https://notebooklm.example/n/abc",
+    });
+    expect(t.html).toContain("Talk &amp; Listen");
+    expect(t.html).toContain("https://notebooklm.example/n/abc");
+    expect(t.text).toContain("https://notebooklm.example/n/abc");
+  });
+
+  it("renders both notebook and podcast links when both are provided", () => {
+    const t = buildEmailTemplate({
+      ...baseInput,
+      notebookUrl: "https://notebooklm.example/n/abc",
+      podcastUrl: "https://podcasts.example/p/abc.mp3",
+    });
+    expect(t.html).toContain("notebooklm.example/n/abc");
+    expect(t.html).toContain("podcasts.example/p/abc.mp3");
+    expect(t.html.match(/<li>/g)?.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("omits the Talk & Listen section when no links are provided", () => {
+    const t = buildEmailTemplate(baseInput);
+    expect(t.html).not.toContain("Talk &amp; Listen");
+  });
+
+  it("escapes notebook URL so HTML injection via the URL is impossible", () => {
+    const t = buildEmailTemplate({
+      ...baseInput,
+      notebookUrl: 'https://x.example/" onclick="alert(1)"',
+    });
+    expect(t.html).not.toContain('onclick="alert(1)"');
+    expect(t.html).toContain("&quot;");
+  });
+
+  it("emits a plain-text fallback containing the subject, date, and URL list", () => {
+    const t = buildEmailTemplate({
+      ...baseInput,
+      notebookUrl: "https://notebooklm.example/n/abc",
+    });
+    expect(t.text).toContain("Daily Digest — 2026-07-07");
+    expect(t.text).toContain("Publication date: 2026-07-07");
+    expect(t.text).toContain("https://notebooklm.example/n/abc");
+    expect(t.text).not.toContain("<");
+  });
+
+  it("records the Edition ID in both html and text footers", () => {
+    const t = buildEmailTemplate({ ...baseInput, editionId: "ed-xyz" });
+    expect(t.html).toContain("ed-xyz");
+    expect(t.text).toContain("ed-xyz");
+  });
+});

@@ -39,6 +39,39 @@ import { buildPluginRegistry } from "./process-registry.js";
 import { parseCommand } from "./args.js";
 import { runDiscoverCommand } from "./discover.js";
 import { parseMaintenanceFlags, runMaintenance, MAINTENANCE_HELP } from "./maintenance.js";
+import {
+  GENERATE_DIGEST_HELP,
+  parseGenerateDigestFlags,
+  runGenerateDigestCommand,
+} from "./generate-digest.js";
+import {
+  GENERATE_EMAIL_HELP,
+  parseGenerateEmailFlags,
+  runGenerateEmailCommand,
+} from "./generate-email.js";
+import {
+  GENERATE_NOTEBOOK_HELP,
+  parseGenerateNotebookFlags,
+  runGenerateNotebookCommand,
+} from "./generate-notebook.js";
+import {
+  GENERATE_PODCAST_HELP,
+  parseGeneratePodcastFlags,
+  runGeneratePodcastCommand,
+} from "./generate-podcast.js";
+import { createMarkdownDigestRepository } from "../digest/markdown/markdown-digest-repository.js";
+import { createMarkdownDigestService } from "../digest/markdown/markdown-digest-service.js";
+import { createEditionAssemblyService } from "../editions/edition-assembly-service.js";
+import { createStorySummaryRepository } from "../clustering/story-summary-repository.js";
+import { createStoryRepository } from "../clustering/story-repository.js";
+import { createEmailDigestRepository } from "../digest/html/email-digest-repository.js";
+import { createEmailDigestService } from "../digest/html/email-digest-service.js";
+import { createResendClient } from "../digest/html/resend-client.js";
+import { createNotebookRepository } from "../digest/notebooklm/notebook-repository.js";
+import { createPodcastRepository } from "../digest/notebooklm/podcast-repository.js";
+import { createNotebookLmClient } from "../digest/notebooklm/notebooklm-client.js";
+import { createNotebookService } from "../digest/notebooklm/notebook-service.js";
+import { createPodcastService } from "../digest/notebooklm/podcast-service.js";
 
 async function main(): Promise<number> {
   const cfg = loadConfig();
@@ -243,7 +276,174 @@ async function main(): Promise<number> {
       return 0;
     }
 
-    console.log("Usage: digestive <command>\nCommands: discover, process, maintenance");
+    if (command === "generate-digest") {
+      const parsed = parseGenerateDigestFlags({ args: rest });
+      if (parsed.help) {
+        console.log(GENERATE_DIGEST_HELP);
+        return 0;
+      }
+      if (parsed.errors.length > 0) {
+        for (const e of parsed.errors) console.error(e);
+        console.log(GENERATE_DIGEST_HELP);
+        return 2;
+      }
+
+      const logger = createLogger({ baseFields: { worker: "generate-digest" } });
+      const editionRepo = createEditionRepository(db);
+      const docRepo = createDocumentRepository(db);
+      const storyRepo = createStoryRepository(db);
+      const storySummaryRepo = createStorySummaryRepository(db);
+      const topicRepo = createTopicRepository(db);
+      const chunkRepo = createChunkRepository(db);
+      const digestRepo = createMarkdownDigestRepository(db);
+      const assembly = createEditionAssemblyService({
+        db,
+        editionRepo,
+        storyRepo,
+        storySummaryRepo,
+        enrichmentTracker: createEnrichmentTrackerRepository(db),
+      });
+      const service = createMarkdownDigestService({
+        db,
+        editionRepo,
+        assembly,
+        storySummaryRepo,
+        docRepo,
+        chunkRepo,
+        topicRepo,
+        digestRepo,
+        logger,
+      });
+      const { exitCode } = await runGenerateDigestCommand({
+        service,
+        editionDate: parsed.editionDate,
+        log: (m) => console.log(m),
+      });
+      return exitCode;
+    }
+
+    if (command === "generate-email") {
+      const parsed = parseGenerateEmailFlags({ args: rest });
+      if (parsed.help) {
+        console.log(GENERATE_EMAIL_HELP);
+        return 0;
+      }
+      if (parsed.errors.length > 0) {
+        for (const e of parsed.errors) console.error(e);
+        console.log(GENERATE_EMAIL_HELP);
+        return 2;
+      }
+
+      const logger = createLogger({ baseFields: { worker: "generate-email" } });
+      const apiKey = cfg.RESEND_API_KEY ?? "";
+      const fromAddress = cfg.EMAIL_FROM ?? "";
+      const toAddresses = cfg.EMAIL_RECIPIENT
+        ? cfg.EMAIL_RECIPIENT.split(/[,;\s]+/).filter((s) => s.length > 0)
+        : [];
+      if (!apiKey || !fromAddress) {
+        console.log(
+          "RESEND_API_KEY and EMAIL_FROM are required for generate-email",
+        );
+        return 1;
+      }
+      const editionRepo = createEditionRepository(db);
+      const markdownDigestRepo = createMarkdownDigestRepository(db);
+      const emailDigestRepo = createEmailDigestRepository(db);
+      const resend = createResendClient({ apiKey });
+      const service = createEmailDigestService({
+        db,
+        editionRepo,
+        markdownDigestRepo,
+        emailDigestRepo,
+        resend,
+        config: { fromAddress, toAddresses },
+        logger,
+      });
+      const { exitCode } = await runGenerateEmailCommand({
+        service,
+        editionDate: parsed.editionDate,
+        dryRun: parsed.dryRun,
+        log: (m) => console.log(m),
+      });
+      return exitCode;
+    }
+
+    if (command === "generate-notebook") {
+      const parsed = parseGenerateNotebookFlags({ args: rest });
+      if (parsed.help) {
+        console.log(GENERATE_NOTEBOOK_HELP);
+        return 0;
+      }
+      if (parsed.errors.length > 0) {
+        for (const e of parsed.errors) console.error(e);
+        console.log(GENERATE_NOTEBOOK_HELP);
+        return 2;
+      }
+
+      const logger = createLogger({ baseFields: { worker: "generate-notebook" } });
+      const editionRepo = createEditionRepository(db);
+      const docRepo = createDocumentRepository(db);
+      const markdownDigestRepo = createMarkdownDigestRepository(db);
+      const notebookRepo = createNotebookRepository(db);
+      const notebookLm = createNotebookLmClient({});
+      const service = createNotebookService({
+        db,
+        editionRepo,
+        markdownDigestRepo,
+        docRepo,
+        notebookRepo,
+        notebookLm,
+        logger,
+      });
+      const { exitCode } = await runGenerateNotebookCommand({
+        service,
+        editionDate: parsed.editionDate,
+        wait: parsed.wait,
+        log: (m) => console.log(m),
+      });
+      return exitCode;
+    }
+
+    if (command === "generate-podcast") {
+      const parsed = parseGeneratePodcastFlags({ args: rest });
+      if (parsed.help) {
+        console.log(GENERATE_PODCAST_HELP);
+        return 0;
+      }
+      if (parsed.errors.length > 0) {
+        for (const e of parsed.errors) console.error(e);
+        console.log(GENERATE_PODCAST_HELP);
+        return 2;
+      }
+
+      const logger = createLogger({ baseFields: { worker: "generate-podcast" } });
+      const editionRepo = createEditionRepository(db);
+      const markdownDigestRepo = createMarkdownDigestRepository(db);
+      const notebookRepo = createNotebookRepository(db);
+      const podcastRepo = createPodcastRepository(db);
+      const notebookLm = createNotebookLmClient({});
+      const service = createPodcastService({
+        db,
+        editionRepo,
+        markdownDigestRepo,
+        notebookRepo,
+        podcastRepo,
+        notebookLm,
+        config: { outputDir: cfg.NOTEBOOKLM_OUTPUT_DIR },
+        logger,
+      });
+      const { exitCode } = await runGeneratePodcastCommand({
+        service,
+        editionDate: parsed.editionDate,
+        wait: parsed.wait,
+        log: (m) => console.log(m),
+      });
+      return exitCode;
+    }
+
+    console.log(
+      "Usage: digestive <command>\nCommands: discover, process, maintenance, generate-digest, generate-email, generate-notebook, generate-podcast",
+    );
     return 2;
   } finally {
     if (db) await closeKysely(db);
