@@ -35,3 +35,14 @@ set -a; . /path/to/pnip.env; set +a
 
 The script hard-codes the edition id it targets; update `editionId` in
 `main()` before running against a different edition.
+
+## `demo-gate-fire.ts`
+
+Replays the enrichment-tracker + gate sequence against enrichments that were
+actually produced by the real LLM (via `process`). Useful for validating the
+`building → ready` claim atomicity outside the full CLI run.
+
+Run only after `process` has produced at least one document's worth of
+real-LLM enrichment rows; the script does not seed fake data. It re-marks the
+tracker from scratch and demonstrates that calling the gate for the final
+enrichment of the last document fires `cluster_stories` exactly once.

@@ -20,6 +20,7 @@ import { createProvenanceRepository } from "../provenance/provenance-repository.
 import { createPromptRepository } from "../prompts/prompt-repository.js";
 import { createPromptExecutionService } from "../ai/prompt-execution.js";
 import { createVercelAiProvider } from "../ai/vercel-provider.js";
+import { createOpenAICompatibleProvider } from "../ai/openai-compatible-provider.js";
 import { createFakeProvider } from "../ai/fake-provider.js";
 import { createTransformersJsEmbeddingProvider } from "../ai/transformersjs-embedding-provider.js";
 import { createFakeEmbeddingProvider } from "../ai/fake-embedding-provider.js";
@@ -99,7 +100,13 @@ async function main(): Promise<number> {
       const aiProvider =
         cfg.AI_PROVIDER === "fake"
           ? createFakeProvider()
-          : createVercelAiProvider({ textModel: cfg.AI_TEXT_MODEL });
+          : cfg.AI_PROVIDER === "openai-compatible"
+            ? createOpenAICompatibleProvider({
+                baseURL: cfg.OPENAI_BASE_URL ?? "http://localhost:20128/v1",
+                apiKey: cfg.OPENAI_API_KEY ?? "",
+                textModel: cfg.AI_TEXT_MODEL,
+              })
+            : createVercelAiProvider({ textModel: cfg.AI_TEXT_MODEL });
 
       const embeddingProvider = cfg.AI_PROVIDER === "fake"
         ? createFakeEmbeddingProvider({ dimension: 8 })
