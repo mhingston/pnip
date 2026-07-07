@@ -125,7 +125,19 @@ per-source assignment.
 **pgvector**
 The PostgreSQL extension used to store embedding vectors. No external vector
 database is permitted; embeddings live alongside all other persistent data in
-PostgreSQL, and each embedding belongs to exactly one Chunk.
+PostgreSQL, and each embedding belongs to exactly one Chunk. Embeddings are
+generated locally via Transformers.js (see below) — no external embedding API
+is used.
+
+**Transformers.js**
+The local embedding engine used by the Embeddings enrichment worker. Runs
+Hugging Face models in-process via ONNX Runtime (Node.js) — no separate API
+call or external service required. Default model: `Xenova/all-MiniLM-L6-v2`
+(384-dimensional vectors). The model is downloaded and cached on first use.
+This keeps embedding generation free, fast, and fully self-hosted, consistent
+with the project's conservative-dependency ethos. The Vercel AI SDK remains
+the abstraction for text-generation tasks (summaries, entities, topics,
+quality) but embeddings use Transformers.js exclusively.
 
 **notebooklm-py**
 The Python library used to create NotebookLM notebooks and generate podcasts.
@@ -390,7 +402,7 @@ The following architectural decisions are fixed requirements.
 | Extraction Engine       | Fabric (Article/YouTube/Podcast) + MarkItDown (PDF) + native (Reddit) |
 | AI Provider Abstraction | Vercel AI SDK or Opencode/PI         |
 | Storage                 | PostgreSQL                           |
-| Embeddings              | pgvector                             |
+| Embeddings              | Transformers.js (generation) + pgvector (storage) |
 | Email Delivery          | Resend                               |
 | Notebook Generation     | notebooklm-py                        |
 | Podcast Generation      | NotebookLM via notebooklm-py         |
@@ -675,14 +687,17 @@ Responsible for lineage graph construction and citation resolution.
 
 ## AI
 
-Central provider abstraction.
+Central provider abstraction for text generation.
 
 Owns:
 
-* model selection
+* model selection (Vercel AI SDK)
 * retries
 * prompt execution
 * prompt metadata recording
+
+Embeddings are generated separately via Transformers.js (ONNX in-process
+inference) — they do not use this abstraction.
 
 No business logic belongs here.
 
@@ -1033,7 +1048,7 @@ Workers include:
 * Summary
 * Entities
 * Topics
-* Embeddings
+* Embeddings — Transformers.js ONNX in-process inference; no external embedding API
 * Quality Classification
 
 Failures in one enrichment worker do not prevent successful completion of others.
@@ -1614,6 +1629,12 @@ Chunk
 
 Embedding
 ```
+
+Embeddings are generated locally via Transformers.js (`@xenova/transformers` or
+`@huggingface/transformers`) running ONNX models in-process — no external API
+call is required. The worker is an independent enrichment stage (see M4) that
+performs inference using a pre-downloaded ONNX model (default:
+`Xenova/all-MiniLM-L6-v2`, 384-dimensional vectors).
 
 Embeddings are stored in PostgreSQL using pgvector.
 
@@ -2947,22 +2968,64 @@ Delivers no business logic; everything else depends on it.
 
 ---
 
-## Milestone 4 — AI Enrichment
+## Milestone 4 — AI Enrichment — COMPLETE
 
 **Phases covered:** 6 (AI Enrichment)
 
 Five independent workers, each owning one artifact type and isolated from the others' failures (§27, §52):
 
-* **Summary** — with `summary_citations` linking claims to chunks (§25, §28)
-* **Entities** — `entities` + `entity_mentions` (§35)
-* **Topics** — `topics` + `topic_assignments` (§35)
-* **Embeddings** — one vector per chunk via pgvector, no external vector DB (§30)
-* **Quality Classification** (§16, §35)
+* **Summary** — with `summary_citations` linking claims to chunks (§25, §28) ✓
+* **Entities** — `entities` + `entity_mentions` (§35) ✓
+* **Topics** — `topics` + `topic_assignments` (§35) ✓
+* **Embeddings** — one vector per chunk via Transformers.js (ONNX in-process inference) + pgvector storage, no external embedding API or vector DB (§30) ✓
+* **Quality Classification** (§16, §35) ✓
 
-Every artifact records `prompt_id`, `prompt_version`, `model`, `provider`, `input_hash` (§28). Reruns replace only owned records (§53).
+### Architecture
+
+**Per-chunk granularity.** Each enrichment job is enqueued per chunk by the chunk_document_worker, and each artifact is scoped to a chunk (UNIQUE(chunk_id) on `summaries`, `quality_classifications`, `embeddings`; UNIQUE(chunk_id, name|topic) on `entities` and `topics`). This matches the natural dispatch and simplifies rerun semantics: `replaceForChunk()` deletes owned rows for the chunk and inserts fresh ones in a single transaction.
+
+**Text generation abstraction.** Summaries, entities, topics, and quality all flow through the existing `AiProvider` (Vercel AI SDK by default, with a `FakeProvider` for dev/test via `AI_PROVIDER=fake`). The `PromptExecutionService` resolves the latest `prompt_versions` row by name (`summary`/`entities`/`topics`/`quality`), renders the template, retries on transient failure, and records `prompt_id`, `prompt_version`, `model`, `provider`, `input_hash` on every artifact (§28).
+
+**Embeddings — separate abstraction.** Embeddings do not use the Vercel AI SDK. A dedicated `EmbeddingProvider` interface (`src/ai/embedding-provider.ts`) is implemented by `TransformersJsEmbeddingProvider` (ONNX in-process via `@huggingface/transformers`; default model `Xenova/all-MiniLM-L6-v2`, 384-dim, mean-pooled + normalized) and `FakeEmbeddingProvider` (deterministic SHA-256-based vectors, for tests). The model is downloaded and cached on first use; subsequent embeds reuse the loaded pipeline.
+
+**pgvector storage.** Vectors are stored as `vector(384)` in the `embeddings` table (migration 016). The repository encodes/decodes via `vectorToSql`/`sqlToVector` in `src/common/vector-codec.ts`. Cosine-distance queries use the `<=>` operator (pgvector ≥ 0.7).
+
+**Provenance.** Every artifact records a `document_lineage` edge. Worker→artifact relations: `summarized_by`, `extracted_from`, `assigned_to`, `classified_as`, `embedded_as`. Reverse edges (artifact→chunk for citations) use `cite`, `mentioned_in`, `covers`. Edges use the existing `recordLineage` repository.
+
+**Prompt seeding.** `seedDefaultPrompts()` (called at the top of `digestive process`) ensures the four required prompt names exist at v1. It is idempotent — never bumps an existing prompt version. Custom prompts added later (via `createNewVersion`) are preserved.
+
+**Failure isolation.** Per §52, each worker owns only its own outputs. A failed summary rerun does not delete embeddings, entities, topics, or quality rows. The workers are independent siblings in the runtime; `replaceForChunk()` is scoped to a single artifact family.
+
+**Idempotency (§53).** Rerunning a worker replaces only that artifact's rows for the chunk, in a single transaction. Determinism: chunk IDs are SHA-256-derived (see M3), so rerunning on identical chunk text produces identical artifacts and `input_hash`.
+
+### Implementation
+
+| Component | File |
+| --- | --- |
+| `summaries`, `summary_citations` migrations | `012_create_summaries.sql` |
+| `entities`, `entity_mentions` migrations | `013_create_entities.sql` |
+| `topics`, `topic_assignments` migrations | `014_create_topics.sql` |
+| `quality_classifications` migration | `015_create_quality_classifications.sql` |
+| `pgvector` extension migration | `011_create_pgvector_extension.sql` |
+| `embeddings` migration | `016_create_embeddings.sql` |
+| SummaryRepository + SummarizeChunkWorker | `src/enrichment/summary/` |
+| EntityRepository + ExtractEntitiesWorker | `src/enrichment/entities/` |
+| TopicRepository + AssignTopicsWorker | `src/enrichment/topics/` |
+| QualityRepository + ClassifyQualityWorker | `src/enrichment/quality/` |
+| EmbeddingRepository + EmbedChunkWorker | `src/enrichment/embeddings/` |
+| EmbeddingProvider interface + impls | `src/ai/embedding-provider.ts`, `transformersjs-embedding-provider.ts`, `fake-embedding-provider.ts` |
+| Default prompt seeding | `src/prompts/seed-default-prompts.ts` |
+| Vector codec (pgvector string format) | `src/common/vector-codec.ts` |
+| JSON extraction helper (tolerates prose around JSON) | `src/common/json-extract.ts` |
+| CLI wiring (5 enrichment workers in `digestive process`) | `src/cli/index.ts` |
+| Config (AI_PROVIDER, AI_TEXT_MODEL, EMBEDDING_MODEL, EMBEDDING_CACHE_DIR) | `src/config/index.ts` |
+
+### Config
+
+`AI_PROVIDER` (default `openai`; set to `fake` for in-memory providers with no network calls). `AI_TEXT_MODEL` (default `gpt-4o-mini`). `EMBEDDING_MODEL` (default `Xenova/all-MiniLM-L6-v2`). `EMBEDDING_CACHE_DIR` (optional; default uses the library default cache directory).
 
 **Depends on:** M3
-**Acceptance links:** criteria 6–8
+**Acceptance links:** criteria 6, 7, 8 — all satisfied (390 tests, typecheck clean)
 
 ---
 
@@ -3116,9 +3179,9 @@ incrementally with each phase rather than deferred to the end.
 | M0        | —             | (foundation)                      | Complete   |
 | M1        | 1, 2          | 1–3, 19                           | Complete   |
 | M2        | 3, 4          | 4, 5                              | Complete   |
-| M3        | 5             | 5, 6                              | Next       |
-| M4        | 6             | 6–8                               | Pending    |
-| M5        | 7             | 9                                 | Pending    |
+| M3        | 5             | 5, 6                              | Complete   |
+| M4        | 6             | 6–8                               | Complete   |
+| M5        | 7             | 9                                 | Next       |
 | M6        | 8             | 16, 17                            | Pending    |
 | M7        | 9             | 10                                | Pending    |
 | M8        | 10            | 11, 12                            | Pending    |
