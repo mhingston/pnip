@@ -21,6 +21,7 @@ const configSchema = z.object({
   EDITION_SCHEDULE: z.string().optional(),
   REDDIT_REFRESH_STRATEGY: z.string().optional(),
   FABRIC_BIN: z.string().optional(),
+  MARKITDOWN_BIN: z.string().optional(),
   WORKER_CONCURRENCY: z.string().optional(),
   RETRY_MAX_ATTEMPTS: z.string().optional(),
 });

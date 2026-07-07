@@ -50,4 +50,11 @@ describe("config", () => {
     expect(third).not.toBe(first);
     expect(third.DATABASE_URL).toBe("postgres://localhost/db");
   });
+
+  it("parses MARKITDOWN_BIN from env", () => {
+    process.env.DATABASE_URL = "postgres://localhost/db";
+    process.env.MARKITDOWN_BIN = "/usr/bin/markitdown";
+    const config = loadConfig();
+    expect(config.MARKITDOWN_BIN).toBe("/usr/bin/markitdown");
+  });
 });
