@@ -506,70 +506,82 @@ The repository should be organized by domain rather than processing phase.
 ```
 src/
 
-    cli/
-    config/
-    logging/
+    cli/                      # CLI commands + worker runtime wiring
+    config/                   # env-driven configuration + validation
+    logging/                  # structured JSON logger
 
     database/
-        migrations/
-        schema/
-        repositories/
+        migrations/           # forward-only SQL migrations
+        kysely.ts             # typed schema (no separate schema/ or repositories/ dirs)
 
     jobs/
-        queue/
-        scheduler/
-        workers/
+        queue/                # PostgreSQL-backed ProcessingJobQueue
+        workers/              # generic Worker interface + worker-runtime
 
-    discovery/
-    expansion/
-        plugins/
+    discovery/                # Miniflux client, DiscoveryRepository, DiscoveryService
+    expansion/                # DocumentRepository, SectionRepository, plugins, expand worker
+        # NB: no separate canonical/ dir — DocumentRepository + SectionRepository live
+        # under expansion/ because they are produced exclusively by the expansion stage.
+        # NB: plugins live directly in src/expansion/, not in a plugins/ subdir.
 
-    canonical/
-    chunking/
+    chunking/                 # ChunkRepository, chunking-service, chunk_document worker
 
     enrichment/
-        summary/
-        entities/
-        topics/
-        embeddings/
-        quality/
+        summary/              # SummaryRepository + SummarizeChunkWorker
+        entities/             # EntityRepository + ExtractEntitiesWorker
+        topics/               # TopicRepository + AssignTopicsWorker
+        embeddings/           # EmbeddingRepository + EmbedChunkWorker
+        quality/              # QualityRepository + ClassifyQualityWorker
 
-    clustering/
+    clustering/               # (M5) Story clustering
 
-    editions/
+    editions/                 # EditionRepository (state machine)
 
     digest/
-        markdown/
-        html/
+        markdown/             # (M7) Markdown digest
+        html/                 # (M8) HTML email rendering
 
-    notebooklm/
-    podcast/
-    publication/
+    notebooklm/               # (M9) NotebookLM notebook creation
+    podcast/                  # (M10) NotebookLM podcast generation
+    publication/              # (M11) Edition publication coordination
 
-    provenance/
-    prompts/
+    provenance/               # shared document_lineage graph
+    prompts/                  # PromptRepository + seedDefaultPrompts()
 
-    ai/
-
-    common/
+    ai/                       # AiProvider (text) + EmbeddingProvider (vectors) + prompt execution
+    common/                   # shared helpers (json-extract, vector-codec)
 ```
 
 Supporting directories:
 
 ```
-scripts/
-tests/
-
-docs/
-
-fixtures/
-
-docker/
+docs/                        # implementation specification (PLAN.md)
 ```
 
 Each directory exposes a well-defined public interface.
 
 Cross-domain dependencies should be minimized.
+
+### Repository organization
+
+Repositories live next to the workers that own them, not in a shared
+`src/database/repositories/` directory. For example:
+
+* `DocumentRepository` and `SectionRepository` live in `src/expansion/` because
+  the expansion stage is the sole writer.
+* `ChunkRepository` lives in `src/chunking/`.
+* `SummaryRepository` lives in `src/enrichment/summary/`.
+
+This co-location makes the "this worker owns these rows" boundary visible at
+the file level. The shared `src/database/kysely.ts` is the only place that
+defines table types, and every repository imports from it.
+
+### Job lifecycle
+
+There is no separate `src/jobs/scheduler/` directory. The runtime loop in
+`src/cli/index.ts` calls `workerRuntime.runOne(workerId)` in a `while` loop
+until the queue is empty. Job claiming, retry, dependency tracking, and
+archival are encapsulated in `ProcessingJobQueue` and `worker-runtime`.
 
 ---
 
@@ -593,9 +605,18 @@ Owns plugin selection.
 
 Uses Fabric for Article, YouTube, and Podcast; MarkItDown for PDF; native extraction for Reddit.
 
+Owns document and section persistence (`DocumentRepository`,
+`SectionRepository`) — there is no separate `Canonical` directory; the
+canonical document is the immediate output of expansion, so its persistence
+lives here.
+
 ---
 
 ## Canonical
+
+A logical role, not a separate directory. The canonical document model is
+the central data object produced by Expansion (§20) and persisted by
+`DocumentRepository` + `SectionRepository` in `src/expansion/`.
 
 Owns immutable document storage.
 
@@ -1267,14 +1288,17 @@ published_at
 
 language
 
-markdown
-
-plain_text
+markdown            # SQL: content_markdown
+plain_text          # SQL: content_text
 
 metadata
 
 created_at
 ```
+
+The conceptual model uses short names (`markdown`, `plain_text`); the SQL
+columns in `documents` are `content_markdown` and `content_text` to avoid
+collisions with the JSON `metadata` field. Repositories abstract this.
 
 The document is immutable.
 
@@ -1343,18 +1367,19 @@ id
 
 document_id
 
-order
-
+order                # SQL: section_order
 heading
 
-type
-
-markdown
-
-plain_text
+type                 # SQL: section_type
+markdown             # SQL: content_markdown
+plain_text           # SQL: content_text
 
 metadata
 ```
+
+Conceptual field names use short forms (`order`, `type`, `markdown`,
+`plain_text`); SQL columns are `section_order`, `section_type`,
+`content_markdown`, `content_text`. Repositories abstract this.
 
 Section types may include:
 
@@ -1565,7 +1590,8 @@ Artifact
 
 id
 
-document_id
+document_id            # denormalized for queries
+chunk_id               # per-chunk granularity (see M4)
 
 artifact_type
 
@@ -1583,6 +1609,14 @@ input_hash
 
 created_at
 ```
+
+The conceptual model shows `document_id` because the original spec described
+artifacts at the document level. The implementation scopes every enrichment
+artifact to a **chunk** (with `document_id` denormalized for queries) — the
+chunk_document_worker dispatches one enrichment job per chunk, and
+`replaceForChunk()` is the idempotent boundary. The per-chunk design is
+documented in the M4 section; the artifact metadata columns above are
+unchanged.
 
 The metadata provides complete reproducibility.
 
@@ -2447,12 +2481,16 @@ Initialize Services
 
 ↓
 
-Start Scheduler
-
-↓
-
-Start Workers
+Start Workers (loop calls worker-runtime.runOne until queue drains)
 ```
+
+The "scheduler" is not a separate process — the runtime loop in
+`src/cli/index.ts` calls `workerRuntime.runOne(workerId)` in a `while`
+until the queue is empty. Job claiming, retry, dependency tracking, and
+archival are encapsulated in `ProcessingJobQueue` and the
+`worker-runtime`. M12 may add a multi-process scheduler that fans out N
+concurrent workers per CLI process, but the queue/runtime contract is
+unchanged.
 
 If any mandatory dependency is unavailable during startup, the application should fail fast.
 
@@ -2924,14 +2962,40 @@ Delivers no business logic; everything else depends on it.
 
 **Phases covered:** 1 (Discovery Worker), 2 (Discovery Events)
 
-* Miniflux client over the Miniflux REST API
-* `DiscoveryEvent` persistence in a short transaction, **then** mark read in Miniflux — persist precedes acknowledge (§17)
-* Idempotency guard: no duplicate DiscoveryEvent for the same Miniflux entry (§17, §53)
-* Enqueue `ExpandDocument` jobs; own exactly one Edition per event
-* `digestive discover` CLI command (§59)
+* Miniflux client over the Miniflux REST API ✓
+* `DiscoveryEvent` persistence in a short transaction, **then** mark read in Miniflux — persist precedes acknowledge (§17) ✓
+* Idempotency guard: no duplicate DiscoveryEvent for the same Miniflux entry (§17, §53) ✓
+* Enqueue `ExpandDocument` jobs; own exactly one Edition per event ✓
+* `digestive discover` CLI command (§59) ✓
+
+### Architecture
+
+**Miniflux client** (`src/discovery/miniflux-client.ts`) wraps the Miniflux
+REST API: list unread entries, mark entries as read. The `PUT /v1/entries`
+mark-read endpoint takes `entry_ids` (not `ids`) in the request body — the
+plan documents this detail because the field name is a known footgun.
+
+**Discovery service** (`src/discovery/discovery-service.ts`) is the only
+writer of `discovery_events`. For each unread entry it executes, in a single
+short transaction: ensure the active edition exists for the entry's
+publication date, persist the DiscoveryEvent, enqueue the
+`expand_document` job, and only then mark the entry read in Miniflux. If
+persistence fails, the entry remains unread and no downstream work exists.
+If marking read fails after persistence, the entry is re-tried; the
+`UNIQUE(edition_id, miniflux_entry_id)` constraint prevents duplicate
+DiscoveryEvent rows on retry.
+
+**DiscoveryRepository** (`src/discovery/discovery-repository.ts`) provides
+the idempotency primitives: `create()` (insert with the UNIQUE conflict
+handled), `getByEditionAndMinifluxEntryId()` (idempotency check), and
+`getByEdition()` (for the `digestive discover` report).
+
+**Active edition.** A new edition is created for today's publication date
+when the first DiscoveryEvent of the day is persisted. Subsequent entries
+of the same day attach to the same edition.
 
 **Depends on:** M0
-**Acceptance links:** criteria 1–3, 19
+**Acceptance links:** criteria 1–3, 19 — all satisfied (typecheck clean)
 
 ---
 
@@ -2954,17 +3018,71 @@ Delivers no business logic; everything else depends on it.
 
 ---
 
-## Milestone 3 — Chunking
+## Milestone 3 — Chunking — COMPLETE
 
 **Phases covered:** 5 (Chunking)
 
-* Deterministic chunk boundaries stable across reruns (§23)
-* Per-chunk records: text, token count, byte offsets, paragraph range, optional timestamp range, originating section, document version (§16, §23)
-* Provenance mappings from chunk → section → document (§24)
-* Enqueue enrichment jobs per chunk
+* Deterministic chunk boundaries stable across reruns (§23) ✓
+* Per-chunk records: text, token count, byte offsets, paragraph range, optional timestamp range, originating section, document version (§16, §23) ✓
+* Provenance mappings from chunk → section → document (§24) ✓
+* Enqueue enrichment jobs per chunk ✓
+
+### Architecture
+
+**Deterministic paragraph-based chunker** (`src/chunking/chunking-service.ts`).
+Splits each section on blank-line boundaries into paragraphs and accumulates
+them into chunks targeting ~1000 tokens (estimated as `Math.ceil(text.length / 4)`).
+When a single paragraph exceeds the target, it is sentence-split (and then
+word-split for sentences that are still too long). Chunk boundaries are
+purely a function of `(documentId, sectionId, sequence, text)` — given the
+same input, the same chunks come out.
+
+**Deterministic chunk IDs** are SHA-256 hashes of
+`documentId:sectionId:sequence` truncated to 32 hex chars, so chunk IDs are
+stable across reruns and never collide for the same `(document, section)`
+pair.
+
+**Per-chunk schema** matches §23: text, token count, byte offsets, paragraph
+range, and optional timestamp range. The timestamp range is propagated from
+the section's `metadata.timestamp_start`/`timestamp_end` so YouTube/Podcast
+transcript sections keep their time boundaries through chunking.
+
+**Chunking worker** (`chunk-document-worker.ts`) is enqueued by the
+`expand_document` worker on successful document creation. The worker
+loads the document's sections, deletes any existing chunks for the document,
+runs `chunkAllSections()`, and inserts the new chunks in a single batch.
+Lineage edges (`chunked_from` from each chunk to its source section) are
+recorded via the existing `recordLineageBatch` API.
+
+**Downstream dispatch.** For every chunk produced, the worker enqueues 5
+enrichment jobs:
+
+* `summarize_chunk`
+* `extract_entities`
+* `assign_topics`
+* `embed_chunk`
+* `classify_quality`
+
+These are picked up by the per-chunk enrichment workers in M4.
+
+**Idempotency.** Chunk IDs are deterministic, so rerunning chunking on
+identical document content produces the same chunk rows; the
+`deleteByDocumentId` + `createBatch` flow replaces any prior chunks for the
+document in one transaction.
+
+### Implementation
+
+| Component | File |
+| --- | --- |
+| Chunking service (deterministic split) | `src/chunking/chunking-service.ts` |
+| ChunkRepository (UNIQUE chunk_id, ordered reads) | `src/chunking/chunk-repository.ts` |
+| ChunkDocumentWorker (enqueues 5 enrichment jobs per chunk) | `src/chunking/chunk-document-worker.ts` |
+| Migration: `document_chunks` table (TEXT id, chunk_sequence, timestamps) | `010_create_document_chunks.sql` |
+| Expansion worker enqueues `chunk_document` child job | `src/expansion/expand-document-worker.ts` |
+| CLI wiring (chunkDocumentWorker in the runtime) | `src/cli/index.ts` |
 
 **Depends on:** M2
-**Acceptance links:** criteria 5, 6
+**Acceptance links:** criteria 5, 6 — satisfied (307 tests after M3, typecheck clean)
 
 ---
 
@@ -3139,7 +3257,7 @@ Five independent workers, each owning one artifact type and isolated from the ot
 * `doctor` diagnostics: PostgreSQL + migrations + Miniflux + Resend + notebooklm-py + queue health + worker registration + config validation (§59)
 * Non-zero exit codes on failure for automation (§59)
 * Internal metrics: jobs completed/failed, retry counts, throughput, queue depth, latency, publication duration, Edition completion time (§58)
-* Startup sequence: validate config → connect PG → run migrations → init services → start scheduler → start workers; fail fast on missing dependency (§54)
+* Startup sequence: validate config → connect PG → run migrations → init services → start workers (the runtime loop drains the queue); fail fast on missing dependency (§54)
 
 **Depends on:** M0 (built incrementally alongside M1–M11)
 **Acceptance links:** criteria 19, 20
