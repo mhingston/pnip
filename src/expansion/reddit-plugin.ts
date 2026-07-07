@@ -6,6 +6,7 @@ import type {
 } from "./types.js";
 import { createDefaultRssFetcher } from "./reddit-rate-limiter.js";
 import type { RssFetcher } from "./reddit-rate-limiter.js";
+import { selectComments, type SelectCommentsOptions } from "./comment-selection.js";
 
 export type { RssFetcher } from "./reddit-rate-limiter.js";
 
@@ -221,6 +222,11 @@ function buildContent(thread: RedditThread): { content: string; plainText: strin
   return { content, plainText };
 }
 
+const INITIAL_COMMENT_CAP: SelectCommentsOptions = {
+  strategy: "top-n",
+  limit: 25,
+};
+
 export function createRedditPlugin(opts?: { fetcher?: RssFetcher }): ExpansionPlugin {
   return {
     name: "reddit",
@@ -238,8 +244,10 @@ export function createRedditPlugin(opts?: { fetcher?: RssFetcher }): ExpansionPl
       const rssUrl = toRssUrl(context.url);
       const xml = await fetcher(rssUrl);
       const thread = parseAtomFeed(xml);
-      const sections = buildRedditSections(thread);
-      const { content, plainText } = buildContent(thread);
+      const cappedComments = selectComments(thread.comments, INITIAL_COMMENT_CAP);
+      const cappedThread = { submission: thread.submission, comments: cappedComments };
+      const sections = buildRedditSections(cappedThread);
+      const { content, plainText } = buildContent(cappedThread);
       const sub = thread.submission;
       return {
         title: sub.title,

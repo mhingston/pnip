@@ -1,6 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
 import { createExpandDocumentWorker } from "./expand-document-worker.js";
-import { REFRESH_DELAYS_MS } from "./refresh-reddit-comments-worker.js";
 import { RedditRateLimitError } from "./reddit-rate-limiter.js";
 import type { DocumentRepository } from "./document-repository.js";
 import type { SectionRepository } from "./section-repository.js";
@@ -214,7 +213,7 @@ describe("ExpandDocumentWorker", () => {
     ).rejects.toThrow(/invalid target/i);
   });
 
-  it("enqueues a refresh_reddit_comments job for reddit documents", async () => {
+  it("does NOT enqueue a refresh_reddit_comments job after a successful reddit expansion", async () => {
     const plugin = fakePlugin("reddit", true, "reddit");
     const pluginRegistry: PluginRegistry = {
       register: vi.fn(),
@@ -255,26 +254,14 @@ describe("ExpandDocumentWorker", () => {
     });
 
     const redditUrl = "https://www.reddit.com/r/test/comments/1upftp9/title/";
-    const before = Date.now();
-    await worker.execute(
+    const outcome = await worker.execute(
       makeJob({ target: { discoveryEventId: "event-1", url: redditUrl } }),
       { db: {} as any, logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn(), child: vi.fn() } as any },
     );
 
-    expect(queue.enqueue).toHaveBeenCalledTimes(1);
-    const arg = (queue.enqueue as ReturnType<typeof vi.fn>).mock.calls[0][0];
-    expect(arg.jobType).toBe("refresh_reddit_comments");
-    expect(arg.editionId).toBe("edition-1");
-    expect(arg.target).toEqual({
-      documentId: "doc-1",
-      articleId: "1upftp9",
-      url: redditUrl,
-      refreshStep: 0,
-    });
-    expect(arg.nextEligibleAt).toBeInstanceOf(Date);
-    const elapsed = arg.nextEligibleAt.getTime() - before;
-    expect(elapsed).toBeGreaterThanOrEqual(REFRESH_DELAYS_MS[0] - 1000);
-    expect(elapsed).toBeLessThanOrEqual(REFRESH_DELAYS_MS[0] + 5000);
+    expect(docRepo.create).toHaveBeenCalled();
+    expect(queue.enqueue).not.toHaveBeenCalled();
+    expect(outcome).toEqual({});
   });
 
   it("on RedditRateLimitError re-enqueues expand_document with delayed nextEligibleAt and returns {}", async () => {

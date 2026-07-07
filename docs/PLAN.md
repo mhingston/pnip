@@ -1468,6 +1468,8 @@ Initial expansion includes:
 
 Comment enrichment continues while the Edition is mutable.
 
+> **Deferred (M2-S9b).** Comment refresh is currently deferred — the initial RSS fetch already captures the submission and all current comments at discovery time, so refresh jobs add little value at high cost. The 30m/2h/6h schedule below is infeasible under Reddit's RSS rate limits (~1 req/50s, ~1,700 req/day): hundreds of threads/day would each want four fetches, far exceeding the daily budget. The refresh infrastructure (`refresh-reddit-comments-worker.ts`, `comment-selection.ts`) remains in the codebase for future reactivation if a higher-rate Reddit access method becomes available. Initial expansion now caps comment sections at 25 via `selectComments` (strategy "top-n").
+
 Refresh schedule:
 
 ```

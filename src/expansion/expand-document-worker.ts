@@ -5,9 +5,7 @@ import type { SectionRepository } from "./section-repository.js";
 import type { PluginRegistry } from "./plugin-registry.js";
 import type { ProvenanceRepository } from "../provenance/provenance-repository.js";
 import type { ProcessingJobQueue } from "../jobs/queue/processing-job-queue.js";
-import { extractArticleId } from "./reddit-plugin.js";
 import { RedditRateLimitError } from "./reddit-rate-limiter.js";
-import { REFRESH_DELAYS_MS } from "./refresh-reddit-comments-worker.js";
 
 interface ExpandTarget {
   discoveryEventId: string;
@@ -109,23 +107,6 @@ export function createExpandDocumentWorker(deps: {
         targetId: doc.id,
         relation: "expanded_from",
       });
-
-      if (result.sourceType === "reddit") {
-        const articleId = extractArticleId(url);
-        if (articleId) {
-          await deps.queue.enqueue({
-            jobType: "refresh_reddit_comments",
-            editionId: job.edition_id ?? undefined,
-            target: {
-              documentId: doc.id,
-              articleId,
-              url,
-              refreshStep: 0,
-            },
-            nextEligibleAt: new Date(Date.now() + REFRESH_DELAYS_MS[0]),
-          });
-        }
-      }
 
       return {};
     },

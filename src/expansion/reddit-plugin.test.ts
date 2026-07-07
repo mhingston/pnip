@@ -207,4 +207,50 @@ describe("createRedditPlugin.expand", () => {
       resetSeconds: 45,
     });
   });
+
+  it("caps comment sections at 25 via selectComments when the feed has 30+ comments", async () => {
+    const entryCount = 30;
+    const lines: string[] = [
+      `<?xml version="1.0" encoding="UTF-8"?>`,
+      `<feed xmlns="http://www.w3.org/2005/Atom">`,
+      `<title>Submission Title : SubredditName</title>`,
+      `<entry>`,
+      `<id>t3_1up7bmj</id>`,
+      `<title>Submission Title</title>`,
+      `<author><name>/u/authorname</name><uri>https://www.reddit.com/user/authorname</uri></author>`,
+      `<content type="html">&lt;!-- SC_OFF --&gt;&lt;div class="md"&gt;&lt;p&gt;Body text.&lt;/p&gt;&lt;/div&gt; submitted by &lt;a href="https://www.reddit.com/user/authorname"&gt;/u/authorname&lt;/a&gt;</content>`,
+      `<updated>2026-07-06T19:20:00+00:00</updated>`,
+      `<published>2026-07-06T19:20:00+00:00</published>`,
+      `<link href="https://www.reddit.com/r/Sub/comments/1up7bmj/slug/" />`,
+      `<category term="SubredditName" />`,
+      `</entry>`,
+    ];
+    for (let i = 0; i < entryCount; i++) {
+      const cid = `c${i.toString().padStart(3, "0")}`;
+      lines.push(
+        `<entry>`,
+        `<id>t1_${cid}</id>`,
+        `<title>/u/user${i} on Submission Title</title>`,
+        `<author><name>/u/user${i}</name><uri>https://www.reddit.com/user/user${i}</uri></author>`,
+        `<content type="html">&lt;!-- SC_OFF --&gt;&lt;div class="md"&gt;&lt;p&gt;Comment ${i}.&lt;/p&gt;&lt;/div&gt;</content>`,
+        `<updated>2026-07-06T19:30:0${i % 10}+00:00</updated>`,
+        `<link href="https://www.reddit.com/r/Sub/comments/1up7bmj/slug/${cid}/" />`,
+        `<category term="SubredditName" />`,
+        `</entry>`,
+      );
+    }
+    lines.push(`</feed>`);
+    const xml = lines.join("\n");
+
+    const fetcher: RssFetcher = vi.fn().mockResolvedValue(xml);
+    const plugin = createRedditPlugin({ fetcher });
+
+    const result = await plugin.expand(ctx);
+
+    const commentSections = result.sections.filter(
+      (s) => s.section_type === "reddit_comment",
+    );
+    expect(commentSections).toHaveLength(25);
+    expect(result.sections[0].section_type).toBe("reddit_submission");
+  });
 });
