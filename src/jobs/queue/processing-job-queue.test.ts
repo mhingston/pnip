@@ -515,6 +515,90 @@ describe("ProcessingJobQueue", () => {
     const fAfter = await queue.getJob(f.id);
     expect(fAfter!.status).toBe("failed");
   });
+
+  it("purgeArchivedJobs DELETEs only archived rows and leaves completed untouched", async () => {
+    const archived = await queue.enqueue({ jobType: "a" });
+    const completed = await queue.enqueue({ jobType: "c" });
+    await pool.query(
+      `UPDATE ${schema}.processing_jobs SET status='archived' WHERE id = $1`,
+      [archived.id],
+    );
+    await pool.query(
+      `UPDATE ${schema}.processing_jobs SET status='completed', completed_at=now() WHERE id = $1`,
+      [completed.id],
+    );
+
+    const purged = await queue.purgeArchivedJobs({});
+    expect(purged).toBe(1);
+
+    expect(await queue.getJob(archived.id)).toBeUndefined();
+    const cAfter = await queue.getJob(completed.id);
+    expect(cAfter).toBeDefined();
+    expect(cAfter!.status).toBe("completed");
+  });
+
+  it("purgeArchivedJobs respects the age filter and leaves recent archived rows", async () => {
+    const oldArchived = await queue.enqueue({ jobType: "old" });
+    const freshArchived = await queue.enqueue({ jobType: "fresh" });
+    await pool.query(
+      `UPDATE ${schema}.processing_jobs SET status='archived', updated_at = now() - interval '2 hours' WHERE id = $1`,
+      [oldArchived.id],
+    );
+    await pool.query(
+      `UPDATE ${schema}.processing_jobs SET status='archived' WHERE id = $1`,
+      [freshArchived.id],
+    );
+
+    const purged = await queue.purgeArchivedJobs({ olderThanMs: 60 * 60 * 1000 });
+    expect(purged).toBe(1);
+    expect(await queue.getJob(oldArchived.id)).toBeUndefined();
+    const freshAfter = await queue.getJob(freshArchived.id);
+    expect(freshAfter).toBeDefined();
+    expect(freshAfter!.status).toBe("archived");
+  });
+
+  it("purgeArchivedJobs respects the limit and purges oldest first", async () => {
+    const ids: string[] = [];
+    for (let i = 0; i < 4; i++) {
+      const j = await queue.enqueue({ jobType: `t${i}` });
+      await pool.query(
+        `UPDATE ${schema}.processing_jobs SET status='archived', updated_at = now() - ($1 * interval '1 minute') WHERE id = $2`,
+        [10 * (4 - i), j.id],
+      );
+      ids.push(j.id);
+    }
+
+    const purged = await queue.purgeArchivedJobs({ limit: 2 });
+    expect(purged).toBe(2);
+    expect(await queue.getJob(ids[0])).toBeUndefined();
+    expect(await queue.getJob(ids[1])).toBeUndefined();
+    expect(await queue.getJob(ids[2])).toBeDefined();
+    expect(await queue.getJob(ids[3])).toBeDefined();
+  });
+
+  it("purgeArchivedJobs with no matching rows returns 0 (idempotent)", async () => {
+    expect(await queue.purgeArchivedJobs({})).toBe(0);
+    const j = await queue.enqueue({ jobType: "pending" });
+    await pool.query(
+      `UPDATE ${schema}.processing_jobs SET status='pending' WHERE id = $1`,
+      [j.id],
+    );
+    expect(await queue.purgeArchivedJobs({})).toBe(0);
+  });
+
+  it("countByStatus returns 0 for empty statuses and exact counts after enqueue + archive", async () => {
+    const a = await queue.enqueue({ jobType: "a" });
+    const b = await queue.enqueue({ jobType: "b" });
+    const c = await queue.enqueue({ jobType: "c" });
+    await pool.query(
+      `UPDATE ${schema}.processing_jobs SET status='completed' WHERE id IN ($1, $2)`,
+      [a.id, b.id],
+    );
+    await queue.archiveJobs({});
+    const counts = await queue.countByStatus();
+    expect(counts).toEqual({ pending: 1, running: 0, completed: 0, failed: 0, archived: 2 });
+    expect(c.id).toBeTruthy();
+  });
 });
 
 describe("createKysely / closeKysely", () => {

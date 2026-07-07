@@ -24,6 +24,11 @@ export interface ProcessingJobQueue {
     olderThanMs?: number;
     limit?: number;
   }): Promise<number>;
+  purgeArchivedJobs(opts: {
+    olderThanMs?: number;
+    limit?: number;
+  }): Promise<number>;
+  countByStatus(): Promise<Record<JobStatus, number>>;
 }
 
 export function createProcessingJobQueue(db: Kysely<Database>): ProcessingJobQueue {
@@ -155,6 +160,61 @@ export function createProcessingJobQueue(db: Kysely<Database>): ProcessingJobQue
         )
         RETURNING id`.execute(db);
       return result.rows.length;
+    },
+
+    async purgeArchivedJobs(opts: {
+      olderThanMs?: number;
+      limit?: number;
+    }): Promise<number> {
+      const olderThanMs = opts.olderThanMs ?? 0;
+      const limit = opts.limit;
+      const ageClause =
+        olderThanMs > 0
+          ? sql`AND updated_at < now() - (${olderThanMs} * interval '1 millisecond')`
+          : sql``;
+      const limitClause =
+        typeof limit === "number" && limit > 0 ? sql`LIMIT ${limit}` : sql``;
+      // PostgreSQL disallows LIMIT on a bare DELETE; use a subquery so the
+      // LIMIT (and the order-by-oldest semantic) apply correctly.
+      const result = await sql`DELETE FROM processing_jobs
+        WHERE id IN (
+          SELECT id FROM processing_jobs
+          WHERE status = 'archived'
+          ${ageClause}
+          ORDER BY updated_at
+          ${limitClause}
+        )
+        RETURNING id`.execute(db);
+      return result.rows.length;
+    },
+
+    async countByStatus(): Promise<Record<JobStatus, number>> {
+      const rows = await db
+        .selectFrom("processing_jobs")
+        .select("status")
+        .select((eb) => eb.fn.count<number>("id").as("n"))
+        .groupBy("status")
+        .execute();
+      const out: Record<JobStatus, number> = {
+        pending: 0,
+        running: 0,
+        completed: 0,
+        failed: 0,
+        archived: 0,
+      };
+      for (const r of rows) {
+        const n = Number(r.n);
+        switch (r.status) {
+          case "pending":
+          case "running":
+          case "completed":
+          case "failed":
+          case "archived":
+            out[r.status] = n;
+            break;
+        }
+      }
+      return out;
     },
   };
 }

@@ -3227,9 +3227,10 @@ Five independent workers, each owning one artifact type and isolated from the ot
 
 **Phases covered:** cross-cutting (supports all phases)
 
-* Complete CLI surface: `discover`, `process`, `generate-edition`, `generate-digest`, `generate-notebook`, `generate-podcast`, `retry`, `doctor` (§59)
+* Complete CLI surface: `discover`, `process`, `generate-edition`, `generate-digest`, `generate-notebook`, `generate-podcast`, `retry`, `doctor`, `maintenance` (§59)
 * `retry` with filters by Edition, worker, job type, failure state (§59)
 * `doctor` diagnostics: PostgreSQL + migrations + Miniflux + Resend + notebooklm-py + queue health + worker registration + config validation (§59)
+* **Maintenance pass** — `digestive maintenance` (`--apply`/`--archive-after`/`--purge-after`/`--limit`) bounds the `processing_jobs` table by archiving completed/failed rows then DELETing archived rows past the configured age; dry-run by default. Defaults: archive after 1d, purge after 7d, per-phase limit 10000. Idempotent; safe to run from daily cron. Other tables (`editions`, `documents`, enrichment rows, embeddings, stories) are kept with the Edition per §40 ("Edition serves as the permanent archive") and are not reclaimed by this pass.
 * Non-zero exit codes on failure for automation (§59)
 * Internal metrics: jobs completed/failed, retry counts, throughput, queue depth, latency, publication duration, Edition completion time (§58)
 * Startup sequence: validate config → connect PG → run migrations → init services → start workers (the runtime loop drains the queue); fail fast on missing dependency (§54)

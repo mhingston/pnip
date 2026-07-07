@@ -38,6 +38,7 @@ import { createEmbedChunkWorker } from "../enrichment/embeddings/embed-chunk-wor
 import { buildPluginRegistry } from "./process-registry.js";
 import { parseCommand } from "./args.js";
 import { runDiscoverCommand } from "./discover.js";
+import { parseMaintenanceFlags, runMaintenance, MAINTENANCE_HELP } from "./maintenance.js";
 
 async function main(): Promise<number> {
   const cfg = loadConfig();
@@ -226,7 +227,23 @@ async function main(): Promise<number> {
       return 0;
     }
 
-    console.log("Usage: digestive <command>\nCommands: discover, process");
+    if (command === "maintenance") {
+      const queue = createProcessingJobQueue(db);
+      const parsed = parseMaintenanceFlags({ args: rest });
+      if (parsed.help) {
+        console.log(MAINTENANCE_HELP);
+        return 0;
+      }
+      if (parsed.errors.length > 0) {
+        for (const e of parsed.errors) console.error(e);
+        console.log(MAINTENANCE_HELP);
+        return 2;
+      }
+      await runMaintenance({ queue, options: parsed.options, log: (m) => console.log(m) });
+      return 0;
+    }
+
+    console.log("Usage: digestive <command>\nCommands: discover, process, maintenance");
     return 2;
   } finally {
     if (db) await closeKysely(db);
