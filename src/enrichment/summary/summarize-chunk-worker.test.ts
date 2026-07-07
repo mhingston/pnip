@@ -6,6 +6,8 @@ import type { PromptExecutionService } from "../../ai/prompt-execution.js";
 import type { AiProvider, ProviderTextResult } from "../../ai/provider.js";
 import type { ProvenanceRepository } from "../../provenance/provenance-repository.js";
 import type { SummaryRepository } from "./summary-repository.js";
+import type { EnrichmentGateService } from "../../editions/enrichment-gate-service.js";
+import type { EditionRepository } from "../../editions/edition-repository.js";
 import type { ProcessingJob } from "../../database/kysely.js";
 import type { PromptVersion } from "../../database/kysely.js";
 
@@ -155,7 +157,21 @@ function makeDeps(overrides?: {
     resolveToDocuments: vi.fn(),
   };
 
-  return { chunkRepo, summaryRepo, promptRepo, promptExecutor, provider, provenanceRepo };
+  const gate: EnrichmentGateService = {
+    markEnrichmentDoneAndMaybeEnqueueCluster: vi.fn().mockResolvedValue(null),
+  };
+
+  const editionRepo: EditionRepository = {
+    create: vi.fn(),
+    getById: vi.fn(),
+    getByDate: vi.fn(),
+    getOrCreateForDate: vi.fn(),
+    transition: vi.fn(),
+    isProcessingAllowed: vi.fn().mockResolvedValue(true),
+    assertProcessingAllowed: vi.fn(),
+  };
+
+  return { chunkRepo, summaryRepo, promptRepo, promptExecutor, provider, provenanceRepo, gate, editionRepo };
 }
 
 describe("SummarizeChunkWorker", () => {
@@ -329,5 +345,21 @@ describe("SummarizeChunkWorker", () => {
         logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn(), child: vi.fn() } as any,
       }),
     ).rejects.toThrow(/invalid target/i);
+  });
+
+  it("skips when the edition is not in a mutable state (state guard)", async () => {
+    const deps = makeDeps({ chunk: makeChunk() });
+    (deps.editionRepo.isProcessingAllowed as ReturnType<typeof vi.fn>).mockResolvedValue(false);
+    const worker = createSummarizeChunkWorker(deps);
+
+    const outcome = await worker.execute(makeJob(), {
+      db: {} as any,
+      logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn(), child: vi.fn() } as any,
+    });
+
+    expect(outcome).toEqual({});
+    expect(deps.promptExecutor.execute).not.toHaveBeenCalled();
+    expect(deps.summaryRepo.replaceForChunk).not.toHaveBeenCalled();
+    expect(deps.gate.markEnrichmentDoneAndMaybeEnqueueCluster).not.toHaveBeenCalled();
   });
 });

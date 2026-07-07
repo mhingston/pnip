@@ -38,6 +38,24 @@ export class EditionConcurrentUpdateError extends Error {
   }
 }
 
+export class EditionProcessingNotAllowedError extends Error {
+  readonly editionId: string;
+  readonly status: EditionStatus;
+  constructor(editionId: string, status: EditionStatus) {
+    super(
+      `edition ${editionId} is in status '${status}'; document processing is not allowed`,
+    );
+    this.name = "EditionProcessingNotAllowedError";
+    this.editionId = editionId;
+    this.status = status;
+  }
+}
+
+export const MUTABLE_FOR_PROCESSING_STATUSES: readonly EditionStatus[] = [
+  "building",
+  "failed",
+] as const;
+
 export interface EditionRepository {
   create(publicationDate: string | Date): Promise<Edition>;
   getById(id: string): Promise<Edition | undefined>;
@@ -48,6 +66,8 @@ export interface EditionRepository {
     to: EditionStatus,
     opts?: { failureReason?: string },
   ): Promise<Edition>;
+  isProcessingAllowed(id: string): Promise<boolean>;
+  assertProcessingAllowed(id: string): Promise<Edition>;
 }
 
 function asDateColumn(value: string | Date): RawBuilder<Date> {
@@ -132,6 +152,31 @@ export function createEditionRepository(db: Kysely<Database>): EditionRepository
         }
         return updated[0];
       });
+    },
+
+    async isProcessingAllowed(id: string): Promise<boolean> {
+      const row = await db
+        .selectFrom("editions")
+        .select(["status"])
+        .where("id", "=", id)
+        .executeTakeFirst();
+      if (!row) return false;
+      return (MUTABLE_FOR_PROCESSING_STATUSES as readonly EditionStatus[]).includes(
+        row.status,
+      );
+    },
+
+    async assertProcessingAllowed(id: string): Promise<Edition> {
+      const edition = await this.getById(id);
+      if (!edition) throw new EditionNotFoundError(id);
+      if (
+        !(MUTABLE_FOR_PROCESSING_STATUSES as readonly EditionStatus[]).includes(
+          edition.status,
+        )
+      ) {
+        throw new EditionProcessingNotAllowedError(id, edition.status);
+      }
+      return edition;
     },
   };
 }

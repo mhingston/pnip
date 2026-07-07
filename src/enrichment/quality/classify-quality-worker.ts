@@ -6,9 +6,12 @@ import type { PromptExecutionService } from "../../ai/prompt-execution.js";
 import type { AiProvider } from "../../ai/provider.js";
 import type { ProvenanceRepository } from "../../provenance/provenance-repository.js";
 import type { QualityRepository } from "./quality-repository.js";
+import type { EnrichmentGateService } from "../../editions/enrichment-gate-service.js";
+import type { EditionRepository } from "../../editions/edition-repository.js";
 import { extractJson } from "../../common/json-extract.js";
 
 const QUALITY_PROMPT_NAME = "quality";
+const ENRICHMENT_TYPE = "classify_quality";
 
 export interface ClassifyQualityDeps {
   chunkRepo: ChunkRepository;
@@ -17,6 +20,8 @@ export interface ClassifyQualityDeps {
   promptExecutor: PromptExecutionService;
   provider: AiProvider;
   provenanceRepo: ProvenanceRepository;
+  gate: EnrichmentGateService;
+  editionRepo: EditionRepository;
   model?: string;
 }
 
@@ -62,6 +67,20 @@ export function createClassifyQualityWorker(deps: ClassifyQualityDeps): Worker {
 
     async execute(job: ProcessingJob, ctx: WorkerContext): Promise<WorkerOutcome> {
       const { chunkId, documentId } = parseTarget(job.target);
+      const editionId = job.edition_id;
+      if (typeof editionId !== "string") {
+        throw new Error("classify_quality job missing edition_id");
+      }
+
+      const allowed = await deps.editionRepo.isProcessingAllowed(editionId);
+      if (!allowed) {
+        ctx.logger.info("edition not in mutable state, skipping classify_quality", {
+          editionId,
+          documentId,
+          chunkId,
+        });
+        return {};
+      }
 
       const chunk = await deps.chunkRepo.getByDocumentIdOrdered(documentId);
       const found = chunk.find((c) => c.id === chunkId);
@@ -133,7 +152,12 @@ export function createClassifyQualityWorker(deps: ClassifyQualityDeps): Worker {
         confidence: row.confidence,
       });
 
-      return {};
+      const childJob = await deps.gate.markEnrichmentDoneAndMaybeEnqueueCluster(
+        editionId,
+        documentId,
+        ENRICHMENT_TYPE,
+      );
+      return childJob ? { childJobs: [childJob] } : {};
     },
   };
 }

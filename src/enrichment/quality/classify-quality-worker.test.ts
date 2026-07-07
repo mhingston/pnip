@@ -9,6 +9,8 @@ import type {
   QualityRepository,
   QualityClassificationRow,
 } from "./quality-repository.js";
+import type { EnrichmentGateService } from "../../editions/enrichment-gate-service.js";
+import type { EditionRepository } from "../../editions/edition-repository.js";
 import type { ProcessingJob, PromptVersion } from "../../database/kysely.js";
 
 function makeJob(overrides?: Partial<ProcessingJob>): ProcessingJob {
@@ -147,7 +149,21 @@ function makeDeps(overrides?: {
     resolveToDocuments: vi.fn(),
   };
 
-  return { chunkRepo, qualityRepo, promptRepo, promptExecutor, provider, provenanceRepo };
+  const gate: EnrichmentGateService = {
+    markEnrichmentDoneAndMaybeEnqueueCluster: vi.fn().mockResolvedValue(null),
+  };
+
+  const editionRepo: EditionRepository = {
+    create: vi.fn(),
+    getById: vi.fn(),
+    getByDate: vi.fn(),
+    getOrCreateForDate: vi.fn(),
+    transition: vi.fn(),
+    isProcessingAllowed: vi.fn().mockResolvedValue(true),
+    assertProcessingAllowed: vi.fn(),
+  };
+
+  return { chunkRepo, qualityRepo, promptRepo, promptExecutor, provider, provenanceRepo, gate, editionRepo };
 }
 
 describe("ClassifyQualityWorker", () => {
@@ -291,5 +307,21 @@ describe("ClassifyQualityWorker", () => {
         logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn(), child: vi.fn() } as any,
       }),
     ).rejects.toThrow(/invalid target/i);
+  });
+
+  it("skips when the edition is not in a mutable state (state guard)", async () => {
+    const deps = makeDeps();
+    (deps.editionRepo.isProcessingAllowed as ReturnType<typeof vi.fn>).mockResolvedValue(false);
+    const worker = createClassifyQualityWorker(deps);
+
+    const outcome = await worker.execute(makeJob(), {
+      db: {} as any,
+      logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn(), child: vi.fn() } as any,
+    });
+
+    expect(outcome).toEqual({});
+    expect(deps.promptExecutor.execute).not.toHaveBeenCalled();
+    expect(deps.qualityRepo.replaceForChunk).not.toHaveBeenCalled();
+    expect(deps.gate.markEnrichmentDoneAndMaybeEnqueueCluster).not.toHaveBeenCalled();
   });
 });

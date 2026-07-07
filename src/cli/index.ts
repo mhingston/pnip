@@ -4,6 +4,8 @@ import { runMigrations } from "../database/migrations.js";
 import { createKysely, closeKysely } from "../database/kysely.js";
 import { createMinifluxClient } from "../discovery/miniflux-client.js";
 import { createEditionRepository } from "../editions/edition-repository.js";
+import { createEnrichmentTrackerRepository } from "../editions/enrichment-tracker-repository.js";
+import { createEnrichmentGateService } from "../editions/enrichment-gate-service.js";
 import { createDiscoveryRepository } from "../discovery/discovery-repository.js";
 import { createProcessingJobQueue } from "../jobs/queue/processing-job-queue.js";
 import { createDiscoveryService } from "../discovery/discovery-service.js";
@@ -86,6 +88,7 @@ async function main(): Promise<number> {
       const sectionRepo = createSectionRepository(db);
       const provenanceRepo = createProvenanceRepository(db);
       const promptRepo = createPromptRepository(db);
+      const editionRepo = createEditionRepository(db);
 
       const seedSummary = await seedDefaultPrompts(promptRepo, logger);
       logger.info("prompt seeding complete", {
@@ -118,11 +121,16 @@ async function main(): Promise<number> {
       });
 
       const chunkRepo = createChunkRepository(db);
+      const enrichmentTracker = createEnrichmentTrackerRepository(db);
+      const enrichmentGate = createEnrichmentGateService({ db, tracker: enrichmentTracker });
+
       const chunkWorker = createChunkDocumentWorker({
         docRepo,
         sectionRepo,
         chunkRepo,
         provenanceRepo,
+        enrichmentTracker,
+        editionRepo,
       });
 
       const summaryRepo = createSummaryRepository(db);
@@ -133,6 +141,8 @@ async function main(): Promise<number> {
         promptExecutor,
         provider: aiProvider,
         provenanceRepo,
+        gate: enrichmentGate,
+        editionRepo,
         model: cfg.AI_TEXT_MODEL,
       });
 
@@ -144,6 +154,8 @@ async function main(): Promise<number> {
         promptExecutor,
         provider: aiProvider,
         provenanceRepo,
+        gate: enrichmentGate,
+        editionRepo,
         model: cfg.AI_TEXT_MODEL,
       });
 
@@ -155,6 +167,8 @@ async function main(): Promise<number> {
         promptExecutor,
         provider: aiProvider,
         provenanceRepo,
+        gate: enrichmentGate,
+        editionRepo,
         model: cfg.AI_TEXT_MODEL,
       });
 
@@ -166,6 +180,8 @@ async function main(): Promise<number> {
         promptExecutor,
         provider: aiProvider,
         provenanceRepo,
+        gate: enrichmentGate,
+        editionRepo,
         model: cfg.AI_TEXT_MODEL,
       });
 
@@ -175,6 +191,8 @@ async function main(): Promise<number> {
         embeddingRepo,
         embeddingProvider,
         provenanceRepo,
+        gate: enrichmentGate,
+        editionRepo,
       });
 
       const runtime = createWorkerRuntime({

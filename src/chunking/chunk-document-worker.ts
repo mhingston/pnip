@@ -4,6 +4,8 @@ import type { DocumentRepository } from "../expansion/document-repository.js";
 import type { SectionRepository, DocumentSectionRow } from "../expansion/section-repository.js";
 import type { ChunkRepository } from "./chunk-repository.js";
 import type { ProvenanceRepository } from "../provenance/provenance-repository.js";
+import type { EnrichmentTrackerRepository } from "../editions/enrichment-tracker-repository.js";
+import type { EditionRepository } from "../editions/edition-repository.js";
 import { chunkAllSections, type ChunkableSection } from "./chunking-service.js";
 
 const ENRICHMENT_JOB_TYPES = [
@@ -13,8 +15,6 @@ const ENRICHMENT_JOB_TYPES = [
   "embed_chunk",
   "classify_quality",
 ] as const;
-
-const CLUSTER_STORIES_JOB_TYPE = "cluster_stories";
 
 interface ChunkTarget {
   documentId: string;
@@ -45,6 +45,8 @@ export function createChunkDocumentWorker(deps: {
   sectionRepo: SectionRepository;
   chunkRepo: ChunkRepository;
   provenanceRepo: ProvenanceRepository;
+  enrichmentTracker: EnrichmentTrackerRepository;
+  editionRepo: EditionRepository;
 }): Worker {
   return {
     supports(jobType: string): boolean {
@@ -53,6 +55,19 @@ export function createChunkDocumentWorker(deps: {
 
     async execute(job: ProcessingJob, ctx: WorkerContext): Promise<WorkerOutcome> {
       const { documentId } = parseTarget(job.target);
+      const editionId = job.edition_id;
+      if (typeof editionId !== "string") {
+        throw new Error("chunk_document job missing edition_id");
+      }
+
+      const allowed = await deps.editionRepo.isProcessingAllowed(editionId);
+      if (!allowed) {
+        ctx.logger.info("edition not in mutable state, skipping chunk_document", {
+          editionId,
+          documentId,
+        });
+        return {};
+      }
 
       const doc = await deps.docRepo.getById(documentId);
       if (!doc) {
@@ -73,6 +88,7 @@ export function createChunkDocumentWorker(deps: {
           existingCount: existing.length,
         });
         await deps.chunkRepo.deleteByDocumentId(documentId);
+        await deps.enrichmentTracker.resetForDocument(documentId);
       }
 
       const chunkInputs = chunkAllSections(sections.map(toChunkableSection));
@@ -94,20 +110,13 @@ export function createChunkDocumentWorker(deps: {
         })),
       );
 
-      const childJobs = [
-        ...chunks.flatMap((chunk) =>
-          ENRICHMENT_JOB_TYPES.map((jobType) => ({
-            jobType,
-            editionId: doc.edition_id,
-            target: { chunkId: chunk.id, documentId: doc.id },
-          })),
-        ),
-        {
-          jobType: CLUSTER_STORIES_JOB_TYPE,
+      const childJobs = chunks.flatMap((chunk) =>
+        ENRICHMENT_JOB_TYPES.map((jobType) => ({
+          jobType,
           editionId: doc.edition_id,
-          target: { editionId: doc.edition_id },
-        },
-      ];
+          target: { chunkId: chunk.id, documentId: doc.id },
+        })),
+      );
 
       return { childJobs };
     },

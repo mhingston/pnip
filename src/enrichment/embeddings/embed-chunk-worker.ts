@@ -5,12 +5,18 @@ import type { ChunkRepository } from "../../chunking/chunk-repository.js";
 import type { EmbeddingProvider } from "../../ai/embedding-provider.js";
 import type { ProvenanceRepository } from "../../provenance/provenance-repository.js";
 import type { EmbeddingRepository } from "./embedding-repository.js";
+import type { EnrichmentGateService } from "../../editions/enrichment-gate-service.js";
+import type { EditionRepository } from "../../editions/edition-repository.js";
+
+const ENRICHMENT_TYPE = "embed_chunk";
 
 export interface EmbedChunkDeps {
   chunkRepo: ChunkRepository;
   embeddingRepo: EmbeddingRepository;
   embeddingProvider: EmbeddingProvider;
   provenanceRepo: ProvenanceRepository;
+  gate: EnrichmentGateService;
+  editionRepo: EditionRepository;
 }
 
 interface ChunkTarget {
@@ -41,6 +47,20 @@ export function createEmbedChunkWorker(deps: EmbedChunkDeps): Worker {
 
     async execute(job: ProcessingJob, ctx: WorkerContext): Promise<WorkerOutcome> {
       const { chunkId, documentId } = parseTarget(job.target);
+      const editionId = job.edition_id;
+      if (typeof editionId !== "string") {
+        throw new Error("embed_chunk job missing edition_id");
+      }
+
+      const allowed = await deps.editionRepo.isProcessingAllowed(editionId);
+      if (!allowed) {
+        ctx.logger.info("edition not in mutable state, skipping embed_chunk", {
+          editionId,
+          documentId,
+          chunkId,
+        });
+        return {};
+      }
 
       const chunk = await deps.chunkRepo.getByDocumentIdOrdered(documentId);
       const found = chunk.find((c) => c.id === chunkId);
@@ -88,7 +108,12 @@ export function createEmbedChunkWorker(deps: EmbedChunkDeps): Worker {
         dimension: vector.length,
       });
 
-      return {};
+      const childJob = await deps.gate.markEnrichmentDoneAndMaybeEnqueueCluster(
+        editionId,
+        documentId,
+        ENRICHMENT_TYPE,
+      );
+      return childJob ? { childJobs: [childJob] } : {};
     },
   };
 }

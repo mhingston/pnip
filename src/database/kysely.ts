@@ -101,6 +101,7 @@ export interface Database {
     published_at: Date | null;
     failed_at: Date | null;
     failure_reason: string | null;
+    cluster_stories_enqueued_at: Date | null;
     metadata: unknown | null;
   };
   prompt_versions: {
@@ -281,6 +282,14 @@ export interface Database {
     claim_text: string;
     claim_order: number;
     created_at: Generated<Date>;
+  };
+  document_enrichment_status: {
+    document_id: string;
+    enrichment_type: string;
+    status: Generated<string>;
+    completed_at: Date | null;
+    created_at: Generated<Date>;
+    updated_at: Generated<Date>;
   };
   discovery_events: {
     id: Generated<string>;

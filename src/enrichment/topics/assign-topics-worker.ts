@@ -6,9 +6,12 @@ import type { PromptExecutionService } from "../../ai/prompt-execution.js";
 import type { AiProvider } from "../../ai/provider.js";
 import type { ProvenanceRepository } from "../../provenance/provenance-repository.js";
 import type { TopicRepository } from "./topic-repository.js";
+import type { EnrichmentGateService } from "../../editions/enrichment-gate-service.js";
+import type { EditionRepository } from "../../editions/edition-repository.js";
 import { extractJson } from "../../common/json-extract.js";
 
 const TOPICS_PROMPT_NAME = "topics";
+const ENRICHMENT_TYPE = "assign_topics";
 
 export interface AssignTopicsDeps {
   chunkRepo: ChunkRepository;
@@ -17,6 +20,8 @@ export interface AssignTopicsDeps {
   promptExecutor: PromptExecutionService;
   provider: AiProvider;
   provenanceRepo: ProvenanceRepository;
+  gate: EnrichmentGateService;
+  editionRepo: EditionRepository;
   model?: string;
 }
 
@@ -66,6 +71,20 @@ export function createAssignTopicsWorker(deps: AssignTopicsDeps): Worker {
 
     async execute(job: ProcessingJob, ctx: WorkerContext): Promise<WorkerOutcome> {
       const { chunkId, documentId } = parseTarget(job.target);
+      const editionId = job.edition_id;
+      if (typeof editionId !== "string") {
+        throw new Error("assign_topics job missing edition_id");
+      }
+
+      const allowed = await deps.editionRepo.isProcessingAllowed(editionId);
+      if (!allowed) {
+        ctx.logger.info("edition not in mutable state, skipping assign_topics", {
+          editionId,
+          documentId,
+          chunkId,
+        });
+        return {};
+      }
 
       const chunk = await deps.chunkRepo.getByDocumentIdOrdered(documentId);
       const found = chunk.find((c) => c.id === chunkId);
@@ -156,7 +175,12 @@ export function createAssignTopicsWorker(deps: AssignTopicsDeps): Worker {
         topicCount: topics.length,
       });
 
-      return {};
+      const childJob = await deps.gate.markEnrichmentDoneAndMaybeEnqueueCluster(
+        editionId,
+        documentId,
+        ENRICHMENT_TYPE,
+      );
+      return childJob ? { childJobs: [childJob] } : {};
     },
   };
 }
