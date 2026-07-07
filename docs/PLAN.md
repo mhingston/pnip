@@ -2997,6 +2997,8 @@ flowchart onto concrete, dependency-ordered development milestones. The phases
 are the nodes B–N of that diagram (Miniflux itself, node A, is an external
 dependency, not an internal phase):
 
+> **Roadmap beyond M0–M13.** The §65 *Signal-to-Noise and Feedback* four-phase plan (capture-only → CLI ingest → read-only ranking hints → feedback-aware re-ranking) is **not** part of the M0–M13 schedule below. It is a deliberately deferred plan that should be tackled **after** Edition publication has shipped (i.e. after M11), starting from Phase A only once the rss-digest project's `editorial_profile.md` is being compared against PNIP digests in practice. Capturing this here so the dependency between finishing M11 and starting §65 Phase A is explicit; rushing §65 before M11 would lock in feedback surfaces that conflict with the eventual digest structure.
+
 | #  | Phase (§5 node)         |
 | -- | ----------------------- |
 | 1  | Discovery Worker (B)    |
