@@ -40,6 +40,12 @@ export function createExpandDocumentWorker(deps: {
         throw new Error(`no plugin supports URL: ${url}`);
       }
 
+      const existing = await deps.docRepo.getByEditionAndUrl(job.edition_id!, url);
+      if (existing) {
+        ctx.logger.info("document already exists, skipping", { documentId: existing.id });
+        return {};
+      }
+
       const result = await plugin.expand({
         url,
         editionId: job.edition_id!,

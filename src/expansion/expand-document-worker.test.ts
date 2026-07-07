@@ -68,7 +68,7 @@ describe("ExpandDocumentWorker", () => {
       create: vi.fn().mockResolvedValue({ id: "doc-1", edition_id: "edition-1", source_url: "https://example.com/article" }),
       getById: vi.fn(),
       getByEdition: vi.fn(),
-      getByEditionAndUrl: vi.fn(),
+      getByEditionAndUrl: vi.fn().mockResolvedValue(undefined),
     };
 
     const sectionRepo: SectionRepository = {
@@ -119,6 +119,42 @@ describe("ExpandDocumentWorker", () => {
       }),
     );
     expect(outcome).toEqual({ childJobs: undefined });
+  });
+
+  it("skips expansion when document already exists (idempotency)", async () => {
+    const plugin = fakePlugin("article", true);
+    const pluginRegistry: PluginRegistry = {
+      register: vi.fn(),
+      select: vi.fn(() => plugin),
+    };
+
+    const docRepo: DocumentRepository = {
+      create: vi.fn(),
+      getById: vi.fn(),
+      getByEdition: vi.fn(),
+      getByEditionAndUrl: vi.fn().mockResolvedValue({ id: "existing-doc" }),
+    };
+
+    const sectionRepo: SectionRepository = {
+      createBatch: vi.fn(),
+      getByDocumentId: vi.fn(),
+    };
+
+    const worker = createExpandDocumentWorker({
+      docRepo,
+      sectionRepo,
+      pluginRegistry,
+      provenanceRepo: {} as ProvenanceRepository,
+    });
+
+    const outcome = await worker.execute(makeJob(), {
+      db: {} as any,
+      logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn(), child: vi.fn() } as any,
+    });
+
+    expect(docRepo.create).not.toHaveBeenCalled();
+    expect(sectionRepo.createBatch).not.toHaveBeenCalled();
+    expect(outcome).toEqual({});
   });
 
   it("throws when no plugin matches the URL", async () => {

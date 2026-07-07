@@ -15,10 +15,18 @@ describe("ArticlePlugin", () => {
     expect(plugin.supports("http://example.com/article")).toBe(true);
   });
 
-  it("does not support non-http URLs", () => {
+  it("does not support non-http URLs or known platform URLs", () => {
     const plugin = createArticlePlugin({ fetchContent: vi.fn() });
     expect(plugin.supports("ftp://example.com/file")).toBe(false);
-    expect(plugin.supports("https://youtube.com/watch?v=abc")).toBe(true); // article plugin is the fallback
+    expect(plugin.supports("https://youtube.com/watch?v=abc")).toBe(false);
+    expect(plugin.supports("https://reddit.com/r/test")).toBe(false);
+    expect(plugin.supports("https://youtu.be/abc123")).toBe(false);
+  });
+
+  it("supports general http and https URLs", () => {
+    const plugin = createArticlePlugin({ fetchContent: vi.fn() });
+    expect(plugin.supports("https://example.com/article")).toBe(true);
+    expect(plugin.supports("http://blog.example.com/post")).toBe(true);
   });
 
   it("returns article expand result from fetched markdown", async () => {
