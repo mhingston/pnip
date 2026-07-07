@@ -59,6 +59,11 @@ import {
   parseGeneratePodcastFlags,
   runGeneratePodcastCommand,
 } from "./generate-podcast.js";
+import {
+  PUBLISH_EDITION_HELP,
+  parsePublishEditionFlags,
+  runPublishEditionCommand,
+} from "./publish-edition.js";
 import { createMarkdownDigestRepository } from "../digest/markdown/markdown-digest-repository.js";
 import { createMarkdownDigestService } from "../digest/markdown/markdown-digest-service.js";
 import { createEditionAssemblyService } from "../editions/edition-assembly-service.js";
@@ -72,6 +77,7 @@ import { createPodcastRepository } from "../digest/notebooklm/podcast-repository
 import { createNotebookLmClient } from "../digest/notebooklm/notebooklm-client.js";
 import { createNotebookService } from "../digest/notebooklm/notebook-service.js";
 import { createPodcastService } from "../digest/notebooklm/podcast-service.js";
+import { createPublicationService } from "../publication/publication-service.js";
 
 async function main(): Promise<number> {
   const cfg = loadConfig();
@@ -441,8 +447,47 @@ async function main(): Promise<number> {
       return exitCode;
     }
 
+    if (command === "publish-edition") {
+      const parsed = parsePublishEditionFlags({ args: rest });
+      if (parsed.help) {
+        console.log(PUBLISH_EDITION_HELP);
+        return 0;
+      }
+      if (parsed.errors.length > 0) {
+        for (const e of parsed.errors) console.error(e);
+        console.log(PUBLISH_EDITION_HELP);
+        return 2;
+      }
+
+      const logger = createLogger({ baseFields: { worker: "publish-edition" } });
+      const editionRepo = createEditionRepository(db);
+      const markdownDigestRepo = createMarkdownDigestRepository(db);
+      const emailDigestRepo = createEmailDigestRepository(db);
+      const notebookRepo = createNotebookRepository(db);
+      const podcastRepo = createPodcastRepository(db);
+      const queue = createProcessingJobQueue(db);
+      const service = createPublicationService({
+        db,
+        editionRepo,
+        markdownDigestRepo,
+        emailDigestRepo,
+        notebookRepo,
+        podcastRepo,
+        jobQueue: queue,
+        logger,
+      });
+      const { exitCode } = await runPublishEditionCommand({
+        service,
+        editionLookup: editionRepo,
+        editionDate: parsed.editionDate,
+        dryRun: parsed.dryRun,
+        log: (m) => console.log(m),
+      });
+      return exitCode;
+    }
+
     console.log(
-      "Usage: digestive <command>\nCommands: discover, process, maintenance, generate-digest, generate-email, generate-notebook, generate-podcast",
+      "Usage: digestive <command>\nCommands: discover, process, maintenance, generate-digest, generate-email, generate-notebook, generate-podcast, publish-edition",
     );
     return 2;
   } finally {

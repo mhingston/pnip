@@ -19,6 +19,7 @@ function makeFakeQueue(opts: {
     complete: vi.fn(),
     getJob: vi.fn(),
     recoverStaleJobs: vi.fn(),
+    cancelForEdition: vi.fn(),
     archiveJobs: vi.fn().mockResolvedValue(opts.archived ?? 0),
     purgeArchivedJobs: vi.fn().mockResolvedValue(opts.purged ?? 0),
     countByStatus: vi

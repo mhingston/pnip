@@ -33,6 +33,7 @@ function fakeQueue(): ProcessingJobQueue {
     complete: vi.fn(),
     getJob: vi.fn(),
     recoverStaleJobs: vi.fn(),
+    cancelForEdition: vi.fn(),
     archiveJobs: vi.fn(),
     purgeArchivedJobs: vi.fn(),
     countByStatus: vi.fn(),

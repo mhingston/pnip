@@ -599,6 +599,155 @@ describe("ProcessingJobQueue", () => {
     expect(counts).toEqual({ pending: 1, running: 0, completed: 0, failed: 0, archived: 2 });
     expect(c.id).toBeTruthy();
   });
+
+  it("cancelForEdition marks pending and running jobs for the edition as failed", async () => {
+    const editionId = randomUUID();
+    const otherEdition = randomUUID();
+    const pending1 = await queue.enqueue({ jobType: "a", editionId });
+    const pending2 = await queue.enqueue({ jobType: "b", editionId });
+    const running1 = await queue.enqueue({ jobType: "c", editionId });
+    await pool.query(
+      `UPDATE ${schema}.processing_jobs SET status='running', locked_by='w1', locked_at=now() WHERE id = $1`,
+      [running1.id],
+    );
+    const other = await queue.enqueue({ jobType: "d", editionId: otherEdition });
+
+    const cancelled = await queue.cancelForEdition({
+      editionId,
+      reason: "edition published",
+    });
+    expect(cancelled).toBe(3);
+
+    for (const j of [pending1, pending2, running1]) {
+      const after = await queue.getJob(j.id);
+      expect(after).toBeDefined();
+      expect(after!.status).toBe("failed");
+      const err = after!.last_error as { type: string; message: string };
+      expect(err.type).toBe("JobCancelledError");
+      expect(err.message).toContain("edition published");
+    }
+    const otherAfter = await queue.getJob(other.id);
+    expect(otherAfter).toBeDefined();
+    expect(otherAfter!.status).toBe("pending");
+    expect(otherAfter!.last_error).toBeNull();
+  });
+
+  it("cancelForEdition returns 0 when no mutable jobs exist for the edition", async () => {
+    const editionId = randomUUID();
+    const completed = await queue.enqueue({ jobType: "c", editionId });
+    const archived = await queue.enqueue({ jobType: "a", editionId });
+    await pool.query(
+      `UPDATE ${schema}.processing_jobs SET status='completed', completed_at=now() WHERE id = $1`,
+      [completed.id],
+    );
+    await pool.query(
+      `UPDATE ${schema}.processing_jobs SET status='archived' WHERE id = $1`,
+      [archived.id],
+    );
+
+    const cancelled = await queue.cancelForEdition({
+      editionId,
+      reason: "should not affect anything",
+    });
+    expect(cancelled).toBe(0);
+
+    expect((await queue.getJob(completed.id))!.status).toBe("completed");
+    expect((await queue.getJob(archived.id))!.status).toBe("archived");
+  });
+
+  it("cancelForEdition records the reason in last_error", async () => {
+    const editionId = randomUUID();
+    const j = await queue.enqueue({ jobType: "x", editionId });
+    const reason = "operator triggered cancel: hotfix-2026-07-07";
+
+    const cancelled = await queue.cancelForEdition({ editionId, reason });
+    expect(cancelled).toBe(1);
+
+    const after = await queue.getJob(j.id);
+    expect(after).toBeDefined();
+    expect(after!.status).toBe("failed");
+    const err = after!.last_error as { type: string; message: string };
+    expect(err.type).toBe("JobCancelledError");
+    expect(err.message).toContain(reason);
+  });
+
+  it("cancelForEdition sets last_attempt_at and updated_at to now", async () => {
+    const editionId = randomUUID();
+    const j = await queue.enqueue({ jobType: "ts", editionId });
+    await pool.query(
+      `UPDATE ${schema}.processing_jobs SET last_attempt_at = now() - interval '1 hour', updated_at = now() - interval '1 hour' WHERE id = $1`,
+      [j.id],
+    );
+    const before = await queue.getJob(j.id);
+    expect(before!.last_attempt_at).toBeInstanceOf(Date);
+    expect(before!.updated_at).toBeInstanceOf(Date);
+    const beforeLastAttempt = before!.last_attempt_at!.getTime();
+    const beforeUpdated = before!.updated_at.getTime();
+
+    const cancelled = await queue.cancelForEdition({
+      editionId,
+      reason: "stale",
+    });
+    expect(cancelled).toBe(1);
+
+    const after = await queue.getJob(j.id);
+    expect(after!.last_attempt_at).toBeInstanceOf(Date);
+    expect(after!.updated_at).toBeInstanceOf(Date);
+    expect(after!.last_attempt_at!.getTime()).toBeGreaterThan(beforeLastAttempt);
+    expect(after!.updated_at.getTime()).toBeGreaterThanOrEqual(beforeUpdated);
+  });
+
+  it("cancelForEdition returns 0 for an edition with no rows at all", async () => {
+    const cancelled = await queue.cancelForEdition({
+      editionId: randomUUID(),
+      reason: "ghost edition",
+    });
+    expect(cancelled).toBe(0);
+  });
+
+  it("cancelForEdition cancels a running job, not just pending ones", async () => {
+    const editionId = randomUUID();
+    const j = await queue.enqueue({ jobType: "run", editionId });
+    await pool.query(
+      `UPDATE ${schema}.processing_jobs SET status='running', locked_by='w1', locked_at=now() WHERE id = $1`,
+      [j.id],
+    );
+
+    const cancelled = await queue.cancelForEdition({
+      editionId,
+      reason: "stop running job",
+    });
+    expect(cancelled).toBe(1);
+
+    const after = await queue.getJob(j.id);
+    expect(after!.status).toBe("failed");
+    const err = after!.last_error as { type: string; message: string };
+    expect(err.type).toBe("JobCancelledError");
+    expect(err.message).toContain("stop running job");
+  });
+
+  it("cancelForEdition cancels both pending and running jobs in a single call", async () => {
+    const editionId = randomUUID();
+    const pending = await queue.enqueue({ jobType: "p", editionId });
+    const running = await queue.enqueue({ jobType: "r", editionId });
+    await pool.query(
+      `UPDATE ${schema}.processing_jobs SET status='running', locked_by='w1', locked_at=now() WHERE id = $1`,
+      [running.id],
+    );
+
+    const cancelled = await queue.cancelForEdition({
+      editionId,
+      reason: "publishing",
+    });
+    expect(cancelled).toBe(2);
+
+    const p = await queue.getJob(pending.id);
+    const r = await queue.getJob(running.id);
+    expect(p!.status).toBe("failed");
+    expect(r!.status).toBe("failed");
+    expect((p!.last_error as { type: string }).type).toBe("JobCancelledError");
+    expect((r!.last_error as { type: string }).type).toBe("JobCancelledError");
+  });
 });
 
 describe("createKysely / closeKysely", () => {

@@ -19,6 +19,10 @@ export interface ProcessingJobQueue {
     olderThanMs: number,
     opts?: { maxAttempts?: number },
   ): Promise<number>;
+  cancelForEdition(input: {
+    editionId: string;
+    reason: string;
+  }): Promise<number>;
   archiveJobs(opts: {
     statuses?: JobStatus[];
     olderThanMs?: number;
@@ -129,6 +133,26 @@ export function createProcessingJobQueue(db: Kysely<Database>): ProcessingJobQue
         WHERE status = 'running'
           AND locked_at IS NOT NULL
           AND locked_at < now() - (${olderThanMs} * interval '1 millisecond')
+        RETURNING id`.execute(db);
+      return result.rows.length;
+    },
+
+    async cancelForEdition(input: {
+      editionId: string;
+      reason: string;
+    }): Promise<number> {
+      const cancelledError = JSON.stringify({
+        type: "JobCancelledError",
+        message: input.reason,
+        stack: undefined,
+      });
+      const result = await sql`UPDATE processing_jobs
+        SET status = 'failed',
+            last_error = ${cancelledError}::jsonb,
+            last_attempt_at = now(),
+            updated_at = now()
+        WHERE edition_id = ${input.editionId}
+          AND status IN ('pending', 'running')
         RETURNING id`.execute(db);
       return result.rows.length;
     },
