@@ -98,11 +98,27 @@ locking (`FOR UPDATE SKIP LOCKED`) to allow concurrent workers without
 duplicate execution.
 
 **Fabric**
-The planned primary content extraction engine for Expansion plugins. Fabric
-(Go CLI, v1.4.455 installed) supports YouTube transcripts (`--youtube`),
-web scraping via Jina AI (`--scrape_url`), and audio transcription
-(`--transcribe-file`). **Not yet in use** — the current ArticlePlugin
-uses raw HTTP fetch + HTML-to-markdown conversion.
+The primary content extraction engine for Expansion plugins — applied to the
+source types it genuinely supports. Fabric (Go CLI, v1.4.455 installed)
+supports YouTube transcripts (`--youtube`), web scraping via Jina AI
+(`--scrape_url`), and audio transcription (`--transcribe-file`). Verified:
+`fabric -u <url>` emits raw markdown (with a Title/URL Source/Published Time
+metadata header) to stdout without invoking an LLM, provided no `-p` pattern
+is supplied. PDF and Reddit are extracted natively because Fabric has no raw
+PDF text path and Jina is blocked by Reddit (HTTP 403); Reddit also requires
+structured comment metadata (scores, sticky/moderator flags) that scraping
+cannot provide (§26). See the Expansion Plugin Extraction Map below for the
+per-source assignment.
+
+**Expansion Plugin Extraction Map**
+
+| Source   | Engine                          | Rationale                                                                  |
+| -------- | ------------------------------- | -------------------------------------------------------------------------- |
+| Article  | Fabric `-u` (Jina scrape)       | Verified raw markdown + metadata; no LLM; replaces HTTP fetch + regex.      |
+| YouTube  | Fabric `-y --transcript`        | Native transcript/timestamp/metadata support; requires `yt-dlp` on PATH.    |
+| Podcast  | Fabric `--transcribe-file`      | Whisper transcription; requires OpenAI key + ffmpeg for >25MB files.        |
+| PDF      | Native Node (`unpdf`)           | Fabric has no raw PDF→text path (only LLM-routed `--attachment`).           |
+| Reddit   | Native Node (Reddit API / JSON) | Jina is 403-blocked by Reddit; §26 needs structured comment metadata.       |
 
 **pgvector**
 The PostgreSQL extension used to store embedding vectors. No external vector
@@ -369,7 +385,7 @@ The following architectural decisions are fixed requirements.
 | Language                | TypeScript                           |
 | Runtime                 | Node.js                              |
 | Feed Discovery          | Miniflux                             |
-| Extraction Engine       | Fabric (planned; ArticlePlugin currently uses HTTP fetch) |
+| Extraction Engine       | Fabric (Article/YouTube/Podcast) + native (PDF/Reddit) |
 | AI Provider Abstraction | Vercel AI SDK or Opencode/PI         |
 | Storage                 | PostgreSQL                           |
 | Embeddings              | pgvector                             |
@@ -561,7 +577,7 @@ Transforms URLs into canonical documents.
 
 Owns plugin selection.
 
-Uses Fabric whenever supported (not yet — currently HTTP fetch + HTML→MD).
+Uses Fabric for Article, YouTube, and Podcast; native extraction for PDF and Reddit.
 
 ---
 
@@ -850,7 +866,7 @@ Logging should make it possible to reconstruct the complete lifecycle of any doc
 The following constraints apply throughout the implementation.
 
 * Miniflux is discovery only.
-* Fabric is the primary content extraction engine (not yet — ArticlePlugin uses HTTP fetch).
+* Fabric is the primary content extraction engine (Article, YouTube, Podcast); PDF and Reddit use native extraction (see Expansion Plugin Extraction Map).
 * PostgreSQL is the only persistent datastore.
 * pgvector stores embeddings.
 * Resend sends email.
@@ -1142,7 +1158,7 @@ Plugin Selection
 ↓
 
 Content Extraction
-(planned: Fabric; current: HTTP fetch + HTML→MD)
+(Fabric `-u` / `-y` / `--transcribe-file`; native for PDF/Reddit)
 
 ↓
 
@@ -1153,9 +1169,11 @@ Normalization
 Canonical Document
 ```
 
-Fabric is planned as the default extraction engine but is not yet in use.
-The current ArticlePlugin performs raw HTTP fetch + HTML-to-markdown
-conversion. Individual plugins may adopt Fabric incrementally.
+Fabric is the default extraction engine for Article (`-u`), YouTube (`-y`),
+and Podcast (`--transcribe-file`). PDF and Reddit use native extraction
+because Fabric has no raw PDF path and Jina is 403-blocked by Reddit; see
+the Expansion Plugin Extraction Map in the Glossary for the per-source
+assignment and rationale.
 
 ---
 
@@ -1176,7 +1194,7 @@ interface ExpansionPlugin {
 Responsibilities include:
 
 * URL recognition
-* content fetching / Fabric invocation
+* content extraction (Fabric or native, per the Extraction Map)
 * metadata normalization
 * attachment discovery
 * provenance mapping
@@ -2706,7 +2724,7 @@ The implementation is complete when the following scenario succeeds without manu
 1. Unread entries are discovered from Miniflux.
 2. Discovery events are persisted.
 3. Entries are acknowledged in Miniflux only after successful persistence.
-4. Supported sources expand into canonical documents (ArticlePlugin uses HTTP fetch; Fabric integration pending).
+4. Supported sources expand into canonical documents using Fabric where supported (Article/YouTube/Podcast) and native extraction otherwise (PDF/Reddit).
 5. Canonical documents are sectioned and chunked.
 6. Every chunk contains provenance metadata.
 7. Summaries, entities, topics, embeddings, and quality classifications are generated.
@@ -2734,7 +2752,7 @@ The project is considered complete when:
 * every processing stage is independently executable, idempotent, and resumable;
 * PostgreSQL is the sole persistent datastore;
 * pgvector stores embeddings;
-* Fabric is the primary extraction engine (ArticlePlugin currently uses HTTP fetch);
+* Fabric is the primary extraction engine (Article, YouTube, Podcast); native extraction for PDF and Reddit;
 * Resend delivers HTML emails derived from Markdown;
 * NotebookLM notebooks and podcasts are created exclusively through `notebooklm-py`;
 * every AI artifact records prompt and model metadata;
@@ -2774,11 +2792,11 @@ PostgreSQL is the only persistent datastore.
 
 ## Content Extraction
 
-* Bespoke extraction pipelines for sources already supported by Fabric (exemption: ArticlePlugin uses HTTP fetch + HTML→MD — Fabric integration deferred)
-* Independent YouTube transcript implementations (exemption: Fabric `--youtube` exists but YouTube plugin not yet built)
+* Bespoke extraction pipelines for sources already supported by Fabric
+* Independent YouTube transcript implementations
 * Independent podcast transcription implementations
 
-Fabric is the planned primary extraction engine (not yet in use).
+Fabric is the primary extraction engine for Article, YouTube, and Podcast (see the Expansion Plugin Extraction Map in the Glossary). PDF and Reddit use native extraction because Fabric has no raw path for them.
 
 ## Publication
 
@@ -2809,7 +2827,7 @@ NotebookLM is the conversational interface.
 
 The Personal News Intelligence Pipeline is a deterministic, database-centric processing system built around immutable Editions and canonical documents.
 
-Miniflux provides discovery and nothing more. Fabric is planned as the content extraction engine (ArticlePlugin currently uses HTTP fetch + HTML→MD). PostgreSQL stores every persistent artifact, including embeddings through pgvector. Independent workers execute idempotent stages coordinated through an internal PostgreSQL-backed job queue. Markdown serves as the canonical publication format from which HTML email is generated and delivered via Resend. NotebookLM notebooks and podcasts are created exclusively through `notebooklm-py`, and NotebookLM is the sole conversational interface.
+Miniflux provides discovery and nothing more. Fabric is the content extraction engine for Article, YouTube, and Podcast sources; PDF and Reddit use native extraction. PostgreSQL stores every persistent artifact, including embeddings through pgvector. Independent workers execute idempotent stages coordinated through an internal PostgreSQL-backed job queue. Markdown serves as the canonical publication format from which HTML email is generated and delivered via Resend. NotebookLM notebooks and podcasts are created exclusively through `notebooklm-py`, and NotebookLM is the sole conversational interface.
 
 The architecture is intentionally conservative. It prioritizes determinism, provenance, resumability, and operational simplicity over additional infrastructure or framework abstractions. Every artifact is traceable to its source, every stage can be retried safely, and every published Edition forms a permanent, immutable record of the day's intelligence.
 
@@ -2898,7 +2916,7 @@ Delivers no business logic; everything else depends on it.
 **Phases covered:** 3 (Expansion Worker), 4 (Canonical Documents)
 
 * `ExpansionPlugin` interface + deterministic first-match selection (§19)
-* Fabric integration as the default extraction engine; custom fallback only when Fabric cannot handle a source (§18) — **deferred; ArticlePlugin uses HTTP fetch + HTML→MD**
+* Fabric integration as the default extraction engine for Article/YouTube/Podcast; native extraction for PDF/Reddit (§18) — see Expansion Plugin Extraction Map
 * Five plugins: Article (done), YouTube, Podcast, PDF, Reddit (§19) — **only Article implemented**
 * Sectioning (§16, §22) and immutable Canonical Document persistence (§20)
 * Expansion metadata, attachment records, document lineage (§20, §21, §35)
