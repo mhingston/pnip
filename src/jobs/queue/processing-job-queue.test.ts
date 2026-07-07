@@ -748,6 +748,138 @@ describe("ProcessingJobQueue", () => {
     expect((p!.last_error as { type: string }).type).toBe("JobCancelledError");
     expect((r!.last_error as { type: string }).type).toBe("JobCancelledError");
   });
+
+  it("listFailed returns all failed jobs ordered by updated_at desc", async () => {
+    const e1 = randomUUID();
+    const a = await queue.enqueue({ jobType: "a", editionId: e1 });
+    const b = await queue.enqueue({ jobType: "b", editionId: e1 });
+    const c = await queue.enqueue({ jobType: "c", editionId: e1 });
+    await pool.query(
+      `UPDATE ${schema}.processing_jobs SET status='failed', updated_at = now() - interval '3 hours' WHERE id = $1`,
+      [a.id],
+    );
+    await pool.query(
+      `UPDATE ${schema}.processing_jobs SET status='failed', updated_at = now() - interval '1 hour' WHERE id = $1`,
+      [b.id],
+    );
+    await pool.query(
+      `UPDATE ${schema}.processing_jobs SET status='failed', updated_at = now() - interval '2 hours' WHERE id = $1`,
+      [c.id],
+    );
+    const pending = await queue.enqueue({ jobType: "p" });
+
+    const rows = await queue.listFailed({});
+    expect(rows.map((r) => r.id).sort()).toEqual([a.id, b.id, c.id].sort());
+    expect(rows.map((r) => r.id)).toEqual([b.id, c.id, a.id]);
+    expect(rows.every((r) => r.status === "failed")).toBe(true);
+
+    const pendingAfter = await queue.getJob(pending.id);
+    expect(pendingAfter!.status).toBe("pending");
+  });
+
+  it("listFailed filters by editionId and jobType", async () => {
+    const e1 = randomUUID();
+    const e2 = randomUUID();
+    const a = await queue.enqueue({ jobType: "expand_document", editionId: e1 });
+    const b = await queue.enqueue({ jobType: "chunk_document", editionId: e1 });
+    const c = await queue.enqueue({ jobType: "expand_document", editionId: e2 });
+    for (const id of [a.id, b.id, c.id]) {
+      await pool.query(
+        `UPDATE ${schema}.processing_jobs SET status='failed' WHERE id = $1`,
+        [id],
+      );
+    }
+
+    const byEdition = await queue.listFailed({ editionId: e1 });
+    expect(byEdition.map((r) => r.id).sort()).toEqual([a.id, b.id].sort());
+
+    const byJobType = await queue.listFailed({ jobType: "expand_document" });
+    expect(byJobType.map((r) => r.id).sort()).toEqual([a.id, c.id].sort());
+
+    const both = await queue.listFailed({
+      editionId: e1,
+      jobType: "chunk_document",
+    });
+    expect(both.map((r) => r.id)).toEqual([b.id]);
+  });
+
+  it("listFailed respects the olderThanMs age filter", async () => {
+    const editionId = randomUUID();
+    const old = await queue.enqueue({ jobType: "old", editionId });
+    const recent = await queue.enqueue({ jobType: "recent", editionId });
+    await pool.query(
+      `UPDATE ${schema}.processing_jobs SET status='failed', updated_at = now() - interval '2 hours' WHERE id = $1`,
+      [old.id],
+    );
+    await pool.query(
+      `UPDATE ${schema}.processing_jobs SET status='failed', updated_at = now() WHERE id = $1`,
+      [recent.id],
+    );
+
+    const rows = await queue.listFailed({ olderThanMs: 30 * 60 * 1000 });
+    expect(rows.map((r) => r.id)).toEqual([old.id]);
+    expect(rows.find((r) => r.id === recent.id)).toBeUndefined();
+  });
+
+  it("requeue resets failed jobs to pending, clears retry_count/last_error/lock state, and is idempotent", async () => {
+    const e1 = randomUUID();
+    const a = await queue.enqueue({ jobType: "a", editionId: e1 });
+    const b = await queue.enqueue({ jobType: "b", editionId: e1 });
+    await pool.query(
+      `UPDATE ${schema}.processing_jobs SET status='failed', retry_count=4, last_error='{"type":"X","message":"boom"}'::jsonb, locked_by='w1', locked_at = now(), last_attempt_at = now() - interval '1 minute' WHERE id = $1`,
+      [a.id],
+    );
+    await pool.query(
+      `UPDATE ${schema}.processing_jobs SET status='failed', retry_count=2 WHERE id = $1`,
+      [b.id],
+    );
+
+    const first = await queue.requeue([a.id, b.id]);
+    expect(first).toBe(2);
+
+    const aAfter = await queue.getJob(a.id);
+    expect(aAfter!.status).toBe("pending");
+    expect(aAfter!.retry_count).toBe(0);
+    expect(aAfter!.last_error).toBeNull();
+    expect(aAfter!.locked_by).toBeNull();
+    expect(aAfter!.locked_at).toBeNull();
+    expect(aAfter!.last_attempt_at).toBeNull();
+    expect(aAfter!.next_eligible_at).toBeInstanceOf(Date);
+
+    const bAfter = await queue.getJob(b.id);
+    expect(bAfter!.status).toBe("pending");
+    expect(bAfter!.retry_count).toBe(0);
+
+    const second = await queue.requeue([a.id, b.id]);
+    expect(second).toBe(0);
+
+    const claimed = await queue.claim("w1");
+    expect(claimed).not.toBeNull();
+    expect([a.id, b.id]).toContain(claimed!.id);
+    expect(claimed!.status).toBe("running");
+  });
+
+  it("requeue skips rows whose status is not 'failed'", async () => {
+    const pending = await queue.enqueue({ jobType: "p" });
+    const completed = await queue.enqueue({ jobType: "c" });
+    await pool.query(
+      `UPDATE ${schema}.processing_jobs SET status='completed', completed_at=now() WHERE id = $1`,
+      [completed.id],
+    );
+
+    const count = await queue.requeue([pending.id, completed.id]);
+    expect(count).toBe(0);
+
+    const p = await queue.getJob(pending.id);
+    expect(p!.status).toBe("pending");
+    const c = await queue.getJob(completed.id);
+    expect(c!.status).toBe("completed");
+  });
+
+  it("requeue returns 0 for an empty id list without touching the DB", async () => {
+    const count = await queue.requeue([]);
+    expect(count).toBe(0);
+  });
 });
 
 describe("createKysely / closeKysely", () => {

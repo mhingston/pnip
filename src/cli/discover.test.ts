@@ -8,6 +8,7 @@ function fakeMiniflux(): MinifluxClient {
     listUnreadEntries: vi.fn(),
     markEntryRead: vi.fn(),
     markEntriesRead: vi.fn(),
+    health: vi.fn(),
   };
 }
 

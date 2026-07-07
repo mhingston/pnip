@@ -84,6 +84,9 @@ function createFakeMiniflux(opts: {
     async markEntriesRead(ids: number[]): Promise<void> {
       for (const id of ids) await markEntryRead(id);
     },
+    async health() {
+      return { ok: true, status: 200 };
+    },
   };
   return { client, calls };
 }

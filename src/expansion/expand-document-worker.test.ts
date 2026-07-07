@@ -37,6 +37,8 @@ function fakeQueue(): ProcessingJobQueue {
     archiveJobs: vi.fn(),
     purgeArchivedJobs: vi.fn(),
     countByStatus: vi.fn(),
+    listFailed: vi.fn(),
+    requeue: vi.fn(),
   };
 }
 
@@ -79,6 +81,7 @@ describe("ExpandDocumentWorker", () => {
     const pluginRegistry: PluginRegistry = {
       register: vi.fn(),
       select: vi.fn(() => plugin),
+      list: vi.fn(() => []),
     };
 
     const docRepo: DocumentRepository = {
@@ -157,6 +160,7 @@ describe("ExpandDocumentWorker", () => {
     const pluginRegistry: PluginRegistry = {
       register: vi.fn(),
       select: vi.fn(() => plugin),
+      list: vi.fn(() => []),
     };
 
     const docRepo: DocumentRepository = {
@@ -195,6 +199,7 @@ describe("ExpandDocumentWorker", () => {
     const pluginRegistry: PluginRegistry = {
       register: vi.fn(),
       select: vi.fn(() => undefined),
+      list: vi.fn(() => []),
     };
 
     const worker = createExpandDocumentWorker({
@@ -214,7 +219,7 @@ describe("ExpandDocumentWorker", () => {
     const worker = createExpandDocumentWorker({
       docRepo: {} as DocumentRepository,
       sectionRepo: {} as SectionRepository,
-      pluginRegistry: { register: vi.fn(), select: vi.fn() },
+      pluginRegistry: { register: vi.fn(), select: vi.fn(), list: vi.fn(() => []) },
       provenanceRepo: {} as ProvenanceRepository,
       queue: fakeQueue(),
     });
@@ -233,6 +238,7 @@ describe("ExpandDocumentWorker", () => {
     const pluginRegistry: PluginRegistry = {
       register: vi.fn(),
       select: vi.fn(() => plugin),
+      list: vi.fn(() => []),
     };
 
     const docRepo: DocumentRepository = {
@@ -294,6 +300,7 @@ describe("ExpandDocumentWorker", () => {
     const pluginRegistry: PluginRegistry = {
       register: vi.fn(),
       select: vi.fn(() => plugin),
+      list: vi.fn(() => []),
     };
     const docRepo: DocumentRepository = {
       create: vi.fn(),

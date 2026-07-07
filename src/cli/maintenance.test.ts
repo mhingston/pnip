@@ -27,6 +27,8 @@ function makeFakeQueue(opts: {
       .mockResolvedValue(
         opts.counts ?? { pending: 0, running: 0, completed: 0, failed: 0, archived: 0 },
       ),
+    listFailed: vi.fn(),
+    requeue: vi.fn(),
   };
 }
 

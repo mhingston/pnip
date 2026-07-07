@@ -34,6 +34,8 @@ async function listMigrationFiles(directory: string): Promise<string[]> {
   return entries.filter((f) => f.endsWith(".sql")).sort();
 }
 
+export { listMigrationFiles };
+
 export async function runMigrations(
   pool: PgPool,
   opts?: { directory?: string },

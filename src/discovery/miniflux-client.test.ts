@@ -281,4 +281,59 @@ describe("miniflux-client", () => {
     expect(err.url).toBe("u");
     expect(err.method).toBe("GET");
   });
+
+  describe("health", () => {
+    it("GETs /v1/me with X-Auth-Token and returns ok=true on 200", async () => {
+      const { fetch, calls } = makeFakeFetch(() =>
+        new Response('{"id":1,"username":"admin"}', { status: 200 }),
+      );
+      const client = createMinifluxClient({
+        baseUrl: "http://127.0.0.1:8080",
+        token: TOKEN,
+        fetchImpl: fetch,
+      });
+
+      const h = await client.health();
+
+      expect(calls).toHaveLength(1);
+      const u = new URL(calls[0].url);
+      expect(u.pathname).toBe("/v1/me");
+      expect(header(calls[0].init?.headers, "X-Auth-Token")).toBe(TOKEN);
+      expect(h.ok).toBe(true);
+      expect(h.status).toBe(200);
+      expect(h.body).toContain("admin");
+    });
+
+    it("returns ok=false with the status and body on 401", async () => {
+      const { fetch } = makeFakeFetch(
+        () => new Response('{"error":"unauthorized"}', { status: 401 }),
+      );
+      const client = createMinifluxClient({
+        baseUrl: "http://127.0.0.1:8080",
+        token: TOKEN,
+        fetchImpl: fetch,
+      });
+
+      const h = await client.health();
+
+      expect(h.ok).toBe(false);
+      expect(h.status).toBe(401);
+      expect(h.body).toContain("unauthorized");
+    });
+
+    it("returns ok=false with status=0 and an error message when fetch throws", async () => {
+      const f = (() => Promise.reject(new Error("network down"))) as unknown as typeof fetch;
+      const client = createMinifluxClient({
+        baseUrl: "http://127.0.0.1:8080",
+        token: TOKEN,
+        fetchImpl: f,
+      });
+
+      const h = await client.health();
+
+      expect(h.ok).toBe(false);
+      expect(h.status).toBe(0);
+      expect(h.body).toBe("network down");
+    });
+  });
 });

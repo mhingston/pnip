@@ -64,9 +64,24 @@ import {
   parsePublishEditionFlags,
   runPublishEditionCommand,
 } from "./publish-edition.js";
+import {
+  DOCTOR_HELP,
+  runDoctorCommand,
+} from "./doctor.js";
+import {
+  GENERATE_EDITION_HELP,
+  parseGenerateEditionFlags,
+  runGenerateEditionCommand,
+} from "./generate-edition.js";
+import {
+  RETRY_HELP,
+  parseRetryFlags,
+  runRetryCommand,
+} from "./retry.js";
 import { createMarkdownDigestRepository } from "../digest/markdown/markdown-digest-repository.js";
 import { createMarkdownDigestService } from "../digest/markdown/markdown-digest-service.js";
 import { createEditionAssemblyService } from "../editions/edition-assembly-service.js";
+import { createEditionReadinessGate } from "../editions/edition-readiness-gate.js";
 import { createStorySummaryRepository } from "../clustering/story-summary-repository.js";
 import { createStoryRepository } from "../clustering/story-repository.js";
 import { createEmailDigestRepository } from "../digest/html/email-digest-repository.js";
@@ -486,8 +501,90 @@ async function main(): Promise<number> {
       return exitCode;
     }
 
+    if (command === "generate-edition") {
+      const parsed = parseGenerateEditionFlags({ args: rest });
+      if (parsed.help) {
+        console.log(GENERATE_EDITION_HELP);
+        return 0;
+      }
+      if (parsed.errors.length > 0) {
+        for (const e of parsed.errors) console.error(e);
+        console.log(GENERATE_EDITION_HELP);
+        return 2;
+      }
+
+      const logger = createLogger({ baseFields: { worker: "generate-edition" } });
+      const editionRepo = createEditionRepository(db);
+      const storyRepo = createStoryRepository(db);
+      const storySummaryRepo = createStorySummaryRepository(db);
+      const enrichmentTracker = createEnrichmentTrackerRepository(db);
+      const assembly = createEditionAssemblyService({
+        db,
+        editionRepo,
+        storyRepo,
+        storySummaryRepo,
+        enrichmentTracker,
+      });
+      const readinessGate = createEditionReadinessGate({
+        db,
+        editionRepo,
+        assembly,
+      });
+      const { exitCode } = await runGenerateEditionCommand({
+        editionRepo,
+        readinessGate,
+        editionDate: parsed.editionDate,
+        log: (m) => console.log(m),
+      });
+      return exitCode;
+    }
+
+    if (command === "retry") {
+      const parsed = parseRetryFlags({ args: rest });
+      if (parsed.help) {
+        console.log(RETRY_HELP);
+        return 0;
+      }
+      if (parsed.errors.length > 0) {
+        for (const e of parsed.errors) console.error(e);
+        console.log(RETRY_HELP);
+        return 2;
+      }
+      const queue = createProcessingJobQueue(db);
+      const { exitCode } = await runRetryCommand({
+        queue,
+        filters: parsed.filters,
+        dryRun: parsed.dryRun,
+        log: (m) => console.log(m),
+      });
+      return exitCode;
+    }
+
+    if (command === "doctor") {
+      console.log(DOCTOR_HELP);
+      const queue = createProcessingJobQueue(db);
+      const miniflux =
+        cfg.MINIFLUX_URL && cfg.MINIFLUX_API_TOKEN
+          ? createMinifluxClient({
+              baseUrl: cfg.MINIFLUX_URL,
+              token: cfg.MINIFLUX_API_TOKEN,
+            })
+          : undefined;
+      const notebookLm = createNotebookLmClient({});
+      const { exitCode } = await runDoctorCommand({
+        config: cfg,
+        pool,
+        queue,
+        miniflux,
+        notebookLm,
+        resendApiKey: cfg.RESEND_API_KEY,
+        log: (m) => console.log(m),
+      });
+      return exitCode;
+    }
+
     console.log(
-      "Usage: digestive <command>\nCommands: discover, process, maintenance, generate-digest, generate-email, generate-notebook, generate-podcast, publish-edition",
+      "Usage: digestive <command>\nCommands: discover, process, maintenance, generate-digest, generate-email, generate-notebook, generate-podcast, publish-edition, generate-edition, retry, doctor",
     );
     return 2;
   } finally {

@@ -17,6 +17,7 @@ export interface MinifluxClient {
   listUnreadEntries(opts?: { limit?: number; afterEntryId?: number }): Promise<MinifluxEntry[]>;
   markEntryRead(entryId: number): Promise<void>;
   markEntriesRead(entryIds: number[]): Promise<void>;
+  health(): Promise<{ ok: boolean; status: number; body?: string }>;
 }
 
 export class MinifluxApiError extends Error {
@@ -114,6 +115,28 @@ export function createMinifluxClient(opts: {
         body: JSON.stringify({ entry_ids: entryIds, status: "read" }),
       });
       await ensureOk(res, url, "PUT");
+    },
+
+    async health(): Promise<{ ok: boolean; status: number; body?: string }> {
+      const url = `${base}/v1/me`;
+      try {
+        const res = await doFetch(url, {
+          method: "GET",
+          headers: { "X-Auth-Token": token, Accept: "application/json" },
+        });
+        const text = await res.text();
+        return {
+          ok: res.ok,
+          status: res.status,
+          body: text.length > 200 ? text.slice(0, 200) : text,
+        };
+      } catch (err) {
+        if (err instanceof MinifluxApiError) {
+          return { ok: false, status: err.status, body: err.body };
+        }
+        const msg = err instanceof Error ? err.message : String(err);
+        return { ok: false, status: 0, body: msg };
+      }
     },
   };
 }

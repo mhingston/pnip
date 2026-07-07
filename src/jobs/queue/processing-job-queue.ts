@@ -33,6 +33,13 @@ export interface ProcessingJobQueue {
     limit?: number;
   }): Promise<number>;
   countByStatus(): Promise<Record<JobStatus, number>>;
+  listFailed(opts?: {
+    editionId?: string;
+    jobType?: string;
+    olderThanMs?: number;
+    limit?: number;
+  }): Promise<ProcessingJob[]>;
+  requeue(jobIds: string[]): Promise<number>;
 }
 
 export function createProcessingJobQueue(db: Kysely<Database>): ProcessingJobQueue {
@@ -239,6 +246,49 @@ export function createProcessingJobQueue(db: Kysely<Database>): ProcessingJobQue
         }
       }
       return out;
+    },
+
+    async listFailed(opts?: {
+      editionId?: string;
+      jobType?: string;
+      olderThanMs?: number;
+      limit?: number;
+    }): Promise<ProcessingJob[]> {
+      const limit = Math.min(opts?.limit ?? 1000, 10_000);
+      let q = db
+        .selectFrom("processing_jobs")
+        .selectAll()
+        .where("status", "=", "failed");
+      if (opts?.editionId !== undefined) {
+        q = q.where("edition_id", "=", opts.editionId);
+      }
+      if (opts?.jobType !== undefined) {
+        q = q.where("job_type", "=", opts.jobType);
+      }
+      if (opts?.olderThanMs !== undefined && opts.olderThanMs > 0) {
+        q = q.where(
+          sql<SqlBool>`updated_at < now() - (${opts.olderThanMs} * interval '1 millisecond')`,
+        );
+      }
+      return q.orderBy("updated_at", "desc").limit(limit).execute();
+    },
+
+    async requeue(jobIds: string[]): Promise<number> {
+      if (jobIds.length === 0) return 0;
+      const idList = sql.join(jobIds.map((id) => sql`${id}`));
+      const result = await sql`UPDATE processing_jobs
+        SET status = 'pending',
+            retry_count = 0,
+            next_eligible_at = now(),
+            locked_by = NULL,
+            locked_at = NULL,
+            last_error = NULL,
+            last_attempt_at = NULL,
+            updated_at = now()
+        WHERE id IN (${idList})
+          AND status = 'failed'
+        RETURNING id`.execute(db);
+      return result.rows.length;
     },
   };
 }
