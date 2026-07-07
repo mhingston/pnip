@@ -1,39 +1,57 @@
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import type { ExpansionPlugin, ExpandContext, ExpandResult, SectionData } from "./types.js";
+import { loadConfig } from "../config/index.js";
 
 export type ContentFetcher = (url: string) => Promise<string>;
+
+const execFileAsync = promisify(execFile);
+
+interface FabricParsed {
+  title?: string;
+  canonicalUrl?: string;
+  publishedAt?: Date;
+  content: string;
+}
+
+export function parseFabricOutput(raw: string): FabricParsed {
+  const lines = raw.split("\n");
+  const markerIdx = lines.findIndex((l) => l.startsWith("Markdown Content:"));
+  if (markerIdx === -1) {
+    return { content: raw };
+  }
+
+  const headerLines = lines.slice(0, markerIdx);
+  let bodyLines = lines.slice(markerIdx + 1);
+  while (bodyLines.length > 0 && bodyLines[0].trim() === "") bodyLines.shift();
+  const content = bodyLines.join("\n");
+
+  let title: string | undefined;
+  let canonicalUrl: string | undefined;
+  let publishedAt: Date | undefined;
+
+  for (const line of headerLines) {
+    if (line.startsWith("Title:")) {
+      const v = line.slice("Title:".length).trim();
+      title = v || undefined;
+    } else if (line.startsWith("URL Source:")) {
+      const v = line.slice("URL Source:".length).trim();
+      canonicalUrl = v || undefined;
+    } else if (line.startsWith("Published Time:")) {
+      const v = line.slice("Published Time:".length).trim();
+      if (v) {
+        const d = new Date(v);
+        publishedAt = isNaN(d.getTime()) ? undefined : d;
+      }
+    }
+  }
+
+  return { title, canonicalUrl, publishedAt, content };
+}
 
 function extractTitle(content: string): string | undefined {
   const match = content.match(/^#\s+(.+)/m);
   return match ? match[1].trim() : undefined;
-}
-
-function simpleHtmlToMarkdown(html: string): string {
-  let md = html
-    .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "")
-    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "")
-    .replace(/<nav[^>]*>[\s\S]*?<\/nav>/gi, "")
-    .replace(/<footer[^>]*>[\s\S]*?<\/footer>/gi, "")
-    .replace(/<header[^>]*>[\s\S]*?<\/header>/gi, "")
-    .replace(/<h1[^>]*>([\s\S]*?)<\/h1>/gi, "# $1\n")
-    .replace(/<h2[^>]*>([\s\S]*?)<\/h2>/gi, "## $1\n")
-    .replace(/<h3[^>]*>([\s\S]*?)<\/h3>/gi, "### $1\n")
-    .replace(/<p[^>]*>([\s\S]*?)<\/p>/gi, "$1\n\n")
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<li[^>]*>([\s\S]*?)<\/li>/gi, "- $1\n")
-    .replace(/<a[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi, "[$2]($1)")
-    .replace(/<strong[^>]*>([\s\S]*?)<\/strong>/gi, "**$1**")
-    .replace(/<em[^>]*>([\s\S]*?)<\/em>/gi, "*$1*")
-    .replace(/<[^>]+>/g, "")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#x27;/g, "'")
-    .replace(/&#39;/g, "'")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-
-  return md;
 }
 
 function parseSections(content: string): SectionData[] {
@@ -78,15 +96,12 @@ function parseSections(content: string): SectionData[] {
 }
 
 async function defaultFetchContent(url: string): Promise<string> {
-  const res = await fetch(url, {
-    headers: { "User-Agent": "Mozilla/5.0 (compatible; PNIP/1.0)" },
-    signal: AbortSignal.timeout(15_000),
+  const bin = loadConfig().FABRIC_BIN ?? "fabric";
+  const { stdout } = await execFileAsync(bin, ["-u", url], {
+    timeout: 60_000,
+    maxBuffer: 10 * 1024 * 1024,
   });
-  if (!res.ok) {
-    throw new Error(`HTTP ${res.status} fetching ${url}`);
-  }
-  const html = await res.text();
-  return simpleHtmlToMarkdown(html);
+  return stdout;
 }
 
 export function createArticlePlugin(opts?: {
@@ -105,12 +120,14 @@ export function createArticlePlugin(opts?: {
     },
 
     async expand(context: ExpandContext): Promise<ExpandResult> {
-      const content = await fetchContent(context.url);
+      const raw = await fetchContent(context.url);
+      const parsed = parseFabricOutput(raw);
+      const content = parsed.content;
       const plainText = content
         .replace(/#{1,6}\s+/g, "")
         .replace(/\n{3,}/g, "\n\n")
         .trim();
-      const title = extractTitle(content) ?? context.url;
+      const title = parsed.title ?? extractTitle(content) ?? context.url;
       const sections = parseSections(content);
       const titleSection = sections.find((s) => s.section_type === "title");
       const remainingSections = sections.filter((s) => s.section_type !== "title");
@@ -120,6 +137,8 @@ export function createArticlePlugin(opts?: {
         content,
         plainText,
         sourceType: "article",
+        canonicalUrl: parsed.canonicalUrl,
+        publishedAt: parsed.publishedAt,
         sections: titleSection
           ? [titleSection, ...remainingSections]
           : [
