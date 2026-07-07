@@ -117,7 +117,7 @@ per-source assignment.
 | Source   | Engine                          | Rationale                                                                  |
 | -------- | ------------------------------- | -------------------------------------------------------------------------- |
 | Article  | Fabric `-u` (Jina scrape)       | Verified raw markdown + metadata; no LLM; replaces HTTP fetch + regex.      |
-| YouTube  | Fabric `-y --transcript`        | Native transcript/timestamp/metadata support; requires `yt-dlp` on PATH.    |
+| YouTube  | Fabric `-y --transcript-with-timestamps` | Native transcript/timestamp/metadata support; requires `yt-dlp` on PATH.    |
 | Podcast  | Fabric `--transcribe-file`      | Whisper transcription; requires OpenAI key + ffmpeg for >25MB files.        |
 | PDF      | MarkItDown (Python CLI)         | Fabric has no raw PDF→text path (only LLM-routed `--attachment`).           |
 | Reddit   | Native Node (Reddit API / JSON) | Jina is 403-blocked by Reddit; §26 needs structured comment metadata.       |
