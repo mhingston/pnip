@@ -20,6 +20,15 @@ export interface ClusterOptions {
   similarityThreshold: number;
   minClusterSize: number;
   maxStories: number;
+  /**
+   * Optional RNG injection, kept for backward compatibility with older tests.
+   * NOT used by the default code path: tiebreaks use deterministic orderings
+   * (alphabetical sort of topics, sorted union-find iteration) so that
+   * identical Edition contents always produce identical story labels and
+   * membership. Pass `random` only if you specifically want to inject
+   * randomness for adversarial testing — production callers should leave it
+   * unset.
+   */
   random?: () => number;
 }
 
@@ -49,7 +58,7 @@ function cosineSimilarity(a: number[], b: number[]): number {
 
 function pickRepresentativeTopic(
   topics: readonly string[],
-  rng: () => number,
+  rng?: () => number,
 ): string {
   if (topics.length === 0) return "general";
   const seen = new Set<string>();
@@ -62,8 +71,19 @@ function pickRepresentativeTopic(
     deduped.push(norm);
   }
   if (deduped.length === 0) return "general";
-  const idx = Math.floor(rng() * deduped.length);
-  return deduped[Math.min(idx, deduped.length - 1)];
+  // Determinism: pick the lexicographically FIRST topic (stable across runs).
+  // The `rng` parameter is preserved for backward-compatible testing only;
+  // production callers leave it unset and rely on the alphabetical tiebreak.
+  if (rng) {
+    const idx = Math.floor(rng() * deduped.length);
+    return deduped[Math.min(idx, deduped.length - 1)]!;
+  }
+  let best = deduped[0]!;
+  for (let i = 1; i < deduped.length; i++) {
+    const candidate = deduped[i]!;
+    if (candidate < best) best = candidate;
+  }
+  return best;
 }
 
 function makeLabel(
@@ -90,7 +110,9 @@ export function clusterDocuments(
     opts?.similarityThreshold ?? DEFAULT_CLUSTER_OPTIONS.similarityThreshold;
   const maxStories =
     opts?.maxStories ?? DEFAULT_CLUSTER_OPTIONS.maxStories;
-  const rng = opts?.random ?? Math.random;
+  // `opts?.random` is the only knob that introduces nondeterminism.
+  // Production callers leave it unset; adversarial tests can inject it.
+  const rng = opts?.random;
 
   if (inputs.length === 0) return [];
 

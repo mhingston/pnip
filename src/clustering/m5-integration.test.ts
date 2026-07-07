@@ -548,6 +548,89 @@ describe("M5 Story Clustering end-to-end", () => {
     }
   });
 
+  it("determinism audit: 3 docs with overlapping topics produce identical story labels + clusters across reruns", async () => {
+    // Pre-fix, `pickRepresentativeTopic` used `Math.random()` to choose
+    // among multiple topics, so each run produced a different label.
+    // Post-fix, the lexical-first tiebreak + the secondary `source_url`
+    // sort on `document_repository.getByEdition` make every run byte-identical.
+
+    // vAlpha and vBeta are similar (same sin seed family) so they cluster
+    // together under threshold 0.5; vGamma is unrelated. Each cluster
+    // gets THREE competing topics so the clusterer must pick one to
+    // label the cluster. Pre-fix this was random; post-fix it must
+    // always pick the lexicographically smallest topic per cluster.
+
+    const vAlpha = makeVector(7, 384);
+    const vBeta = makeVector(8, 384);
+    const vGamma = makeVector(99, 384);
+
+    await seedDocument(doc1, chunk1, "Alpha", [
+      { topic: "tech", confidence: 0.7 },
+      { topic: "ml", confidence: 0.9 },
+      { topic: "ai", confidence: 0.5 },
+    ], vAlpha);
+    await seedDocument(doc2, chunk2, "Beta", [
+      { topic: "ai", confidence: 0.95 },
+      { topic: "ml", confidence: 0.6 },
+      { topic: "tech", confidence: 0.4 },
+    ], vBeta);
+    await seedDocument(doc3, chunk3, "Gamma", [
+      { topic: "policy", confidence: 0.95 },
+      { topic: "regulation", confidence: 0.6 },
+      { topic: "ai", confidence: 0.4 },
+    ], vGamma);
+
+    const worker = createClusterStoriesWorker(makeDeps());
+    const job = {
+      id: "job-det",
+      job_type: "cluster_stories",
+      edition_id: editionId,
+      target: { editionId },
+      status: "running",
+      retry_count: 0,
+      last_error: null,
+      last_attempt_at: null,
+      next_eligible_at: new Date(),
+      locked_by: "w",
+      locked_at: new Date(),
+      created_at: new Date(),
+      updated_at: new Date(),
+      completed_at: null,
+      depends_on: [],
+    } as any;
+
+    const runs: {
+      labels: string[];
+      membersByLabel: Record<string, string[]>;
+    }[] = [];
+    for (let run = 0; run < 6; run++) {
+      await worker.execute(job, { db: {} as any, logger: silentLogger() });
+      const stories = await storyRepo.getByEdition(editionId);
+      runs.push({
+        labels: stories.map((s) => s.story.label),
+        membersByLabel: Object.fromEntries(
+          stories.map((s) => [
+            s.story.label,
+            s.members.map((m) => m.document_id).sort(),
+          ]),
+        ),
+      });
+    }
+
+    // All 6 runs must produce the same labels in the same order, with
+    // the same member sets. Pre-fix this would have produced differing
+    // `story-ml-1` vs `story-tech-1` labels across runs because each
+    // run independently rolled `Math.random()` per cluster.
+    for (let i = 1; i < runs.length; i++) {
+      expect(runs[i]!.labels).toEqual(runs[0]!.labels);
+      expect(runs[i]!.membersByLabel).toEqual(runs[0]!.membersByLabel);
+    }
+
+    // Additionally: the labels must START with the lexically smallest
+    // topic ('ai') since both clusters have 'ai' as one of their 3 topics.
+    expect(runs[0]!.labels[0]).toMatch(/^story-ai-/);
+  });
+
   it("story summary citations reference real chunks (provenance integrity)", async () => {
     const v = makeVector(11, 384);
     await seedDocument(doc1, chunk1, "A", [{ topic: "ai", confidence: 0.9 }], v);

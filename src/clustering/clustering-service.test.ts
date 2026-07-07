@@ -135,4 +135,54 @@ describe("clusterDocuments", () => {
     });
     expect(result.length).toBeLessThanOrEqual(3);
   });
+
+  // Determinism audits — these intentionally use the DEFAULTS (Math.random,
+  // no random override). They document the determinism contract that
+  // callers outside this test file currently violate when they don't inject
+  // `random: () => 0` (or some other stable seed). See M7-prep plan.
+
+  it("picks the same representative topic for the same input across many runs (default RNG)", () => {
+    // Multiple distinct topics should resolve to the FIRST deterministic tiebreak,
+    // not to whatever Math.random() happens to return. With sorted tiebreak
+    // (alphabetical) the first topic is "ai".
+    const inputs = [
+      makeInput("d1", ["ai", "ml", "tech"], makeVector([1, 0])),
+    ];
+    for (let run = 0; run < 8; run++) {
+      const result = clusterDocuments(inputs, {
+        similarityThreshold: 0.5,
+      });
+      expect(result[0]?.label).toMatch(/^story-ai-/);
+    }
+  });
+
+  it("produces identical output for identical input across many runs (default RNG, no topic competition)", () => {
+    // No topic competition → RNG only used by `pickRepresentativeTopic`'s
+    // length-1 path which is `return deduped[0]`. Should be deterministic.
+    const inputs = [
+      makeInput("d1", ["ai"], makeVector([1, 0])),
+      makeInput("d2", ["ai"], makeVector([0.99, 0.01])),
+    ];
+    const first = clusterDocuments(inputs, { similarityThreshold: 0.5 });
+    for (let run = 0; run < 8; run++) {
+      const result = clusterDocuments(inputs, { similarityThreshold: 0.5 });
+      expect(result[0]?.label).toBe(first[0]?.label);
+    }
+  });
+
+  it("produces identical output for the same input in the same order (default RNG)", () => {
+    // With Math.random as the RNG, identical input IN THE SAME ORDER must
+    // be deterministic. This is what we want to guarantee even when callers
+    // forget to pass `random`. (Today it happens to be deterministic for the
+    // trivial reason of `pickRepresentativeTopic` using idx=Math.floor(rng()*1)
+    // when topic arrays are length 1.)
+    const inputs = Array.from({ length: 4 }, (_, i) =>
+      makeInput(`d${i}`, ["tech"], makeVector([i, 0])),
+    );
+    const first = clusterDocuments(inputs, { similarityThreshold: 0.5 });
+    for (let run = 0; run < 8; run++) {
+      const result = clusterDocuments(inputs, { similarityThreshold: 0.5 });
+      expect(result.map((c) => c.label)).toEqual(first.map((c) => c.label));
+    }
+  });
 });

@@ -79,7 +79,12 @@ export function createDocumentRepository(db: Kysely<Database>): DocumentReposito
         .selectFrom("documents")
         .selectAll()
         .where("edition_id", "=", editionId)
+        // Determinism: created_at is millisecond-resolution; documents inserted in
+        // the same run share an identical created_at and Postgres's order between
+        // ties is undefined. source_url is a stable canonical tiebreak so the
+        // clusterer always receives the same input order for the same Edition.
         .orderBy("created_at", "asc")
+        .orderBy("source_url", "asc")
         .execute();
     },
 
