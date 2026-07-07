@@ -2864,7 +2864,7 @@ prerequisite foundation that no single phase owns; Milestones 12 and 13 are
 cross-cutting operational and quality layers that should be built
 incrementally alongside each phase rather than entirely at the end.
 
-## Milestone 0 — Foundation & Infrastructure
+## Milestone 0 — Foundation & Infrastructure — COMPLETE
 
 **Phases covered:** none (prerequisite for all)
 
@@ -2892,14 +2892,14 @@ Delivers no business logic; everything else depends on it.
   1. A worker can claim a pending processing job with no outstanding dependencies.
   2. A worker can complete a previously claimed processing job.
   3. Under concurrent workers, locked jobs are skipped so no two workers can claim the same processing job.
-* Retry scheduling with exponential backoff + jitter, dependency tracking, and archival are deferred to later M0 slices.
+* Retry scheduling with exponential backoff + jitter, dependency tracking, and archival — all delivered (S4–S12).
 
 **Depends on:** nothing
 **Unblocks:** all subsequent milestones
 
 ---
 
-## Milestone 1 — Discovery
+## Milestone 1 — Discovery — COMPLETE
 
 **Phases covered:** 1 (Discovery Worker), 2 (Discovery Events)
 
@@ -2914,20 +2914,22 @@ Delivers no business logic; everything else depends on it.
 
 ---
 
-## Milestone 2 — Expansion & Canonical Documents
+## Milestone 2 — Expansion & Canonical Documents — COMPLETE
 
 **Phases covered:** 3 (Expansion Worker), 4 (Canonical Documents)
 
-* `ExpansionPlugin` interface + deterministic first-match selection (§19)
-* Fabric integration as the default extraction engine for Article/YouTube/Podcast; MarkItDown for PDF; native extraction for Reddit (§18) — see Expansion Plugin Extraction Map
-* Five plugins: Article (done), YouTube, Podcast, PDF, Reddit (§19) — **only Article implemented**
-* Sectioning (§16, §22) and immutable Canonical Document persistence (§20)
-* Expansion metadata, attachment records, document lineage (§20, §21, §35)
-* Reddit comment refresh scheduling (30m → 2h → 6h → pre-publication → stop) with append-only, deduplicated comment selection strategies (§26)
-* Idempotency: canonical document is not recreated on rerun (§53)
+* `ExpansionPlugin` interface + deterministic first-match selection (§19) ✓
+* Fabric integration as the default extraction engine for Article/YouTube/Podcast; MarkItDown for PDF; native extraction for Reddit (§18) — see Expansion Plugin Extraction Map ✓
+* Five plugins: Article, YouTube, Podcast, PDF, Reddit (§19) ✓
+* Sectioning (§16, §22) and immutable Canonical Document persistence (§20) ✓
+* Expansion metadata, document lineage (§20, §21, §35) ✓ (attachment records deferred — no M2 plugin emits attachments yet)
+* Reddit comment refresh scheduling — built (30m → 2h → 6h schedule + dedup + comment selection) then **deferred**: the initial RSS fetch already captures all current comments, and Reddit's RSS rate limit (~1 req/50s) makes timed refresh infeasible across hundreds of threads/day. Infrastructure retained for future reactivation. Initial expansion caps comments at 25. (§26)
+* Idempotency: canonical document is not recreated on rerun (§53) ✓
+* Reddit rate-limit handling: `RedditRateLimitError` thrown on 429/exhausted budget; expand worker re-enqueues the job with a delayed `nextEligibleAt` ✓
+* CLI: all 5 plugins wired into `digestive process` in correct first-match order (YouTube → Reddit → Podcast → PDF → Article) ✓
 
 **Depends on:** M1
-**Acceptance links:** criteria 4, 5
+**Acceptance links:** criteria 4, 5 — both satisfied (281 tests, typecheck clean)
 
 ---
 
@@ -3109,19 +3111,19 @@ incrementally with each phase rather than deferred to the end.
 
 ## Milestone → Phase → Acceptance Summary
 
-| Milestone | Phases        | Primary acceptance criteria (§61) |
-| --------- | ------------- | --------------------------------- |
-| M0        | —             | (foundation)                      |
-| M1        | 1, 2          | 1–3, 19                           |
-| M2        | 3, 4          | 4, 5                              |
-| M3        | 5             | 5, 6                              |
-| M4        | 6             | 6–8                               |
-| M5        | 7             | 9                                 |
-| M6        | 8             | 16, 17                            |
-| M7        | 9             | 10                                |
-| M8        | 10            | 11, 12                            |
-| M9        | 11            | 13, 15                            |
-| M10       | 12            | 14, 15                            |
-| M11       | 13            | 16–18                             |
-| M12       | cross-cutting | 19, 20                            |
-| M13       | cross-cutting | 1–20 (all)                        |
+| Milestone | Phases        | Primary acceptance criteria (§61) | Status     |
+| --------- | ------------- | --------------------------------- | ---------- |
+| M0        | —             | (foundation)                      | Complete   |
+| M1        | 1, 2          | 1–3, 19                           | Complete   |
+| M2        | 3, 4          | 4, 5                              | Complete   |
+| M3        | 5             | 5, 6                              | Next       |
+| M4        | 6             | 6–8                               | Pending    |
+| M5        | 7             | 9                                 | Pending    |
+| M6        | 8             | 16, 17                            | Pending    |
+| M7        | 9             | 10                                | Pending    |
+| M8        | 10            | 11, 12                            | Pending    |
+| M9        | 11            | 13, 15                            | Pending    |
+| M10       | 12            | 14, 15                            | Pending    |
+| M11       | 13            | 16–18                             | Pending    |
+| M12       | cross-cutting | 19, 20                            | Pending    |
+| M13       | cross-cutting | 1–20 (all)                        | Pending    |
