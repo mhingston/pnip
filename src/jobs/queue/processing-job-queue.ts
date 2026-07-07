@@ -10,6 +10,18 @@ export interface EnqueueInput {
   dependsOn?: string[];
 }
 
+export interface QueueMetrics {
+  byStatus: Record<JobStatus, number>;
+  totalCompleted: number;
+  totalFailed: number;
+  totalRetries: number;
+  avgProcessingLatencyMs: number | null;
+  maxRetries: number;
+  throughputLastHour: number;
+  throughputLastDay: number;
+  oldestPendingAgeMs: number | null;
+}
+
 export interface ProcessingJobQueue {
   enqueue(input: EnqueueInput): Promise<ProcessingJob>;
   claim(workerId: string): Promise<ProcessingJob | null>;
@@ -40,10 +52,102 @@ export interface ProcessingJobQueue {
     limit?: number;
   }): Promise<ProcessingJob[]>;
   requeue(jobIds: string[]): Promise<number>;
+  getMetrics(): Promise<QueueMetrics>;
 }
 
 export function createProcessingJobQueue(db: Kysely<Database>): ProcessingJobQueue {
-  return {
+  async function countByStatus(): Promise<Record<JobStatus, number>> {
+    const rows = await db
+      .selectFrom("processing_jobs")
+      .select("status")
+      .select((eb) => eb.fn.count<number>("id").as("n"))
+      .groupBy("status")
+      .execute();
+    const out: Record<JobStatus, number> = {
+      pending: 0,
+      running: 0,
+      completed: 0,
+      failed: 0,
+      archived: 0,
+    };
+    for (const r of rows) {
+      const n = Number(r.n);
+      switch (r.status) {
+        case "pending":
+        case "running":
+        case "completed":
+        case "failed":
+        case "archived":
+          out[r.status] = n;
+          break;
+      }
+    }
+    return out;
+  }
+
+  async function getMetrics(): Promise<QueueMetrics> {
+    const byStatus = await countByStatus();
+
+    const totalsRes = await sql`SELECT
+      COUNT(*) FILTER (WHERE status='completed') AS completed,
+      COUNT(*) FILTER (WHERE status='failed') AS failed,
+      COALESCE(SUM(retry_count), 0) AS total_retries,
+      COALESCE(MAX(retry_count), 0) AS max_retries
+      FROM processing_jobs`.execute(db);
+    const totals = totalsRes.rows[0] as {
+      completed: string | number;
+      failed: string | number;
+      total_retries: string | number;
+      max_retries: string | number;
+    };
+
+    const latencyRes = await sql`SELECT
+      AVG(EXTRACT(EPOCH FROM (completed_at - created_at)) * 1000)::bigint AS avg_latency_ms
+      FROM processing_jobs
+      WHERE status='completed' AND completed_at IS NOT NULL`.execute(db);
+    const latencyRow = latencyRes.rows[0] as
+      | { avg_latency_ms: string | number | null }
+      | undefined;
+
+    const hourRes = await sql`SELECT COUNT(*) AS n
+      FROM processing_jobs
+      WHERE status='completed' AND completed_at > now() - interval '1 hour'`.execute(db);
+    const hourRow = hourRes.rows[0] as { n: string | number };
+
+    const dayRes = await sql`SELECT COUNT(*) AS n
+      FROM processing_jobs
+      WHERE status='completed' AND completed_at > now() - interval '1 day'`.execute(db);
+    const dayRow = dayRes.rows[0] as { n: string | number };
+
+    const ageRes = await sql`SELECT
+      EXTRACT(EPOCH FROM (now() - MIN(created_at))) * 1000 AS age_ms
+      FROM processing_jobs
+      WHERE status='pending'`.execute(db);
+    const ageRow = ageRes.rows[0] as
+      | { age_ms: string | number | null }
+      | undefined;
+
+    return {
+      byStatus,
+      totalCompleted: Number(totals.completed),
+      totalFailed: Number(totals.failed),
+      totalRetries: Number(totals.total_retries),
+      maxRetries: Number(totals.max_retries),
+      avgProcessingLatencyMs:
+        latencyRow && latencyRow.avg_latency_ms !== null &&
+        latencyRow.avg_latency_ms !== undefined
+          ? Number(latencyRow.avg_latency_ms)
+          : null,
+      throughputLastHour: Number(hourRow.n),
+      throughputLastDay: Number(dayRow.n),
+      oldestPendingAgeMs:
+        ageRow && ageRow.age_ms !== null && ageRow.age_ms !== undefined
+          ? Number(ageRow.age_ms)
+          : null,
+    };
+  }
+
+  const queue: ProcessingJobQueue = {
     async enqueue(input: EnqueueInput): Promise<ProcessingJob> {
       const row = await db
         .insertInto("processing_jobs")
@@ -219,34 +323,7 @@ export function createProcessingJobQueue(db: Kysely<Database>): ProcessingJobQue
       return result.rows.length;
     },
 
-    async countByStatus(): Promise<Record<JobStatus, number>> {
-      const rows = await db
-        .selectFrom("processing_jobs")
-        .select("status")
-        .select((eb) => eb.fn.count<number>("id").as("n"))
-        .groupBy("status")
-        .execute();
-      const out: Record<JobStatus, number> = {
-        pending: 0,
-        running: 0,
-        completed: 0,
-        failed: 0,
-        archived: 0,
-      };
-      for (const r of rows) {
-        const n = Number(r.n);
-        switch (r.status) {
-          case "pending":
-          case "running":
-          case "completed":
-          case "failed":
-          case "archived":
-            out[r.status] = n;
-            break;
-        }
-      }
-      return out;
-    },
+    countByStatus,
 
     async listFailed(opts?: {
       editionId?: string;
@@ -290,5 +367,9 @@ export function createProcessingJobQueue(db: Kysely<Database>): ProcessingJobQue
         RETURNING id`.execute(db);
       return result.rows.length;
     },
+
+    getMetrics,
   };
+
+  return queue;
 }

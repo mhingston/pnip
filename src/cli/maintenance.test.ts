@@ -29,6 +29,7 @@ function makeFakeQueue(opts: {
       ),
     listFailed: vi.fn(),
     requeue: vi.fn(),
+    getMetrics: vi.fn(),
   };
 }
 

@@ -880,6 +880,76 @@ describe("ProcessingJobQueue", () => {
     const count = await queue.requeue([]);
     expect(count).toBe(0);
   });
+
+  it("getMetrics on an empty table returns zero counts and null latency/age", async () => {
+    const m = await queue.getMetrics();
+    expect(m.byStatus).toEqual({
+      pending: 0,
+      running: 0,
+      completed: 0,
+      failed: 0,
+      archived: 0,
+    });
+    expect(m.totalCompleted).toBe(0);
+    expect(m.totalFailed).toBe(0);
+    expect(m.totalRetries).toBe(0);
+    expect(m.maxRetries).toBe(0);
+    expect(m.avgProcessingLatencyMs).toBeNull();
+    expect(m.throughputLastHour).toBe(0);
+    expect(m.throughputLastDay).toBe(0);
+    expect(m.oldestPendingAgeMs).toBeNull();
+  });
+
+  it("getMetrics reports avg latency and throughput for completed jobs", async () => {
+    const recent = await queue.enqueue({ jobType: "fast" });
+    const older = await queue.enqueue({ jobType: "slow" });
+    await pool.query(
+      `UPDATE ${schema}.processing_jobs SET status='completed', completed_at = now(), created_at = now() - interval '30 seconds' WHERE id = $1`,
+      [recent.id],
+    );
+    await pool.query(
+      `UPDATE ${schema}.processing_jobs SET status='completed', completed_at = now() - interval '2 hours', created_at = now() - interval '3 hours' WHERE id = $1`,
+      [older.id],
+    );
+
+    const m = await queue.getMetrics();
+    expect(m.byStatus.completed).toBe(2);
+    expect(m.totalCompleted).toBe(2);
+    expect(m.totalFailed).toBe(0);
+    expect(m.throughputLastHour).toBe(1);
+    expect(m.throughputLastDay).toBe(2);
+    expect(m.avgProcessingLatencyMs).not.toBeNull();
+    expect(m.avgProcessingLatencyMs!).toBeGreaterThan(0);
+    expect(m.oldestPendingAgeMs).toBeNull();
+  });
+
+  it("getMetrics reports totalRetries, maxRetries, totalFailed, and oldest pending age", async () => {
+    const pending = await queue.enqueue({ jobType: "stuck" });
+    await pool.query(
+      `UPDATE ${schema}.processing_jobs SET status='pending', created_at = now() - interval '5 minutes' WHERE id = $1`,
+      [pending.id],
+    );
+    const failedA = await queue.enqueue({ jobType: "fa" });
+    const failedB = await queue.enqueue({ jobType: "fb" });
+    await pool.query(
+      `UPDATE ${schema}.processing_jobs SET status='failed', retry_count = 2 WHERE id = $1`,
+      [failedA.id],
+    );
+    await pool.query(
+      `UPDATE ${schema}.processing_jobs SET status='failed', retry_count = 5 WHERE id = $1`,
+      [failedB.id],
+    );
+
+    const m = await queue.getMetrics();
+    expect(m.byStatus.failed).toBe(2);
+    expect(m.byStatus.pending).toBe(1);
+    expect(m.totalFailed).toBe(2);
+    expect(m.totalRetries).toBe(7);
+    expect(m.maxRetries).toBe(5);
+    expect(m.oldestPendingAgeMs).not.toBeNull();
+    expect(m.oldestPendingAgeMs!).toBeGreaterThan(4 * 60 * 1000);
+    expect(m.throughputLastHour).toBe(0);
+  });
 });
 
 describe("createKysely / closeKysely", () => {

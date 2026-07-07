@@ -39,6 +39,7 @@ function fakeQueue(): ProcessingJobQueue {
     countByStatus: vi.fn(),
     listFailed: vi.fn(),
     requeue: vi.fn(),
+    getMetrics: vi.fn(),
   };
 }
 

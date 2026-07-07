@@ -31,6 +31,7 @@ function makeFakeQueue(opts: {
     requeue: opts.requeueError
       ? vi.fn().mockRejectedValue(opts.requeueError)
       : vi.fn().mockResolvedValue(opts.requeue ?? 0),
+    getMetrics: vi.fn(),
   };
 }
 

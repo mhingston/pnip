@@ -29,6 +29,7 @@ const configSchema = z.object({
   MARKITDOWN_BIN: z.string().optional(),
   WORKER_CONCURRENCY: z.string().optional(),
   RETRY_MAX_ATTEMPTS: z.string().optional(),
+  DOCTOR_FAILED_THRESHOLD: z.string().optional(),
 });
 
 export type Config = z.infer<typeof configSchema>;

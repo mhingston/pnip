@@ -89,6 +89,7 @@ function makeFakeQueue(opts: {
         ),
     listFailed: vi.fn(),
     requeue: vi.fn(),
+    getMetrics: vi.fn(),
   };
 }
 
@@ -232,6 +233,36 @@ describe("runDoctorCommand", () => {
     const check = r.report.checks.find((c) => c.name === "queue");
     expect(check?.ok).toBe(false);
     expect(check?.detail).toContain("failed=250");
+  });
+
+  it("queue: threshold override via DOCTOR_FAILED_THRESHOLD lowers the pass/fail boundary", async () => {
+    const r = await runDoctorCommand({
+      config: makeConfig({ DOCTOR_FAILED_THRESHOLD: "50" }),
+      pool: makeFakePool({}),
+      queue: makeFakeQueue({
+        counts: { pending: 0, running: 0, completed: 0, failed: 60, archived: 0 },
+      }),
+      migrationsDir: goodMigrationsDir,
+    });
+    const check = r.report.checks.find((c) => c.name === "queue");
+    expect(check?.ok).toBe(false);
+    expect(check?.detail).toContain("failed threshold=50");
+    expect(check?.detail).toContain("failed=60");
+  });
+
+  it("queue: falls back to default threshold (100) when DOCTOR_FAILED_THRESHOLD is invalid", async () => {
+    const r = await runDoctorCommand({
+      config: makeConfig({ DOCTOR_FAILED_THRESHOLD: "not-a-number" }),
+      pool: makeFakePool({}),
+      queue: makeFakeQueue({
+        counts: { pending: 0, running: 0, completed: 0, failed: 150, archived: 0 },
+      }),
+      migrationsDir: goodMigrationsDir,
+    });
+    const check = r.report.checks.find((c) => c.name === "queue");
+    expect(check?.ok).toBe(false);
+    expect(check?.detail).toContain("failed threshold=100");
+    expect(check?.detail).toContain("failed=150");
   });
 
   it("miniflux: ok when health returns ok=true", async () => {

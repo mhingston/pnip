@@ -69,6 +69,11 @@ import {
   runDoctorCommand,
 } from "./doctor.js";
 import {
+  METRICS_HELP,
+  parseMetricsFlags,
+  runMetricsCommand,
+} from "./metrics.js";
+import {
   GENERATE_EDITION_HELP,
   parseGenerateEditionFlags,
   runGenerateEditionCommand,
@@ -583,8 +588,28 @@ async function main(): Promise<number> {
       return exitCode;
     }
 
+    if (command === "metrics") {
+      const parsed = parseMetricsFlags({ args: rest });
+      if (parsed.help) {
+        console.log(METRICS_HELP);
+        return 0;
+      }
+      if (parsed.errors.length > 0) {
+        for (const e of parsed.errors) console.error(e);
+        console.log(METRICS_HELP);
+        return 2;
+      }
+      const queue = createProcessingJobQueue(db);
+      const { exitCode } = await runMetricsCommand({
+        db,
+        queue,
+        log: (m) => console.log(m),
+      });
+      return exitCode;
+    }
+
     console.log(
-      "Usage: digestive <command>\nCommands: discover, process, maintenance, generate-digest, generate-email, generate-notebook, generate-podcast, publish-edition, generate-edition, retry, doctor",
+      "Usage: digestive <command>\nCommands: discover, process, maintenance, generate-digest, generate-email, generate-notebook, generate-podcast, publish-edition, generate-edition, retry, doctor, metrics",
     );
     return 2;
   } finally {

@@ -31,7 +31,7 @@ export interface DoctorCommandDeps {
   log?: (msg: string) => void;
 }
 
-const FAILED_THRESHOLD = 100;
+const DEFAULT_FAILED_THRESHOLD = 100;
 const DEFAULT_MIGRATIONS_DIR = "src/database/migrations";
 const KNOWN_WORKERS = [
   "expand_document",
@@ -44,6 +44,13 @@ const KNOWN_WORKERS = [
   "cluster_stories",
   "summarize_story",
 ];
+
+function resolveFailedThreshold(raw: string | undefined): number {
+  if (raw === undefined) return DEFAULT_FAILED_THRESHOLD;
+  const n = Number.parseInt(raw, 10);
+  if (Number.isNaN(n) || n <= 0) return DEFAULT_FAILED_THRESHOLD;
+  return n;
+}
 
 interface ProbeResult {
   ok: boolean;
@@ -117,13 +124,16 @@ export async function runDoctorCommand(
   try {
     const counts = await deps.queue.countByStatus();
     const failed = counts.failed ?? 0;
+    const failedThreshold = resolveFailedThreshold(
+      deps.config.DOCTOR_FAILED_THRESHOLD,
+    );
     const detail = Object.entries(counts)
       .map(([k, v]) => `${k}=${v}`)
       .join(" ");
     checks.push({
       name: "queue",
-      ok: failed <= FAILED_THRESHOLD,
-      detail: `${detail} (failed threshold=${FAILED_THRESHOLD})`,
+      ok: failed <= failedThreshold,
+      detail: `${detail} (failed threshold=${failedThreshold})`,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -221,7 +231,8 @@ Checks (in order):
   config         DATABASE_URL starts with 'postgres'
   postgres       SELECT 1 against the pool
   migrations     every on-disk migration file is in the _migrations table
-  queue          countByStatus() snapshot; fails when failed > 100
+  queue          countByStatus() snapshot; fails when failed > threshold
+                 (default 100, override via DOCTOR_FAILED_THRESHOLD)
   miniflux       /v1/me with X-Auth-Token (skipped if MINIFLUX_URL unset)
   resend         GET /domains with the configured API key
                  (skipped if RESEND_API_KEY unset)
