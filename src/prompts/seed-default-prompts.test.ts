@@ -79,12 +79,12 @@ describe("seedDefaultPrompts", () => {
     await db.deleteFrom("prompt_versions").execute();
   });
 
-  it("creates all 4 default prompts on first run", async () => {
+  it("creates all 5 default prompts on first run", async () => {
     const summary = await seedDefaultPrompts(promptRepo);
-    expect(summary.created).toBe(4);
+    expect(summary.created).toBe(5);
     expect(summary.skipped).toBe(0);
     expect(summary.results.map((r) => r.name).sort()).toEqual(
-      ["entities", "quality", "summary", "topics"],
+      ["entities", "quality", "story_summary", "summary", "topics"],
     );
 
     for (const def of DEFAULT_PROMPTS) {
@@ -99,7 +99,7 @@ describe("seedDefaultPrompts", () => {
     await seedDefaultPrompts(promptRepo);
     const second = await seedDefaultPrompts(promptRepo);
     expect(second.created).toBe(0);
-    expect(second.skipped).toBe(4);
+    expect(second.skipped).toBe(5);
     for (const r of second.results) {
       expect(r.status).toBe("skipped");
       expect(r.version).toBe(1);
@@ -117,7 +117,7 @@ describe("seedDefaultPrompts", () => {
     });
 
     const summary = await seedDefaultPrompts(promptRepo);
-    expect(summary.created).toBe(3);
+    expect(summary.created).toBe(4);
     expect(summary.skipped).toBe(1);
     const skipped = summary.results.find((r) => r.name === "summary");
     expect(skipped?.status).toBe("skipped");

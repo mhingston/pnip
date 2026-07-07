@@ -61,6 +61,7 @@ describe("migration runner", () => {
       "014_create_topics.sql",
       "015_create_quality_classifications.sql",
       "016_create_embeddings.sql",
+      "017_create_story_clusters.sql",
     ]);
     expect(res.skipped).toEqual([]);
 
@@ -81,6 +82,7 @@ describe("migration runner", () => {
       "014_create_topics.sql",
       "015_create_quality_classifications.sql",
       "016_create_embeddings.sql",
+      "017_create_story_clusters.sql",
     ]);
 
     const r = await pool.query("SELECT to_regclass('__smoke') AS exists");
@@ -133,6 +135,7 @@ describe("migration runner", () => {
       "014_create_topics.sql",
       "015_create_quality_classifications.sql",
       "016_create_embeddings.sql",
+      "017_create_story_clusters.sql",
     ]);
 
     expect(await getAppliedMigrations(pool)).toEqual([
@@ -152,6 +155,7 @@ describe("migration runner", () => {
       "014_create_topics.sql",
       "015_create_quality_classifications.sql",
       "016_create_embeddings.sql",
+      "017_create_story_clusters.sql",
     ]);
   });
 

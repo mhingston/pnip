@@ -14,6 +14,8 @@ const ENRICHMENT_JOB_TYPES = [
   "classify_quality",
 ] as const;
 
+const CLUSTER_STORIES_JOB_TYPE = "cluster_stories";
+
 interface ChunkTarget {
   documentId: string;
 }
@@ -92,13 +94,20 @@ export function createChunkDocumentWorker(deps: {
         })),
       );
 
-      const childJobs = chunks.flatMap((chunk) =>
-        ENRICHMENT_JOB_TYPES.map((jobType) => ({
-          jobType,
+      const childJobs = [
+        ...chunks.flatMap((chunk) =>
+          ENRICHMENT_JOB_TYPES.map((jobType) => ({
+            jobType,
+            editionId: doc.edition_id,
+            target: { chunkId: chunk.id, documentId: doc.id },
+          })),
+        ),
+        {
+          jobType: CLUSTER_STORIES_JOB_TYPE,
           editionId: doc.edition_id,
-          target: { chunkId: chunk.id, documentId: doc.id },
-        })),
-      );
+          target: { editionId: doc.edition_id },
+        },
+      ];
 
       return { childJobs };
     },

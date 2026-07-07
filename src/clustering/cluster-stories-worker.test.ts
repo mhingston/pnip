@@ -1,0 +1,309 @@
+import { describe, it, expect, vi } from "vitest";
+import { createClusterStoriesWorker } from "./cluster-stories-worker.js";
+import type { DocumentRepository, DocumentRow } from "../expansion/document-repository.js";
+import type { SummaryRepository, SummaryRow } from "../enrichment/summary/summary-repository.js";
+import type { TopicRepository, TopicRow } from "../enrichment/topics/topic-repository.js";
+import type { EmbeddingRepository, EmbeddingRow } from "../enrichment/embeddings/embedding-repository.js";
+import type { ProvenanceRepository } from "../provenance/provenance-repository.js";
+import type {
+  StoryRepository,
+  StoryClusterRow,
+  ClusterMemberRow,
+} from "./story-repository.js";
+import type { ProcessingJob } from "../database/kysely.js";
+
+function makeJob(overrides?: Partial<ProcessingJob>): ProcessingJob {
+  return {
+    id: "job-1",
+    job_type: "cluster_stories",
+    edition_id: "edition-1",
+    target: { editionId: "edition-1" },
+    status: "running",
+    retry_count: 0,
+    last_error: null,
+    last_attempt_at: null,
+    next_eligible_at: new Date(),
+    locked_by: "worker-1",
+    locked_at: new Date(),
+    created_at: new Date(),
+    updated_at: new Date(),
+    completed_at: null,
+    depends_on: [],
+    ...overrides,
+  };
+}
+
+function makeDoc(overrides?: Partial<DocumentRow>): DocumentRow {
+  return {
+    id: "doc-1",
+    edition_id: "edition-1",
+    source_type: "article",
+    source_url: "https://example.com/" + (overrides?.id ?? "doc-1"),
+    canonical_url: null,
+    title: null,
+    subtitle: null,
+    authors: [],
+    publisher: null,
+    published_at: null,
+    language: "en",
+    content_markdown: null,
+    content_text: null,
+    metadata: {},
+    created_at: new Date(),
+    ...overrides,
+  };
+}
+
+function makeSummary(
+  documentId: string,
+  content: string,
+): SummaryRow {
+  return {
+    id: `summary-${documentId}`,
+    chunk_id: `chunk-${documentId}`,
+    document_id: documentId,
+    content,
+    prompt_id: "prompt-1",
+    prompt_version: 1,
+    model: "m",
+    provider: "p",
+    input_hash: "h",
+    created_at: new Date(),
+  };
+}
+
+function makeTopic(
+  documentId: string,
+  topic: string,
+  confidence: number,
+): TopicRow {
+  return {
+    id: `topic-${documentId}-${topic}`,
+    chunk_id: `chunk-${documentId}`,
+    document_id: documentId,
+    topic,
+    confidence,
+    prompt_id: "prompt-1",
+    prompt_version: 1,
+    model: "m",
+    provider: "p",
+    input_hash: "h",
+    created_at: new Date(),
+  };
+}
+
+function makeEmbedding(documentId: string, vector: number[]): EmbeddingRow {
+  return {
+    id: `emb-${documentId}`,
+    chunk_id: `chunk-${documentId}`,
+    vector,
+    model: "m",
+    provider: "p",
+    input_hash: "h",
+    created_at: new Date(),
+  };
+}
+
+function silentLogger() {
+  return {
+    info: vi.fn(),
+    error: vi.fn(),
+    warn: vi.fn(),
+    debug: vi.fn(),
+    child: vi.fn().mockReturnThis(),
+  } as any;
+}
+
+function makeDeps(overrides?: {
+  documents?: DocumentRow[];
+  summariesByDoc?: Map<string, SummaryRow[]>;
+  topicsByDoc?: Map<string, TopicRow[]>;
+  embeddingsByDoc?: Map<string, EmbeddingRow[]>;
+}) {
+  const documents = overrides?.documents ?? [];
+  const summariesByDoc = overrides?.summariesByDoc ?? new Map();
+  const topicsByDoc = overrides?.topicsByDoc ?? new Map();
+  const embeddingsByDoc = overrides?.embeddingsByDoc ?? new Map();
+
+  const docRepo: DocumentRepository = {
+    create: vi.fn(),
+    getById: vi.fn().mockImplementation(async (id: string) => documents.find((d) => d.id === id)),
+    getByEdition: vi.fn().mockImplementation(async () => documents),
+    getByEditionAndUrl: vi.fn(),
+  };
+
+  const summaryRepo: SummaryRepository = {
+    replaceForChunk: vi.fn(),
+    getByChunkId: vi.fn(),
+    getByDocumentId: vi.fn().mockImplementation(async (id: string) => summariesByDoc.get(id) ?? []),
+    getCitationsBySummaryId: vi.fn(),
+    deleteByChunkId: vi.fn(),
+  };
+
+  const topicRepo: TopicRepository = {
+    replaceForChunk: vi.fn(),
+    getByChunkId: vi.fn(),
+    getByDocumentId: vi.fn().mockImplementation(async (id: string) => topicsByDoc.get(id) ?? []),
+    getAssignmentsByTopicId: vi.fn(),
+    deleteByChunkId: vi.fn(),
+  };
+
+  const embeddingRepo: EmbeddingRepository = {
+    replaceForChunk: vi.fn(),
+    getByChunkId: vi.fn(),
+    getByDocumentId: vi.fn().mockImplementation(async (id: string) => embeddingsByDoc.get(id) ?? []),
+    deleteByChunkId: vi.fn(),
+  };
+
+  const storyRepo: StoryRepository = {
+    replaceForEdition: vi.fn().mockImplementation(async ({ stories }: { stories: { label: string; documentIds: string[] }[] }) => ({
+      stories: stories.map((s: { label: string; documentIds: string[] }, i: number) => ({
+        story: {
+          id: `story-${i}`,
+          edition_id: "edition-1",
+          label: s.label,
+          cluster_order: i,
+          created_at: new Date(),
+          updated_at: new Date(),
+        } as StoryClusterRow,
+        members: s.documentIds.map((docId: string, j: number) => ({
+          id: `member-${i}-${j}`,
+          story_id: `story-${i}`,
+          document_id: docId,
+          role: "supporting",
+          similarity: 0,
+          created_at: new Date(),
+        } as ClusterMemberRow)),
+      })),
+      removedStoryIds: [],
+    })),
+    getById: vi.fn(),
+    getByEdition: vi.fn(),
+    getMembers: vi.fn(),
+    getStoryForDocument: vi.fn(),
+    deleteByEdition: vi.fn().mockResolvedValue(undefined),
+  };
+
+  const provenanceRepo: ProvenanceRepository = {
+    recordLineage: vi.fn().mockResolvedValue(undefined),
+    recordLineageBatch: vi.fn().mockResolvedValue(undefined),
+    getSources: vi.fn(),
+    getConsumers: vi.fn(),
+    resolveCitations: vi.fn(),
+    resolveToDocuments: vi.fn(),
+  };
+
+  return { docRepo, summaryRepo, topicRepo, embeddingRepo, storyRepo, provenanceRepo };
+}
+
+describe("ClusterStoriesWorker", () => {
+  it("supports cluster_stories job type", () => {
+    const deps = makeDeps();
+    const worker = createClusterStoriesWorker(deps);
+    expect(worker.supports("cluster_stories")).toBe(true);
+    expect(worker.supports("other")).toBe(false);
+  });
+
+  it("returns no child jobs when edition has no documents", async () => {
+    const deps = makeDeps({ documents: [] });
+    const worker = createClusterStoriesWorker(deps);
+
+    const outcome = await worker.execute(makeJob(), { db: {} as any, logger: silentLogger() });
+    expect(outcome).toEqual({});
+    expect(deps.storyRepo.deleteByEdition).toHaveBeenCalledWith("edition-1");
+    expect(deps.storyRepo.replaceForEdition).not.toHaveBeenCalled();
+  });
+
+  it("skips documents without summaries or embeddings and records no stories", async () => {
+    const docs = [makeDoc({ id: "doc-1" }), makeDoc({ id: "doc-2" })];
+    const deps = makeDeps({ documents: docs });
+    const worker = createClusterStoriesWorker(deps);
+
+    const outcome = await worker.execute(makeJob(), { db: {} as any, logger: silentLogger() });
+    expect(outcome).toEqual({});
+    expect(deps.storyRepo.deleteByEdition).toHaveBeenCalledWith("edition-1");
+  });
+
+  it("clusters two related documents into one story and enqueues one summarize_story", async () => {
+    const docs = [makeDoc({ id: "doc-1" }), makeDoc({ id: "doc-2" })];
+    const summariesByDoc = new Map([
+      ["doc-1", [makeSummary("doc-1", "AI breakthrough")]],
+      ["doc-2", [makeSummary("doc-2", "AI breakthrough news")]],
+    ]);
+    const topicsByDoc = new Map([
+      ["doc-1", [makeTopic("doc-1", "ai", 0.9)]],
+      ["doc-2", [makeTopic("doc-2", "ai", 0.8)]],
+    ]);
+    const v = [1, 0, 0];
+    const embeddingsByDoc = new Map([
+      ["doc-1", [makeEmbedding("doc-1", v)]],
+      ["doc-2", [makeEmbedding("doc-2", v)]],
+    ]);
+    const deps = makeDeps({ documents: docs, summariesByDoc, topicsByDoc, embeddingsByDoc });
+    const worker = createClusterStoriesWorker(deps);
+
+    const outcome = await worker.execute(makeJob(), { db: {} as any, logger: silentLogger() });
+
+    expect(deps.storyRepo.replaceForEdition).toHaveBeenCalledTimes(1);
+    expect(outcome.childJobs).toBeDefined();
+    expect(outcome.childJobs).toHaveLength(1);
+    expect(outcome.childJobs![0].jobType).toBe("summarize_story");
+    expect(outcome.childJobs![0].target).toEqual({ storyId: "story-0" });
+    expect(deps.provenanceRepo.recordLineageBatch).toHaveBeenCalled();
+  });
+
+  it("clusters two unrelated documents into two stories and enqueues two summarize_story jobs", async () => {
+    const docs = [makeDoc({ id: "doc-1" }), makeDoc({ id: "doc-2" })];
+    const summariesByDoc = new Map([
+      ["doc-1", [makeSummary("doc-1", "A")]],
+      ["doc-2", [makeSummary("doc-2", "B")]],
+    ]);
+    const topicsByDoc = new Map([
+      ["doc-1", [makeTopic("doc-1", "ai", 0.9)]],
+      ["doc-2", [makeTopic("doc-2", "weather", 0.9)]],
+    ]);
+    const embeddingsByDoc = new Map([
+      ["doc-1", [makeEmbedding("doc-1", [1, 0])]],
+      ["doc-2", [makeEmbedding("doc-2", [0, 1])]],
+    ]);
+    const deps = makeDeps({ documents: docs, summariesByDoc, topicsByDoc, embeddingsByDoc });
+    const worker = createClusterStoriesWorker(deps);
+
+    const outcome = await worker.execute(makeJob(), { db: {} as any, logger: silentLogger() });
+
+    expect(outcome.childJobs).toHaveLength(2);
+    for (const cj of outcome.childJobs!) {
+      expect(cj.jobType).toBe("summarize_story");
+      expect(cj.target).toMatchObject({ storyId: expect.any(String) });
+    }
+  });
+
+  it("is idempotent: rerunning replaces edition stories", async () => {
+    const docs = [makeDoc({ id: "doc-1" })];
+    const summariesByDoc = new Map([
+      ["doc-1", [makeSummary("doc-1", "S")]],
+    ]);
+    const topicsByDoc = new Map([
+      ["doc-1", [makeTopic("doc-1", "ai", 0.9)]],
+    ]);
+    const embeddingsByDoc = new Map([
+      ["doc-1", [makeEmbedding("doc-1", [1, 0, 0])]],
+    ]);
+    const deps = makeDeps({ documents: docs, summariesByDoc, topicsByDoc, embeddingsByDoc });
+    const worker = createClusterStoriesWorker(deps);
+
+    await worker.execute(makeJob(), { db: {} as any, logger: silentLogger() });
+    await worker.execute(makeJob(), { db: {} as any, logger: silentLogger() });
+
+    expect(deps.storyRepo.replaceForEdition).toHaveBeenCalledTimes(2);
+  });
+
+  it("throws on invalid target", async () => {
+    const deps = makeDeps();
+    const worker = createClusterStoriesWorker(deps);
+
+    await expect(
+      worker.execute(makeJob({ target: null }), { db: {} as any, logger: silentLogger() }),
+    ).rejects.toThrow(/invalid target/i);
+  });
+});

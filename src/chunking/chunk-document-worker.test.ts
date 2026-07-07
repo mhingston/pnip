@@ -201,7 +201,7 @@ describe("ChunkDocumentWorker", () => {
 
     const childJobs = outcome.childJobs;
     expect(childJobs).toBeDefined();
-    expect(childJobs).toHaveLength(5);
+    expect(childJobs).toHaveLength(6);
 
     const jobTypes = childJobs!.map((j) => j.jobType);
     expect(jobTypes).toContain("summarize_chunk");
@@ -209,11 +209,19 @@ describe("ChunkDocumentWorker", () => {
     expect(jobTypes).toContain("assign_topics");
     expect(jobTypes).toContain("embed_chunk");
     expect(jobTypes).toContain("classify_quality");
+    expect(jobTypes).toContain("cluster_stories");
 
     for (const job of childJobs!) {
       expect(job.editionId).toBe("edition-1");
+    }
+
+    const enrichmentJobs = childJobs!.filter((j) => j.jobType !== "cluster_stories");
+    for (const job of enrichmentJobs) {
       expect(job.target).toEqual({ chunkId: "chunk-a1b2c3d4", documentId: "doc-1" });
     }
+
+    const clusterJob = childJobs!.find((j) => j.jobType === "cluster_stories");
+    expect(clusterJob?.target).toEqual({ editionId: "edition-1" });
 
     expect(provenanceRepo.recordLineageBatch).toHaveBeenCalledWith(
       expect.arrayContaining([

@@ -247,6 +247,41 @@ export interface Database {
     input_hash: string;
     created_at: Generated<Date>;
   };
+  story_clusters: {
+    id: Generated<string>;
+    edition_id: string;
+    label: string;
+    cluster_order: number;
+    created_at: Generated<Date>;
+    updated_at: Generated<Date>;
+  };
+  cluster_members: {
+    id: Generated<string>;
+    story_id: string;
+    document_id: string;
+    role: Generated<string>;
+    similarity: number;
+    created_at: Generated<Date>;
+  };
+  story_summaries: {
+    id: Generated<string>;
+    story_id: string;
+    content: string;
+    prompt_id: string;
+    prompt_version: number;
+    model: string;
+    provider: string;
+    input_hash: string;
+    created_at: Generated<Date>;
+  };
+  story_summary_citations: {
+    id: Generated<string>;
+    story_summary_id: string;
+    chunk_id: string;
+    claim_text: string;
+    claim_order: number;
+    created_at: Generated<Date>;
+  };
   discovery_events: {
     id: Generated<string>;
     edition_id: string;
