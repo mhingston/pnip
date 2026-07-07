@@ -42,6 +42,14 @@ describe("YouTubePlugin.supports", () => {
     expect(plugin.supports("https://www.youtube.com/embed/abc123")).toBe(true);
   });
 
+  it("matches youtube.com/shorts/", () => {
+    expect(plugin.supports("https://www.youtube.com/shorts/abc123")).toBe(true);
+  });
+
+  it("matches www.youtube.com/shorts/ with subdomain", () => {
+    expect(plugin.supports("https://m.youtube.com/shorts/abc123")).toBe(true);
+  });
+
   it("rejects example.com article", () => {
     expect(plugin.supports("https://example.com/article")).toBe(false);
   });
@@ -60,6 +68,18 @@ describe("extractVideoId", () => {
 
   it("extracts id from youtu.be path", () => {
     expect(extractVideoId("https://youtu.be/aircAruvnKk")).toBe("aircAruvnKk");
+  });
+
+  it("extracts id from youtube.com/shorts/ path", () => {
+    expect(extractVideoId("https://www.youtube.com/shorts/XW3vrrMWpwo")).toBe(
+      "XW3vrrMWpwo",
+    );
+  });
+
+  it("extracts id from youtube.com/shorts/ with trailing query params", () => {
+    expect(
+      extractVideoId("https://www.youtube.com/shorts/XW3vrrMWpwo?si=abc123"),
+    ).toBe("XW3vrrMWpwo");
   });
 
   it("returns undefined for non-YouTube URLs", () => {

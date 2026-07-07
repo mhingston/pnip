@@ -67,6 +67,11 @@ export function extractVideoId(url: string): string | undefined {
       const parts = u.pathname.split("/").filter(Boolean);
       const embedIdx = parts.indexOf("embed");
       if (embedIdx !== -1 && parts[embedIdx + 1]) return parts[embedIdx + 1];
+      const shortsIdx = parts.indexOf("shorts");
+      if (shortsIdx !== -1 && parts[shortsIdx + 1]) {
+        // Shorts URLs can include trailing query params on the id segment
+        return parts[shortsIdx + 1]!.split("?")[0] || undefined;
+      }
       return undefined;
     }
     return undefined;
@@ -137,6 +142,7 @@ export function createYouTubePlugin(opts?: {
         if (host === "youtube.com" || host.endsWith(".youtube.com")) {
           if (u.pathname === "/watch" || u.pathname.startsWith("/watch?")) return true;
           if (u.pathname.startsWith("/embed/")) return true;
+          if (u.pathname.startsWith("/shorts/")) return true;
           return false;
         }
         return false;
