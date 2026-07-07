@@ -108,7 +108,15 @@ export function createExpandDocumentWorker(deps: {
         relation: "expanded_from",
       });
 
-      return {};
+      return {
+        childJobs: [
+          {
+            jobType: "chunk_document",
+            editionId: doc.edition_id,
+            target: { documentId: doc.id },
+          },
+        ],
+      };
     },
   };
 }

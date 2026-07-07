@@ -138,7 +138,15 @@ describe("ExpandDocumentWorker", () => {
       }),
     );
     expect(queue.enqueue).not.toHaveBeenCalled();
-    expect(outcome).toEqual({});
+    expect(outcome).toEqual({
+      childJobs: [
+        {
+          jobType: "chunk_document",
+          editionId: "edition-1",
+          target: { documentId: "doc-1" },
+        },
+      ],
+    });
   });
 
   it("skips expansion when document already exists (idempotency)", async () => {
@@ -261,7 +269,15 @@ describe("ExpandDocumentWorker", () => {
 
     expect(docRepo.create).toHaveBeenCalled();
     expect(queue.enqueue).not.toHaveBeenCalled();
-    expect(outcome).toEqual({});
+    expect(outcome).toEqual({
+      childJobs: [
+        {
+          jobType: "chunk_document",
+          editionId: "edition-1",
+          target: { documentId: "doc-1" },
+        },
+      ],
+    });
   });
 
   it("on RedditRateLimitError re-enqueues expand_document with delayed nextEligibleAt and returns {}", async () => {
