@@ -3,7 +3,8 @@ import {
   createRefreshRedditCommentsWorker,
   REFRESH_DELAYS_MS,
 } from "./refresh-reddit-comments-worker.js";
-import type { RedditFetcher } from "./reddit-plugin.js";
+import type { RssFetcher } from "./reddit-plugin.js";
+import { RedditRateLimitError } from "./reddit-rate-limiter.js";
 import type { SectionRepository, DocumentSectionRow } from "./section-repository.js";
 import type { EditionRepository } from "../editions/edition-repository.js";
 import type { ProcessingJobQueue } from "../jobs/queue/processing-job-queue.js";
@@ -12,57 +13,37 @@ import type { ProcessingJob } from "../database/kysely.js";
 const ARTICLE_ID = "1upftp9";
 const URL = "https://www.reddit.com/r/test/comments/1upftp9/title/";
 
-function rawSubmission() {
-  return {
-    kind: "t3",
-    data: {
-      id: ARTICLE_ID,
-      title: "Test Submission",
-      selftext: "submission body",
-      author: "submitter",
-      subreddit: "test",
-      score: 100,
-      num_comments: 3,
-      upvote_ratio: 0.9,
-      created_utc: 1735900000.0,
-      url: "https://example.com/article",
-      permalink: "/r/test/comments/1upftp9/title/",
-      is_self: false,
-      link_flair_text: null,
-      stickied: false,
-      over_18: false,
-    },
-  };
-}
-
-function rawComment(
-  id: string,
-  score: number,
-  overrides: Record<string, unknown> = {},
-) {
-  return {
-    kind: "t1",
-    data: {
-      id,
-      author: `u-${id}`,
-      body: `body ${id}`,
-      score,
-      created_utc: 1735900100.0,
-      stickied: false,
-      is_submitter: false,
-      distinguished: null,
-      replies: "",
-      ...overrides,
-    },
-  };
-}
-
-function rawResponse(comments: ReturnType<typeof rawComment>[]) {
-  return [
-    { kind: "Listing", data: { children: [rawSubmission()] } },
-    { kind: "Listing", data: { children: comments } },
-  ];
-}
+const FAKE_ATOM_XML = `<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <id>t3_${ARTICLE_ID}</id>
+    <title>Test Submission</title>
+    <author><name>/u/submitter</name></author>
+    <content type="html">&lt;p&gt;submission body&lt;/p&gt;</content>
+    <updated>2026-07-06T19:20:00+00:00</updated>
+    <published>2026-07-06T19:20:00+00:00</published>
+    <link href="${URL}" />
+    <category term="test" />
+  </entry>
+  <entry>
+    <id>t1_c1</id>
+    <author><name>/u/u-c1</name></author>
+    <content type="html">&lt;p&gt;body c1&lt;/p&gt;</content>
+    <updated>2026-07-06T19:27:58+00:00</updated>
+  </entry>
+  <entry>
+    <id>t1_c2</id>
+    <author><name>/u/u-c2</name></author>
+    <content type="html">&lt;p&gt;body c2&lt;/p&gt;</content>
+    <updated>2026-07-06T19:28:00+00:00</updated>
+  </entry>
+  <entry>
+    <id>t1_c3</id>
+    <author><name>/u/u-c3</name></author>
+    <content type="html">&lt;p&gt;body c3&lt;/p&gt;</content>
+    <updated>2026-07-06T19:29:00+00:00</updated>
+  </entry>
+</feed>`;
 
 function makeJob(overrides?: Partial<ProcessingJob>): ProcessingJob {
   return {
@@ -90,15 +71,12 @@ function makeJob(overrides?: Partial<ProcessingJob>): ProcessingJob {
   };
 }
 
-function fakeSection(
-  redditCommentId: string,
-  order: number,
-): DocumentSectionRow {
+function fakeSection(redditCommentId: string, order: number): DocumentSectionRow {
   return {
     id: `sec-${redditCommentId}`,
     document_id: "doc-1",
     section_order: order,
-    heading: `u/x (score: 1)`,
+    heading: `u/x`,
     section_type: "reddit_comment",
     content_markdown: "old",
     content_text: "old",
@@ -108,20 +86,13 @@ function fakeSection(
 }
 
 function makeDeps(overrides?: {
-  fetcher?: RedditFetcher;
+  fetcher?: RssFetcher;
   existingSections?: DocumentSectionRow[];
   editionStatus?: string;
   maxOrder?: number;
 }) {
-  const fetcher: RedditFetcher =
-    overrides?.fetcher ??
-      (vi.fn().mockResolvedValue(
-        rawResponse([
-          rawComment("c1", 50),
-          rawComment("c2", 30),
-          rawComment("c3", 80),
-        ]),
-      ) as RedditFetcher);
+  const fetcher: RssFetcher =
+    overrides?.fetcher ?? (vi.fn().mockResolvedValue(FAKE_ATOM_XML) as RssFetcher);
   const sectionRepo: SectionRepository = {
     createBatch: vi.fn().mockResolvedValue([]),
     getByDocumentId: vi.fn(),
@@ -182,7 +153,7 @@ describe("createRefreshRedditCommentsWorker", () => {
 
     expect(deps.redditFetcher).toHaveBeenCalledTimes(1);
     expect((deps.redditFetcher as ReturnType<typeof vi.fn>).mock.calls[0][0]).toBe(
-      `https://oauth.reddit.com/comments/${ARTICLE_ID}?limit=50&sort=top`,
+      "https://www.reddit.com/r/test/comments/1upftp9/title/.rss",
     );
     expect(deps.sectionRepo.getByDocumentIdAndType).toHaveBeenCalledWith(
       "doc-1",
@@ -195,9 +166,9 @@ describe("createRefreshRedditCommentsWorker", () => {
     expect(createArgs).toHaveLength(2);
     expect(createArgs[0].order).toBe(6);
     expect(createArgs[1].order).toBe(7);
-    expect(createArgs[0].metadata.redditCommentId).toBe("c3");
-    expect(createArgs[1].metadata.redditCommentId).toBe("c2");
-    expect(createArgs[0].heading).toBe("u/u-c3 (score: 80)");
+    expect(createArgs[0].metadata.redditCommentId).toBe("c2");
+    expect(createArgs[1].metadata.redditCommentId).toBe("c3");
+    expect(createArgs[0].heading).toBe("u/u-c2");
     expect(createArgs[0].type).toBe("reddit_comment");
 
     expect(deps.queue.enqueue).toHaveBeenCalledTimes(1);
@@ -267,14 +238,36 @@ describe("createRefreshRedditCommentsWorker", () => {
     expect(deps.queue.enqueue).not.toHaveBeenCalled();
   });
 
-  it("throws when the fetcher errors", async () => {
+  it("on RedditRateLimitError re-enqueues the refresh job with delayed nextEligibleAt and returns {}", async () => {
+    const deps = makeDeps({
+      fetcher: vi.fn().mockRejectedValue(new RedditRateLimitError(60)),
+    });
+    const worker = createRefreshRedditCommentsWorker(deps);
+    const before = Date.now();
+    const outcome = await worker.execute(makeJob(), fakeCtx());
+
+    expect(deps.sectionRepo.createBatch).not.toHaveBeenCalled();
+    expect(deps.queue.enqueue).toHaveBeenCalledTimes(1);
+    const arg = (deps.queue.enqueue as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(arg.jobType).toBe("refresh_reddit_comments");
+    expect(arg.target).toEqual({
+      documentId: "doc-1",
+      articleId: ARTICLE_ID,
+      url: URL,
+      refreshStep: 0,
+    });
+    const elapsed = arg.nextEligibleAt.getTime() - before;
+    expect(elapsed).toBeGreaterThanOrEqual(60 * 1000 - 1000);
+    expect(elapsed).toBeLessThanOrEqual(60 * 1000 + 5000);
+    expect(outcome).toEqual({});
+  });
+
+  it("throws when the fetcher errors with a non-rate-limit error", async () => {
     const deps = makeDeps({
       fetcher: vi.fn().mockRejectedValue(new Error("network down")),
     });
     const worker = createRefreshRedditCommentsWorker(deps);
-    await expect(worker.execute(makeJob(), fakeCtx())).rejects.toThrow(
-      /network down/,
-    );
+    await expect(worker.execute(makeJob(), fakeCtx())).rejects.toThrow(/network down/);
   });
 
   it("throws when target is missing required fields", async () => {

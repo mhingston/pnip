@@ -1,7 +1,8 @@
 import type { Worker, WorkerContext, WorkerOutcome } from "../jobs/workers/worker.js";
 import type { ProcessingJob } from "../database/kysely.js";
-import type { RedditFetcher } from "./reddit-plugin.js";
-import { parseThread } from "./reddit-plugin.js";
+import type { RssFetcher } from "./reddit-plugin.js";
+import { toRssUrl, parseAtomFeed } from "./reddit-plugin.js";
+import { RedditRateLimitError } from "./reddit-rate-limiter.js";
 import type { SectionRepository } from "./section-repository.js";
 import type { EditionRepository } from "../editions/edition-repository.js";
 import type { ProcessingJobQueue } from "../jobs/queue/processing-job-queue.js";
@@ -45,7 +46,7 @@ function parseTarget(target: unknown): RefreshTarget {
 }
 
 export interface RefreshRedditCommentsWorkerDeps {
-  redditFetcher: RedditFetcher;
+  redditFetcher: RssFetcher;
   sectionRepo: SectionRepository;
   editionRepo: EditionRepository;
   queue: ProcessingJobQueue;
@@ -77,10 +78,28 @@ export function createRefreshRedditCommentsWorker(
         return {};
       }
 
-      const response = await deps.redditFetcher(
-        `https://oauth.reddit.com/comments/${articleId}?limit=50&sort=top`,
-      );
-      const thread = parseThread(response);
+      const rssUrl = toRssUrl(url);
+      let xml: string;
+      try {
+        xml = await deps.redditFetcher(rssUrl);
+      } catch (err) {
+        if (err instanceof RedditRateLimitError) {
+          ctx.logger.info("rate limited, deferring refresh", {
+            documentId,
+            resetSeconds: err.resetSeconds,
+          });
+          await deps.queue.enqueue({
+            jobType: "refresh_reddit_comments",
+            editionId: job.edition_id ?? undefined,
+            target: { documentId, articleId, url, refreshStep },
+            nextEligibleAt: new Date(Date.now() + err.resetSeconds * 1000),
+          });
+          return {};
+        }
+        throw err;
+      }
+
+      const thread = parseAtomFeed(xml);
 
       const existingSections = await deps.sectionRepo.getByDocumentIdAndType(
         documentId,
@@ -104,7 +123,7 @@ export function createRefreshRedditCommentsWorker(
         const newSections = selected.map((comment, index) => ({
           documentId,
           order: maxOrder + 1 + index,
-          heading: `u/${comment.author} (score: ${comment.score})`,
+          heading: `u/${comment.author}`,
           type: "reddit_comment",
           contentMarkdown: comment.body,
           contentText: comment.body,

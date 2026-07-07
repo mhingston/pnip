@@ -1,21 +1,22 @@
-import { loadConfig } from "../config/index.js";
 import type {
   ExpandContext,
   ExpandResult,
   ExpansionPlugin,
   SectionData,
 } from "./types.js";
+import { createDefaultRssFetcher } from "./reddit-rate-limiter.js";
+import type { RssFetcher } from "./reddit-rate-limiter.js";
+
+export type { RssFetcher } from "./reddit-rate-limiter.js";
 
 export interface RedditComment {
   id: string;
   author: string;
   body: string;
-  score: number;
   createdUtc: Date;
-  stickied: boolean;
-  isSubmitter: boolean;
-  distinguished: string | null;
-  replies: RedditComment[];
+  score?: number;
+  stickied?: boolean;
+  distinguished?: string | null;
 }
 
 export interface RedditSubmission {
@@ -24,39 +25,14 @@ export interface RedditSubmission {
   selftext: string;
   author: string;
   subreddit: string;
-  score: number;
-  numComments: number;
-  upvoteRatio: number;
   createdUtc: Date;
   url: string;
   permalink: string;
-  isSelf: boolean;
-  flairText: string | null;
-  stickied: boolean;
-  over18: boolean;
 }
 
 export interface RedditThread {
   submission: RedditSubmission;
   comments: RedditComment[];
-}
-
-export type RedditFetcher = (url: string) => Promise<unknown>;
-export type TokenFetcher = () => Promise<string>;
-
-const REDDIT_TOKEN_URL = "https://www.reddit.com/api/v1/access_token";
-const REDDIT_API_BASE = "https://oauth.reddit.com";
-
-function asString(v: unknown, fallback = ""): string {
-  return typeof v === "string" ? v : fallback;
-}
-
-function asNumber(v: unknown, fallback = 0): number {
-  return typeof v === "number" && Number.isFinite(v) ? v : fallback;
-}
-
-function asBool(v: unknown, fallback = false): boolean {
-  return typeof v === "boolean" ? v : fallback;
 }
 
 export function isRedditUrl(url: string): boolean {
@@ -81,77 +57,121 @@ export function extractArticleId(url: string): string | undefined {
   }
 }
 
-export function parseSubmission(data: Record<string, unknown>): RedditSubmission {
-  const createdUtc = asNumber(data.created_utc, 0);
-  return {
-    id: asString(data.id),
-    title: asString(data.title),
-    selftext: asString(data.selftext),
-    author: asString(data.author),
-    subreddit: asString(data.subreddit),
-    score: asNumber(data.score),
-    numComments: asNumber(data.num_comments),
-    upvoteRatio: asNumber(data.upvote_ratio),
-    createdUtc: new Date(createdUtc * 1000),
-    url: asString(data.url),
-    permalink: asString(data.permalink),
-    isSelf: asBool(data.is_self),
-    flairText:
-      typeof data.link_flair_text === "string" ? data.link_flair_text : null,
-    stickied: asBool(data.stickied),
-    over18: asBool(data.over_18),
-  };
+export function toRssUrl(url: string): string {
+  const u = new URL(url);
+  u.search = "";
+  let pathname = u.pathname;
+  if (!pathname.endsWith("/")) pathname += "/";
+  pathname += ".rss";
+  u.pathname = pathname;
+  return u.toString();
 }
 
-export function parseComment(data: Record<string, unknown>): RedditComment {
-  const repliesRaw = data.replies;
-  let replies: RedditComment[] = [];
-  if (repliesRaw !== null && typeof repliesRaw === "object") {
-    const listing = repliesRaw as {
-      data?: { children?: Array<{ kind?: string; data?: Record<string, unknown> }> };
-    };
-    const children = listing.data?.children ?? [];
-    replies = children
-      .filter((c) => c.kind === "t1" && c.data)
-      .map((c) => parseComment(c.data as Record<string, unknown>));
-  }
-  const createdUtc = asNumber(data.created_utc, 0);
-  const distinguished =
-    typeof data.distinguished === "string" ? data.distinguished : null;
-  return {
-    id: asString(data.id),
-    author: asString(data.author),
-    body: asString(data.body),
-    score: asNumber(data.score),
-    createdUtc: new Date(createdUtc * 1000),
-    stickied: asBool(data.stickied),
-    isSubmitter: asBool(data.is_submitter),
-    distinguished,
-    replies,
-  };
+const HTML_ENTITIES: Record<string, string> = {
+  "&amp;": "&",
+  "&lt;": "<",
+  "&gt;": ">",
+  "&#39;": "'",
+  "&quot;": '"',
+};
+
+function decodeEntities(s: string): string {
+  return s.replace(/&(?:amp|lt|gt|#39|quot);/g, (m) => HTML_ENTITIES[m] ?? m);
 }
 
-interface ListingContainer {
-  kind: string;
-  data?: { children?: Array<{ kind?: string; data?: Record<string, unknown> }> };
+function stripHtml(html: string): string {
+  return decodeEntities(html.replace(/<[^>]*>/g, "")).trim();
 }
 
-export function parseThread(response: unknown): RedditThread {
-  if (!Array.isArray(response) || response.length < 2) {
-    throw new Error("Reddit API response must be a two-element listing array");
-  }
-  const submissionListing = response[0] as ListingContainer;
-  const commentsListing = response[1] as ListingContainer;
-  const subChild = (submissionListing.data?.children ?? []).find(
-    (c) => c.kind === "t3" && c.data,
+function htmlToMarkdown(html: string): string {
+  let s = decodeEntities(html);
+  s = s.replace(/<!--\s*SC_OFF\s*-->/g, "").replace(/<!--\s*SC_ON\s*-->/g, "");
+  s = s.replace(/<br\s*\/?>/gi, "\n");
+  s = s.replace(/<a\s+[^>]*href="([^"]*)"[^>]*>(.*?)<\/a>/gi, (_m, url: string, text: string) =>
+    `[${text}](${url})`,
   );
-  if (!subChild || !subChild.data) {
-    throw new Error("Reddit API response missing submission (t3) child");
+  s = s.replace(/<strong[^>]*>(.*?)<\/strong>/gi, "**$1**");
+  s = s.replace(/<em[^>]*>(.*?)<\/em>/gi, "*$1*");
+  s = s.replace(/<li[^>]*>(.*?)<\/li>/gi, "- $1");
+  s = s.replace(/<\/p>/gi, "\n\n");
+  s = s.replace(/<p[^>]*>/gi, "");
+  s = s.replace(/<[^>]*>/g, "");
+  s = s.replace(/[ \t]+\n/g, "\n");
+  s = s.replace(/\n{3,}/g, "\n\n");
+  return s.trim();
+}
+
+function stripSubmittedBy(md: string): string {
+  const idx = md.lastIndexOf("submitted by");
+  if (idx >= 0) return md.slice(0, idx).trim();
+  return md;
+}
+
+function extractField(pattern: RegExp, xml: string): string | undefined {
+  const m = xml.match(pattern);
+  return m ? m[1] : undefined;
+}
+
+function extractEntries(xml: string): string[] {
+  const blocks: string[] = [];
+  const re = /<entry>([\s\S]*?)<\/entry>/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(xml)) !== null) {
+    blocks.push(m[1]);
   }
-  const submission = parseSubmission(subChild.data);
-  const comments = (commentsListing.data?.children ?? [])
-    .filter((c) => c.kind === "t1" && c.data)
-    .map((c) => parseComment(c.data as Record<string, unknown>));
+  return blocks;
+}
+
+export function parseAtomFeed(xml: string): RedditThread {
+  const entries = extractEntries(xml);
+  let submission: RedditSubmission | undefined;
+  const comments: RedditComment[] = [];
+
+  for (const block of entries) {
+    const id = extractField(/<id>([^<]+)<\/id>/, block);
+    if (!id) continue;
+    const authorRaw = extractField(/<author>\s*<name>([^<]+)<\/name>/, block) ?? "";
+    const author = authorRaw.replace(/^\/u\//, "");
+    const contentHtml = extractField(
+      /<content[^>]*>([\s\S]*?)<\/content>/,
+      block,
+    );
+    const updated = extractField(/<updated>([^<]+)<\/updated>/, block);
+    const published = extractField(/<published>([^<]+)<\/published>/, block);
+    const link = extractField(/<link[^>]*href="([^"]+)"/, block);
+    const category = extractField(/<category[^>]*term="([^"]+)"/, block);
+
+    if (id.startsWith("t3_")) {
+      const title = extractField(/<title>([^<]+)<\/title>/, block) ?? "";
+      const selftext = contentHtml
+        ? stripSubmittedBy(htmlToMarkdown(contentHtml))
+        : "";
+      submission = {
+        id: id.slice(3),
+        title,
+        selftext,
+        author,
+        subreddit: category ?? "",
+        createdUtc: new Date(published ?? updated ?? Date.now()),
+        url: link ?? "",
+        permalink: link ?? "",
+      };
+    } else if (id.startsWith("t1_")) {
+      if (!contentHtml || contentHtml.trim() === "") continue;
+      const body = htmlToMarkdown(contentHtml);
+      if (body === "" || body === "[deleted]" || body === "[removed]") continue;
+      comments.push({
+        id: id.slice(3),
+        author,
+        body,
+        createdUtc: new Date(updated ?? Date.now()),
+      });
+    }
+  }
+
+  if (!submission) {
+    throw new Error("Atom feed missing submission (t3_) entry");
+  }
   return { submission, comments };
 }
 
@@ -173,11 +193,10 @@ export function buildRedditSections(thread: RedditThread): SectionData[] {
   });
   for (const comment of thread.comments) {
     if (isEmptyComment(comment.body)) continue;
-    const heading = `u/${comment.author} (score: ${comment.score})`;
     sections.push({
       order: sections.length,
       section_type: "reddit_comment",
-      heading,
+      heading: `u/${comment.author}`,
       content_markdown: comment.body,
       content_text: comment.body,
     });
@@ -185,27 +204,13 @@ export function buildRedditSections(thread: RedditThread): SectionData[] {
   return sections;
 }
 
-function formatCommentMarkdown(comment: RedditComment, depth: number): string {
-  const indent = "  ".repeat(depth);
-  const header = `${indent}u/${comment.author} (score: ${comment.score})`;
-  const lines = [header, `${indent}${comment.body}`];
-  for (const reply of comment.replies) {
-    if (isEmptyComment(reply.body)) continue;
-    lines.push(formatCommentMarkdown(reply, depth + 1));
-  }
-  return lines.join("\n");
-}
-
-function buildContent(thread: RedditThread): {
-  content: string;
-  plainText: string;
-} {
+function buildContent(thread: RedditThread): { content: string; plainText: string } {
   const sub = thread.submission;
   const subContent = sub.selftext.trim() !== "" ? sub.selftext : sub.url;
   const parts: string[] = [`# ${sub.title}`, "", subContent];
   for (const comment of thread.comments) {
     if (isEmptyComment(comment.body)) continue;
-    parts.push("", "---", "", formatCommentMarkdown(comment, 0));
+    parts.push("", "---", "", `u/${comment.author}`, "", comment.body);
   }
   const content = parts.join("\n");
   const plainText = content
@@ -216,71 +221,7 @@ function buildContent(thread: RedditThread): {
   return { content, plainText };
 }
 
-export function createDefaultTokenFetcher(
-  clientId: string,
-  clientSecret: string,
-  userAgent: string,
-): TokenFetcher {
-  let cachedToken: string | undefined;
-  let expiresAt = 0;
-  return async () => {
-    const now = Date.now();
-    if (cachedToken && now < expiresAt) return cachedToken;
-    const auth = Buffer.from(`${clientId}:${clientSecret}`).toString("base64");
-    const res = await fetch(REDDIT_TOKEN_URL, {
-      method: "POST",
-      headers: {
-        Authorization: `Basic ${auth}`,
-        "User-Agent": userAgent,
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-      body: "grant_type=client_credentials",
-    });
-    if (!res.ok) {
-      throw new Error(
-        `Reddit token fetch failed: ${res.status} ${res.statusText}`,
-      );
-    }
-    const json = (await res.json()) as {
-      access_token?: unknown;
-      expires_in?: unknown;
-    };
-    const token = asString(json.access_token);
-    const expiresIn = asNumber(json.expires_in, 0);
-    if (!token) {
-      throw new Error("Reddit token response missing access_token");
-    }
-    cachedToken = token;
-    expiresAt = now + (expiresIn - 60) * 1000;
-    return token;
-  };
-}
-
-export function createDefaultRedditFetcher(
-  tokenFetcher: TokenFetcher,
-  userAgent: string,
-): RedditFetcher {
-  return async (url: string) => {
-    const token = await tokenFetcher();
-    const res = await fetch(url, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "User-Agent": userAgent,
-      },
-    });
-    if (!res.ok) {
-      throw new Error(
-        `Reddit API fetch failed: ${res.status} ${res.statusText}`,
-      );
-    }
-    return (await res.json()) as unknown;
-  };
-}
-
-export function createRedditPlugin(opts?: {
-  fetcher?: RedditFetcher;
-  tokenFetcher?: TokenFetcher;
-}): ExpansionPlugin {
+export function createRedditPlugin(opts?: { fetcher?: RssFetcher }): ExpansionPlugin {
   return {
     name: "reddit",
 
@@ -293,23 +234,10 @@ export function createRedditPlugin(opts?: {
       if (!articleId) {
         throw new Error(`Not a Reddit comments URL: ${context.url}`);
       }
-      let fetcher = opts?.fetcher;
-      if (!fetcher) {
-        const config = loadConfig();
-        const clientId = config.REDDIT_CLIENT_ID;
-        const clientSecret = config.REDDIT_CLIENT_SECRET;
-        const userAgent = config.REDDIT_USER_AGENT;
-        if (!clientId || !clientSecret || !userAgent) {
-          throw new Error("Reddit credentials not configured");
-        }
-        const tokenFetcher =
-          opts?.tokenFetcher ??
-          createDefaultTokenFetcher(clientId, clientSecret, userAgent);
-        fetcher = createDefaultRedditFetcher(tokenFetcher, userAgent);
-      }
-      const apiUrl = `${REDDIT_API_BASE}/comments/${articleId}?limit=10&sort=top`;
-      const response = await fetcher(apiUrl);
-      const thread = parseThread(response);
+      const fetcher = opts?.fetcher ?? createDefaultRssFetcher();
+      const rssUrl = toRssUrl(context.url);
+      const xml = await fetcher(rssUrl);
+      const thread = parseAtomFeed(xml);
       const sections = buildRedditSections(thread);
       const { content, plainText } = buildContent(thread);
       const sub = thread.submission;
@@ -318,17 +246,13 @@ export function createRedditPlugin(opts?: {
         content,
         plainText,
         sourceType: "reddit",
-        canonicalUrl: `https://www.reddit.com${sub.permalink}`,
+        canonicalUrl: sub.url || context.url,
         authors: [sub.author],
         publishedAt: sub.createdUtc,
         sections,
         metadata: {
           subreddit: sub.subreddit,
-          score: sub.score,
-          numComments: sub.numComments,
-          upvoteRatio: sub.upvoteRatio,
           articleId: sub.id,
-          flairText: sub.flairText,
         },
       };
     },

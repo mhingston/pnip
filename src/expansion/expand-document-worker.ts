@@ -6,6 +6,7 @@ import type { PluginRegistry } from "./plugin-registry.js";
 import type { ProvenanceRepository } from "../provenance/provenance-repository.js";
 import type { ProcessingJobQueue } from "../jobs/queue/processing-job-queue.js";
 import { extractArticleId } from "./reddit-plugin.js";
+import { RedditRateLimitError } from "./reddit-rate-limiter.js";
 import { REFRESH_DELAYS_MS } from "./refresh-reddit-comments-worker.js";
 
 interface ExpandTarget {
@@ -50,11 +51,29 @@ export function createExpandDocumentWorker(deps: {
         return {};
       }
 
-      const result = await plugin.expand({
-        url,
-        editionId: job.edition_id!,
-        discoveryEventId,
-      });
+      let result;
+      try {
+        result = await plugin.expand({
+          url,
+          editionId: job.edition_id!,
+          discoveryEventId,
+        });
+      } catch (err) {
+        if (err instanceof RedditRateLimitError) {
+          ctx.logger.info("rate limited, deferring expansion", {
+            url,
+            resetSeconds: err.resetSeconds,
+          });
+          await deps.queue.enqueue({
+            jobType: "expand_document",
+            editionId: job.edition_id ?? undefined,
+            target: { discoveryEventId, url },
+            nextEligibleAt: new Date(Date.now() + err.resetSeconds * 1000),
+          });
+          return {};
+        }
+        throw err;
+      }
 
       const doc = await deps.docRepo.create({
         editionId: job.edition_id!,

@@ -3,22 +3,18 @@ import { selectComments } from "./comment-selection.js";
 import type { RedditComment } from "./reddit-plugin.js";
 
 function makeComment(
-  overrides: Partial<RedditComment> & Pick<RedditComment, "id" | "score">,
+  overrides: Partial<RedditComment> & Pick<RedditComment, "id">,
 ): RedditComment {
   return {
     author: `u-${overrides.id}`,
     body: `body-${overrides.id}`,
     createdUtc: new Date(0),
-    stickied: false,
-    isSubmitter: false,
-    distinguished: null,
-    replies: [],
     ...overrides,
   };
 }
 
 describe("selectComments", () => {
-  const comments: RedditComment[] = [
+  const commentsWithScores: RedditComment[] = [
     makeComment({ id: "a", score: 10 }),
     makeComment({ id: "b", score: 50 }),
     makeComment({ id: "c", score: 30 }),
@@ -26,36 +22,50 @@ describe("selectComments", () => {
     makeComment({ id: "e", score: 40 }),
   ];
 
-  it("top-n returns the N highest-scoring comments sorted by score desc", () => {
-    const result = selectComments(comments, { strategy: "top-n", limit: 3 });
+  const commentsWithoutScores: RedditComment[] = ["a", "b", "c", "d", "e"].map((id) =>
+    makeComment({ id }),
+  );
+
+  it("top-n with undefined scores returns the first N comments in array order", () => {
+    const result = selectComments(commentsWithoutScores, { strategy: "top-n", limit: 3 });
+    expect(result.map((c) => c.id)).toEqual(["a", "b", "c"]);
+  });
+
+  it("top-n with defined scores sorts by score desc and takes N", () => {
+    const result = selectComments(commentsWithScores, { strategy: "top-n", limit: 3 });
     expect(result.map((c) => c.id)).toEqual(["b", "e", "c"]);
     expect(result.map((c) => c.score)).toEqual([50, 40, 30]);
   });
 
   it("top-n defaults limit to 25 when not specified", () => {
-    const many = Array.from({ length: 30 }, (_, i) =>
-      makeComment({ id: `c${i}`, score: i }),
-    );
+    const many = Array.from({ length: 30 }, (_, i) => makeComment({ id: `c${i}` }));
     const result = selectComments(many, { strategy: "top-n" });
     expect(result).toHaveLength(25);
-    expect(result[0].score).toBe(29);
+    expect(result.map((c) => c.id)).toEqual(Array.from({ length: 25 }, (_, i) => `c${i}`));
   });
 
-  it("minimum-score returns comments with score >= minScore sorted desc", () => {
-    const result = selectComments(comments, {
+  it("minimum-score with undefined scores returns all (cannot filter)", () => {
+    const result = selectComments(commentsWithoutScores, {
+      strategy: "minimum-score",
+      minScore: 25,
+    });
+    expect(result).toHaveLength(5);
+  });
+
+  it("minimum-score with defined scores filters by minScore", () => {
+    const result = selectComments(commentsWithScores, {
       strategy: "minimum-score",
       minScore: 25,
     });
     expect(result.map((c) => c.id)).toEqual(["b", "e", "c"]);
   });
 
-  it("minimum-score defaults minScore to 0", () => {
-    const result = selectComments(comments, { strategy: "minimum-score" });
-    expect(result).toHaveLength(5);
-    expect(result[0].score).toBe(50);
+  it("moderator with undefined distinguished returns empty", () => {
+    const result = selectComments(commentsWithoutScores, { strategy: "moderator" });
+    expect(result).toEqual([]);
   });
 
-  it("moderator returns only moderator and admin comments sorted desc", () => {
+  it("moderator with defined distinguished filters moderator and admin", () => {
     const modComments: RedditComment[] = [
       makeComment({ id: "m1", score: 5, distinguished: "moderator" }),
       makeComment({ id: "m2", score: 50, distinguished: "admin" }),
@@ -66,7 +76,12 @@ describe("selectComments", () => {
     expect(result.map((c) => c.id)).toEqual(["m2", "m3", "m1"]);
   });
 
-  it("stickied returns only stickied comments sorted desc", () => {
+  it("stickied with undefined stickied returns empty", () => {
+    const result = selectComments(commentsWithoutScores, { strategy: "stickied" });
+    expect(result).toEqual([]);
+  });
+
+  it("stickied with defined stickied filters sticky comments", () => {
     const stickyComments: RedditComment[] = [
       makeComment({ id: "s1", score: 5, stickied: true }),
       makeComment({ id: "n1", score: 999, stickied: false }),

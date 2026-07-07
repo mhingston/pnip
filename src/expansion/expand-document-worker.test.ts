@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { createExpandDocumentWorker } from "./expand-document-worker.js";
 import { REFRESH_DELAYS_MS } from "./refresh-reddit-comments-worker.js";
+import { RedditRateLimitError } from "./reddit-rate-limiter.js";
 import type { DocumentRepository } from "./document-repository.js";
 import type { SectionRepository } from "./section-repository.js";
 import type { PluginRegistry } from "./plugin-registry.js";
@@ -274,5 +275,115 @@ describe("ExpandDocumentWorker", () => {
     const elapsed = arg.nextEligibleAt.getTime() - before;
     expect(elapsed).toBeGreaterThanOrEqual(REFRESH_DELAYS_MS[0] - 1000);
     expect(elapsed).toBeLessThanOrEqual(REFRESH_DELAYS_MS[0] + 5000);
+  });
+
+  it("on RedditRateLimitError re-enqueues expand_document with delayed nextEligibleAt and returns {}", async () => {
+    const plugin: ExpansionPlugin = {
+      name: "reddit",
+      supports: () => true,
+      expand: vi.fn().mockRejectedValue(new RedditRateLimitError(45)),
+    };
+    const pluginRegistry: PluginRegistry = {
+      register: vi.fn(),
+      select: vi.fn(() => plugin),
+    };
+
+    const docRepo: DocumentRepository = {
+      create: vi.fn(),
+      getById: vi.fn(),
+      getByEdition: vi.fn(),
+      getByEditionAndUrl: vi.fn().mockResolvedValue(undefined),
+    };
+    const sectionRepo: SectionRepository = {
+      createBatch: vi.fn(),
+      getByDocumentId: vi.fn(),
+      getMaxOrder: vi.fn(),
+      getByDocumentIdAndType: vi.fn(),
+    };
+    const provenanceRepo: ProvenanceRepository = {
+      recordLineage: vi.fn(),
+      recordLineageBatch: vi.fn(),
+      getSources: vi.fn(),
+      getConsumers: vi.fn(),
+      resolveCitations: vi.fn(),
+      resolveToDocuments: vi.fn(),
+    };
+    const queue = fakeQueue();
+
+    const worker = createExpandDocumentWorker({
+      docRepo,
+      sectionRepo,
+      pluginRegistry,
+      provenanceRepo,
+      queue,
+    });
+
+    const redditUrl = "https://www.reddit.com/r/test/comments/1upftp9/title/";
+    const before = Date.now();
+    const outcome = await worker.execute(
+      makeJob({ target: { discoveryEventId: "event-1", url: redditUrl } }),
+      { db: {} as any, logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn(), child: vi.fn() } as any },
+    );
+
+    expect(docRepo.create).not.toHaveBeenCalled();
+    expect(sectionRepo.createBatch).not.toHaveBeenCalled();
+    expect(queue.enqueue).toHaveBeenCalledTimes(1);
+    const arg = (queue.enqueue as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(arg.jobType).toBe("expand_document");
+    expect(arg.editionId).toBe("edition-1");
+    expect(arg.target).toEqual({ discoveryEventId: "event-1", url: redditUrl });
+    const elapsed = arg.nextEligibleAt.getTime() - before;
+    expect(elapsed).toBeGreaterThanOrEqual(45 * 1000 - 1000);
+    expect(elapsed).toBeLessThanOrEqual(45 * 1000 + 5000);
+    expect(outcome).toEqual({});
+  });
+
+  it("propagates non-rate-limit errors from plugin.expand", async () => {
+    const plugin: ExpansionPlugin = {
+      name: "reddit",
+      supports: () => true,
+      expand: vi.fn().mockRejectedValue(new Error("boom")),
+    };
+    const pluginRegistry: PluginRegistry = {
+      register: vi.fn(),
+      select: vi.fn(() => plugin),
+    };
+    const docRepo: DocumentRepository = {
+      create: vi.fn(),
+      getById: vi.fn(),
+      getByEdition: vi.fn(),
+      getByEditionAndUrl: vi.fn().mockResolvedValue(undefined),
+    };
+    const sectionRepo: SectionRepository = {
+      createBatch: vi.fn(),
+      getByDocumentId: vi.fn(),
+      getMaxOrder: vi.fn(),
+      getByDocumentIdAndType: vi.fn(),
+    };
+    const provenanceRepo: ProvenanceRepository = {
+      recordLineage: vi.fn(),
+      recordLineageBatch: vi.fn(),
+      getSources: vi.fn(),
+      getConsumers: vi.fn(),
+      resolveCitations: vi.fn(),
+      resolveToDocuments: vi.fn(),
+    };
+    const queue = fakeQueue();
+
+    const worker = createExpandDocumentWorker({
+      docRepo,
+      sectionRepo,
+      pluginRegistry,
+      provenanceRepo,
+      queue,
+    });
+
+    await expect(
+      worker.execute(
+        makeJob({ target: { discoveryEventId: "event-1", url: "https://www.reddit.com/r/test/comments/1upftp9/title/" } }),
+        { db: {} as any, logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn(), child: vi.fn() } as any },
+      ),
+    ).rejects.toThrow(/boom/);
+    expect(queue.enqueue).not.toHaveBeenCalled();
   });
 });
