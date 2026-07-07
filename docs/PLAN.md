@@ -2858,6 +2858,12 @@ NotebookLM is the conversational interface.
 * Sentiment analysis
 * Social platforms beyond supported expansion plugins (except Reddit comment enrichment)
 
+## Signal-to-Noise / Feedback
+
+* **User signal capture** — no first-class signal table (no thumbs, ratings, "hide this source" actions, "this was noise" flag). The substrate is in place (provenance, embeddings, deterministic re-rendering of summaries) but is not yet wired; see **§65 Signal-to-Noise and Feedback** for the rollout path. New signal-capture tables and APIs must not be introduced ad hoc during phase work.
+* **Personalised ranking / re-ranking** — clustering and "Top Stories" selection are currently uniform across readers. Source-trust tiers, category preferences, and per-source like/dislike counts are not yet read at ranking time. Tracking only via the LLM's topic assignment + the rss-digest project's editorial profile (an external artefact, not in PNIP's schema).
+* **Reinforcement loops that train or fine-tune any model** — out of scope; if added later, must respect §28 (every artifact records prompt/model/input) so any model change is auditable.
+
 ---
 
 # 64. Architectural Summary
@@ -2867,6 +2873,120 @@ The Personal News Intelligence Pipeline is a deterministic, database-centric pro
 Miniflux provides discovery and nothing more. Fabric is the content extraction engine for Article, YouTube, and Podcast sources; MarkItDown extracts PDF; Reddit uses native extraction. PostgreSQL stores every persistent artifact, including embeddings through pgvector. Independent workers execute idempotent stages coordinated through an internal PostgreSQL-backed job queue. Markdown serves as the canonical publication format from which HTML email is generated and delivered via Resend. NotebookLM notebooks and podcasts are created exclusively through `notebooklm-py`, and NotebookLM is the sole conversational interface.
 
 The architecture is intentionally conservative. It prioritizes determinism, provenance, resumability, and operational simplicity over additional infrastructure or framework abstractions. Every artifact is traceable to its source, every stage can be retried safely, and every published Edition forms a permanent, immutable record of the day's intelligence.
+
+---
+
+# 65. Signal-to-Noise and Feedback
+
+This section defines how PNIP can capture user feedback over time and use it to improve signal-to-noise in future Editions. **It is purely a roadmap** — no signal-capture tables, APIs, or ranking changes ship as part of M0–M11. The goal is to keep the substrate honest today, so adding the loop later does not require a migration that rewrites history.
+
+## 65.1 What we already have (substrate)
+
+PNIP already records enough that future feedback can be wired without rewriting history:
+
+* **Provenance chain.** Every published claim traces back through `document_lineage` → `document_chunks` → `documents` → `discovery_events`. So for any claim that appears in a digest, we can ask *"which chunk was this?"* and *"which source URL?"* — without scanning text. That is the join key for any future like/dislike action.
+* **Deterministic re-rendering.** Summaries, entities, topics, and story summaries record `prompt_id` + `prompt_version` + `model` + `provider` + `input_hash`. A future feedback loop can re-render the exact same artifact and audit prompt changes without diffing prose.
+* **Stable source identity.** `documents.source_url` is canonical; `documents.id` is stable across `chunk_document` re-runs (re-chunk replaces children, keeps the document). So per-source counters never drift on chunk refresh.
+* **LLM-derived topics and entities** per chunk (`topics.topic`, `entities.entity_type`). These are pre-computed candidate features for any future per-category or per-entity preference model.
+* **Embedding space.** `embeddings.vector (vector(384))` is already populated per chunk; the M5 clusterer uses it for similarity. Any future "find more like this" feedback action can reuse the same vectors without re-running the ONNX model.
+* **Embeddings clusterer is deterministic.** Re-clustering the same set of chunks in the same order yields the same `cluster_order` and `label` — so per-story preference can be measured across Editions.
+* **The data model never mutates upstream artifacts.** Per §52, "upstream" enrichment rows are owned per-chunk and re-runs replace only what they own. A feedback action that touches a story, summary, or document does not retrigger enrichment.
+* **Edition immutability (§40, §62).** Once an Edition is published, feedback recorded against it can be replayed and audited without invalidating the digest.
+
+None of these were built for feedback specifically — they are byproducts of provenance + determinism. But together they are exactly the join-key + ground-truth-table substrate that any later feedback work needs.
+
+## 65.2 What is missing (gaps)
+
+* **No user identity.** PNIP is single-user by design (§63). Any feedback is therefore either:
+  1. **Implicit** (signals the user already generates externally — Miniflux star/hide, mark-read, blocklist rules, Resend engagement, NotebookLM Q&A), or
+  2. **Self-attributed** — the same person who runs PNIP also interacts with its outputs and we trust that linkage.
+* **No signal-capture table.** No `feedback` / `signal` / `rating` table exists; nothing is written when a digest is opened, starred, or hidden.
+* **No source-trust tier column.** Miniflux stores `feed.category` and `feed.disabled`, but PNIP does not carry either into a per-source column on `documents` or `discovery_events`. The rss-digest project maintains a manual `editorial_profile.md` trust tier; PNIP does not.
+* **No preference state.** No "source X is noise", "category Y is overrepresented", or "topic Z always interesting" storage. Every Edition uses the same ranking prior.
+* **No feedback ingestion surface.** No `/feedback` endpoint, no email reply parsing, no per-digest links with reaction tracking.
+
+## 65.3 Recommended rollout (cheap → ambitious)
+
+The substrate already exists in phases 0–6. The cheapest first step is **passive capture at output time** — write to disk what is happening, but do not let it influence any current behaviour. The next steps use those signals read-only. The ambitious steps wait until the simple ones have produced evidence worth acting on.
+
+### Phase A — capture, do not use (zero user effort, zero behavioural change)
+
+Add a single, append-only `signals` table written from the existing pipeline:
+
+```sql
+create table signals (
+  id          uuid primary key default gen_random_uuid(),
+  signal_kind text not null,                   -- 'clustered_into_story', 'claimed_in_top', 'chunk_in_story', ...
+  edition_id  uuid not null references editions(id) on delete cascade,
+  story_id    uuid references story_clusters(id) on delete set null,
+  chunk_id    text references document_chunks(id) on delete set null,
+  document_id uuid references documents(id) on delete set null,
+  source_url  text,                            -- denormalized for survival across replays
+  payload     jsonb not null default '{}'::jsonb,
+  created_at  timestamptz not null default now()
+);
+```
+
+Writers (passively, from existing workers):
+
+* `cluster_stories_worker` writes `clustered_into_story` per cluster member.
+* A future `generate_digest` worker writes `claimed_in_top` per story that lands in the digest's Top Stories.
+* `summarize_story_worker` writes `chunk_in_story` per chunk that a story cites.
+
+These are **observability signals**, not feedback. They let the operator answer "what made it into the digest this week and from where?" without re-parsing the Markdown. **No additional users, no ranking changes, no new code paths beyond a worker writing one INSERT.**
+
+### Phase B — external feedback ingestion (one-way, optional)
+
+Wire three **optional** write paths so the same person running PNIP can record feedback without touching the DB directly:
+
+* `digestive feedback rate <edition_id> <story_id> [--up|--down]` — self-attributed story rating.
+* `digestive feedback hide <source_url>` — self-attributed source mute; new discoveries from the URL are persisted with `discovery_events.metadata.signal='muted'` (no-op on the pipeline, just a flag for diagnostics).
+* `digestive feedback star <chunk_id>` — self-attributed chunk interest (used by the analytics export, not the LLM).
+
+These are CLI-only, no UI, and write to the same `signals` table with `signal_kind ∈ {story_up, story_down, source_muted, chunk_starred}`. Optionally indexable for an external BI tool; never read by PNIP itself.
+
+### Phase C — read-only ranking hints (still no UI)
+
+* Surface per-source `signal_kind='source_muted'` and per-story `story_down/sum/story_up` into a denormalised `source_bias` / `story_bias` view.
+* LLM `generate_digest` is given an **optional** extra-input section "previously muted sources / down-rated stories" with strict semantics: drop matching stories from Top Stories, lower them to Interesting Reads, or include a "less of this lately" sidebar. The behavior is **deterministic and opt-in** — the prompt only sees this block if the operator enables it.
+
+This step adds a prompt revision and one bounded input. It does not mutate any persisted artifact; the bias view is a projection.
+
+### Phase D — feedback-aware re-ranking (real ranking)
+
+* Replace the M5 uniform cosine+union-find cluster order with a per-source-aware ranking: (a) cluster as today, (b) re-order within each cluster by `(source trust prior × story-up votes − story-down votes)`, (c) preserve cluster boundaries so stories remain deterministic.
+* Source-trust prior is loaded once from a hand-curated table (`source_trust(source_url, tier)`) that mirrors the rss-digest project's `editorial_profile.md`. New rows are added by CLI: `digestive source-trust set <url> <tier>`.
+* Tier lookups **never** alter upstream chunks or documents (§52); only the clusterer and digest generator are affected.
+
+This step is the first one where feedback actually moves bits. It should be rolled out **after** at least two weeks of Phase A signals exist, so the clusterer has evidence worth ranking by.
+
+### Why this is staged
+
+Each phase is independently shippable and reversible:
+
+* Phase A is mechanical INSERTs — no behavioural change, no regression risk; "always on" once enabled.
+* Phase B is a CLI surface — no LLM or worker code path changes; "always optional".
+* Phase C is a prompt revision behind an enable flag — existing digests remain reproducible (`prompt_version` bumps per §28).
+* Phase D is the first thing that can move Tier-3 stories up or down based on user signal.
+
+## 65.4 Acceptance for "feedback is wired"
+
+When this section becomes non-roadmap (i.e. Phases A and B ship):
+
+* `digestive feedback --help` works and writes to `signals`.
+* Every published Edition has at least one row per `Top Stories` story in `signals` (proves observability is on).
+* The same digest can be deterministically re-rendered with the same `prompt_version` (proves §28 invariant still holds).
+* Switching off `phase C` in config drops the bias block from the prompt and produces the same digest as before (proves opt-in).
+
+This is **not** a quality bar; it is a "the substrate is shaped correctly" bar. The signal-to-noise *improvement* is not measurable from inside PNIP — only from comparing Editions over time against external ground truth (the rss-digest editorial profile does this manually today).
+
+## 65.5 Out of scope (matching §63)
+
+This is explicitly **not** in scope and is listed in §63:
+
+* No personalised ranking by reader identity (single-user pipeline, §63).
+* No reinforcement learning, fine-tuning, or any "learn from clicks" loop.
+* No automatic fact-checking or bias analysis.
 
 ---
 
@@ -3231,6 +3351,19 @@ Five independent workers, each owning one artifact type and isolated from the ot
 * `retry` with filters by Edition, worker, job type, failure state (§59)
 * `doctor` diagnostics: PostgreSQL + migrations + Miniflux + Resend + notebooklm-py + queue health + worker registration + config validation (§59)
 * **Maintenance pass** — `digestive maintenance` (`--apply`/`--archive-after`/`--purge-after`/`--limit`) bounds the `processing_jobs` table by archiving completed/failed rows then DELETing archived rows past the configured age; dry-run by default. Defaults: archive after 1d, purge after 7d, per-phase limit 10000. Idempotent; safe to run from daily cron. Other tables (`editions`, `documents`, enrichment rows, embeddings, stories) are kept with the Edition per §40 ("Edition serves as the permanent archive") and are not reclaimed by this pass.
+* **Recommended operations cadence** — three recurring commands, scheduled (cron / systemd timer / launchd) by the operator; PNIP does not currently ship a scheduler. Recommended cadence:
+
+  ```text
+  every 5–15 min:   digestive discover && digestive process          # drain Miniflux → editions
+  every 6h:         digestive maintenance            (dry-run preview by default)
+  daily (after publication): digestive maintenance --apply
+  ```
+
+  Tuning notes:
+  * Discovery is idempotent (dedupe by URL+edition) so over-polling is harmless but wasteful; align with Miniflux's refresh interval.
+  * `process` runs to queue-empty in a single invocation, so a short interval × short-lived process is fine.
+  * Maintenance is idempotent and bounded; the daily `--apply` is the real cleanup; dry-run previews are cheap and useful for surfacing regressions in queue growth.
+  * Edition publication itself is a separate trigger (cron around the desired publish time; see §42 + §54).
 * Non-zero exit codes on failure for automation (§59)
 * Internal metrics: jobs completed/failed, retry counts, throughput, queue depth, latency, publication duration, Edition completion time (§58)
 * Startup sequence: validate config → connect PG → run migrations → init services → start workers (the runtime loop drains the queue); fail fast on missing dependency (§54)
