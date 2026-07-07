@@ -57,4 +57,15 @@ describe("config", () => {
     const config = loadConfig();
     expect(config.MARKITDOWN_BIN).toBe("/usr/bin/markitdown");
   });
+
+  it("parses Reddit OAuth credentials and user agent from env", () => {
+    process.env.DATABASE_URL = "postgres://localhost/db";
+    process.env.REDDIT_CLIENT_ID = "abc123";
+    process.env.REDDIT_CLIENT_SECRET = "secret";
+    process.env.REDDIT_USER_AGENT = "PNIP/1.0 by test";
+    const config = loadConfig();
+    expect(config.REDDIT_CLIENT_ID).toBe("abc123");
+    expect(config.REDDIT_CLIENT_SECRET).toBe("secret");
+    expect(config.REDDIT_USER_AGENT).toBe("PNIP/1.0 by test");
+  });
 });
