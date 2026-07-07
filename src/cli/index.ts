@@ -12,9 +12,8 @@ import { createWorkerRuntime } from "../jobs/workers/worker-runtime.js";
 import { createExpandDocumentWorker } from "../expansion/expand-document-worker.js";
 import { createDocumentRepository } from "../expansion/document-repository.js";
 import { createSectionRepository } from "../expansion/section-repository.js";
-import { createPluginRegistry } from "../expansion/plugin-registry.js";
-import { createArticlePlugin } from "../expansion/article-plugin.js";
 import { createProvenanceRepository } from "../provenance/provenance-repository.js";
+import { buildPluginRegistry } from "./process-registry.js";
 import { parseCommand } from "./args.js";
 import { runDiscoverCommand } from "./discover.js";
 
@@ -66,8 +65,7 @@ async function main(): Promise<number> {
       const sectionRepo = createSectionRepository(db);
       const provenanceRepo = createProvenanceRepository(db);
 
-      const registry = createPluginRegistry();
-      registry.register(createArticlePlugin());
+      const registry = buildPluginRegistry();
 
       const queue = createProcessingJobQueue(db);
       const expandWorker = createExpandDocumentWorker({
