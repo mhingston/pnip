@@ -5,14 +5,17 @@ import type { DocumentRepository } from "../expansion/document-repository.js";
 import type { ChunkRepository } from "../chunking/chunk-repository.js";
 import { deriveSourceIdentity } from "../signals/source-identity.js";
 
-export interface FeedbackCommandDeps {
+export interface FeedbackDeps {
   signalRepo: SignalRepository;
   editionRepo: EditionRepository;
   storyRepo: StoryRepository;
   docRepo: DocumentRepository;
   chunkRepo: ChunkRepository;
-  args: string[];
   log?: (msg: string) => void;
+}
+
+export interface FeedbackCommandDeps extends FeedbackDeps {
+  args: string[];
 }
 
 export interface FeedbackCommandResult {
@@ -235,7 +238,7 @@ function errMsg(msg: unknown): string {
 }
 
 async function runRate(
-  deps: FeedbackCommandDeps,
+  deps: FeedbackDeps,
   log: (msg: string) => void,
   flags: FeedbackRateFlags,
 ): Promise<FeedbackCommandResult> {
@@ -286,7 +289,7 @@ async function runRate(
 }
 
 async function runHide(
-  deps: FeedbackCommandDeps,
+  deps: FeedbackDeps,
   log: (msg: string) => void,
   flags: FeedbackHideFlags,
 ): Promise<FeedbackCommandResult> {
@@ -295,7 +298,15 @@ async function runHide(
     log("feedback: no edition found to attach feedback to");
     return { exitCode: 1 };
   }
+  return runHideWithEdition(deps, log, flags, edition);
+}
 
+async function runHideWithEdition(
+  deps: FeedbackDeps,
+  log: (msg: string) => void,
+  flags: FeedbackHideFlags,
+  edition: { id: string },
+): Promise<FeedbackCommandResult> {
   const doc = await deps.docRepo.getByEditionAndUrl(edition.id, flags.sourceUrl);
   const sourceIdentity = deriveSourceIdentity({
     sourceUrl: flags.sourceUrl,
@@ -326,7 +337,7 @@ async function runHide(
 }
 
 async function runStar(
-  deps: FeedbackCommandDeps,
+  deps: FeedbackDeps,
   log: (msg: string) => void,
   flags: FeedbackStarFlags,
 ): Promise<FeedbackCommandResult> {
@@ -390,6 +401,41 @@ export async function runFeedbackCommand(
       log("feedback: no subcommand");
       return { exitCode: 2 };
   }
+}
+
+export async function runFeedbackRate(
+  deps: FeedbackDeps,
+  editionId: string,
+  storyId: string,
+  direction: "up" | "down",
+): Promise<FeedbackCommandResult> {
+  const log = deps.log ?? ((m: string) => console.log(m));
+  return runRate(deps, log, { editionId, storyId, direction });
+}
+
+export async function runFeedbackHide(
+  deps: FeedbackDeps,
+  sourceUrl: string,
+  editionIdOverride?: string,
+): Promise<FeedbackCommandResult> {
+  const log = deps.log ?? ((m: string) => console.log(m));
+  if (editionIdOverride) {
+    const edition = await deps.editionRepo.getById(editionIdOverride);
+    if (!edition) {
+      log(`feedback: edition not found: ${editionIdOverride}`);
+      return { exitCode: 1 };
+    }
+    return runHideWithEdition(deps, log, { sourceUrl }, edition);
+  }
+  return runHide(deps, log, { sourceUrl });
+}
+
+export async function runFeedbackStar(
+  deps: FeedbackDeps,
+  chunkId: string,
+): Promise<FeedbackCommandResult> {
+  const log = deps.log ?? ((m: string) => console.log(m));
+  return runStar(deps, log, { chunkId });
 }
 
 export const FEEDBACK_HELP = `digestive feedback — record self-attributed feedback signals

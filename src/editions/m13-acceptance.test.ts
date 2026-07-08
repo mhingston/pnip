@@ -64,7 +64,7 @@ import {
 } from "../publication/publication-service.js";
 import { createSignalRepository } from "../signals/signal-repository.js";
 import { createSourceTrustRepository } from "../signals/source-trust-repository.js";
-import { runFeedbackCommand, todayDate } from "../cli/feedback.js";
+import { runFeedbackHide, runFeedbackRate } from "../cli/feedback.js";
 import { getBiasView } from "../signals/bias-view.js";
 import { createExpandDocumentWorker } from "../expansion/expand-document-worker.js";
 import { createChunkDocumentWorker } from "../chunking/chunk-document-worker.js";
@@ -1502,7 +1502,6 @@ describe("M13 §61 acceptance criteria — full pipeline", () => {
     const storyId1 = state.storyIds[0]!;
     const storyId2 = state.storyIds[1] ?? state.storyIds[0]!;
     const sourceUrl = (await env.docRepo.getById(state.documentIds[0]!))!.source_url;
-    const todayEdition = await env.editionRepo.create(todayDate());
 
     const deps = {
       signalRepo: env.signalRepo,
@@ -1513,11 +1512,11 @@ describe("M13 §61 acceptance criteria — full pipeline", () => {
       log: () => {},
     };
 
-    const r1 = await runFeedbackCommand({ ...deps, args: ["rate", state.editionId, storyId1, "--up"] });
+    const r1 = await runFeedbackRate(deps, state.editionId, storyId1, "up");
     expect(r1.exitCode).toBe(0);
-    const r2 = await runFeedbackCommand({ ...deps, args: ["rate", state.editionId, storyId2, "--down"] });
+    const r2 = await runFeedbackRate(deps, state.editionId, storyId2, "down");
     expect(r2.exitCode).toBe(0);
-    const r3 = await runFeedbackCommand({ ...deps, args: ["hide", sourceUrl] });
+    const r3 = await runFeedbackHide(deps, sourceUrl, state.editionId);
     expect(r3.exitCode).toBe(0);
 
     expect(
@@ -1527,14 +1526,12 @@ describe("M13 §61 acceptance criteria — full pipeline", () => {
       await env.signalRepo.countByEditionAndKind(state.editionId, "story_down"),
     ).toBeGreaterThanOrEqual(1);
     expect(
-      await env.signalRepo.countByEditionAndKind(todayEdition.id, "source_muted"),
+      await env.signalRepo.countByEditionAndKind(state.editionId, "source_muted"),
     ).toBeGreaterThanOrEqual(1);
 
-    const storyBiasView = await getBiasView(env.db, state.editionId);
-    expect(storyBiasView.storyBias.get(storyId1)?.up_votes).toBeGreaterThanOrEqual(1);
-    expect(storyBiasView.storyBias.get(storyId2)?.down_votes).toBeGreaterThanOrEqual(1);
-
-    const sourceBiasView = await getBiasView(env.db, todayEdition.id);
-    expect(sourceBiasView.mutedSourceIdentities.size).toBeGreaterThanOrEqual(1);
+    const biasView = await getBiasView(env.db, state.editionId);
+    expect(biasView.storyBias.get(storyId1)?.up_votes).toBeGreaterThanOrEqual(1);
+    expect(biasView.storyBias.get(storyId2)?.down_votes).toBeGreaterThanOrEqual(1);
+    expect(biasView.mutedSourceIdentities.size).toBeGreaterThanOrEqual(1);
   });
 });
