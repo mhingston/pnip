@@ -389,7 +389,7 @@ describe("M8 end-to-end: markdown digest → HTML email → Resend", () => {
     expect(body.html).toContain("<!doctype html>");
     expect(body.text).toContain("Daily Digest");
     expect(call.init.headers?.["Authorization"]).toBe("Bearer re_test");
-    expect(call.init.headers?.["Idempotency-Key"]).toBe(`pnip:${ed.id}`);
+    expect(call.init.headers?.["Idempotency-Key"]).toMatch(new RegExp(`^pnip:${ed.id}:`));
 
     // Persisted state.
     const persisted = await env.emailDigestRepo.getByEdition(ed.id);

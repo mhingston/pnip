@@ -140,6 +140,7 @@ export function createEmailDigestService(
       };
     }
 
+    const idempotencyKey = `pnip:${input.editionId}:${Buffer.from(input.html).byteLength.toString(36)}`;
     const res = await deps.resend.sendEmail({
       from: deps.config.fromAddress,
       to: deps.config.toAddresses,
@@ -150,7 +151,7 @@ export function createEmailDigestService(
         { name: "source", value: "pnip-digestive" },
         { name: "edition_id", value: input.editionId },
       ],
-      idempotencyKey: `pnip:${input.editionId}`,
+      idempotencyKey,
     });
 
     const attemptedAt = new Date();

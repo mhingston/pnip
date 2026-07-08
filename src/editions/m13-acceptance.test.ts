@@ -1301,7 +1301,7 @@ describe("M13 §61 acceptance criteria — full pipeline", () => {
     const call = env.captured[0]!;
     expect(call.url).toBe("https://api.resend.local/emails");
     expect(call.init.headers?.["Authorization"]).toBe("Bearer re_test");
-    expect(call.init.headers?.["Idempotency-Key"]).toBe(`pnip:${state.editionId}`);
+    expect(call.init.headers?.["Idempotency-Key"]).toMatch(new RegExp(`^pnip:${state.editionId}:`));
     const body = JSON.parse(call.init.body!);
     expect(body.from).toBe("Digest <digest@example.com>");
     expect(body.to).toEqual(["reader@example.com"]);

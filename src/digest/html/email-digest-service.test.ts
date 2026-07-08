@@ -185,7 +185,7 @@ describe("send — happy path", () => {
     expect(arg.subject).toMatch(/^Daily Digest —/);
     expect(arg.html).toContain("<!doctype html>");
     expect(arg.text).toContain("Daily Digest");
-    expect(arg.idempotencyKey).toBe("pnip:ed-1");
+    expect(arg.idempotencyKey).toMatch(/^pnip:ed-1:/);
     expect(arg.tags).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ name: "source", value: "pnip-digestive" }),
