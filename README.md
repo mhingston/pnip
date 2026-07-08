@@ -304,32 +304,3 @@ direct SQL.
   `digestive feedback` CLI. Phase C is opt-in via
   `DIGEST_BIAS_ENABLED=true`. Phase D is opt-in via
   `source_trust` rows.
-
-## Known technical debt (v1)
-
-- **Synchronous publication** — `digestive publish-edition` runs the
-  gate check + DB updates in a single CLI call; the runtime is short so
-  the fire-and-forget UX is fine for v1. A future iteration could make
-  it a worker.
-- **Cooperative job cancellation** — `cancelForEdition` runs an UPDATE;
-  in-flight jobs run to completion and self-terminate at the next
-  `isProcessingAllowed` check. A future iteration could expose a
-  `cancelled` flag in the claim response so long-running workers can
-  abort early.
-- **No `runtime.listRegisteredWorkers()`** — the `doctor` workers
-  check prints the static known-worker list. A future iteration could
-  expose the live registered set.
-- **§65 Phase C is a deterministic re-order, not an LLM block** — the
-  M7 digest is template-based, not LLM-generated, so the "previously
-  muted sources / down-rated stories" block the plan describes
-  materialized as a filter + reorder step. If a future revision
-  introduces LLM-generated digest prose, the bias block can be added to
-  the prompt behind the same `DIGEST_BIAS_ENABLED` flag.
-- **§65 feedback is single-user / self-attributed** — by design (§63
-  forbids multi-user). All `signals` rows are implicitly the same
-  person who runs PNIP. There is no `user_id` column.
-- **No `digestive feedback` analytics export** — the `signals` table
-  is queryable via SQL and now has a built-in `digestive feedback-summary`
-  CLI that surfaces per-kind counts + top muted sources / voted stories
-  / starred chunks. Operators who need richer analytics can connect a
-  BI tool or run ad-hoc SQL.
