@@ -117,6 +117,7 @@ export function createClusterStoriesWorker(
           embedding: vector,
           publishedAt: doc.published_at,
           sourceIdentity,
+          title: doc.title,
         });
       }
 

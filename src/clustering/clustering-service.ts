@@ -5,6 +5,7 @@ export interface DocumentClusterInput {
   embedding: number[];
   publishedAt: Date | null;
   sourceIdentity?: string;
+  title?: string | null;
 }
 
 export interface DocumentCluster {
@@ -96,8 +97,18 @@ function makeLabel(
   topic: string,
   index: number,
   used: Set<string>,
+  titles: string[],
 ): string {
-  const base = `story-${topic}-${index + 1}`.toLowerCase().replace(/\s+/g, "-");
+  let base: string;
+  if (titles.length > 0) {
+    const sorted = [...titles].sort(
+      (a, b) => a.length - b.length || a.localeCompare(b),
+    );
+    base = sorted[0]!;
+    if (base.length > 100) base = base.slice(0, 99) + "\u2026";
+  } else {
+    base = `story-${topic}-${index + 1}`.toLowerCase().replace(/\s+/g, "-");
+  }
   let candidate = base;
   let n = 2;
   while (used.has(candidate)) {
@@ -125,6 +136,7 @@ export function clusterDocuments(
 
   const indexed = inputs.map((d) => ({
     documentId: d.documentId,
+    title: d.title ?? null,
     representativeTopic: pickRepresentativeTopic(d.topics, rng),
   }));
 
@@ -184,7 +196,11 @@ export function clusterDocuments(
         bestTopic = t;
       }
     }
-    const label = makeLabel(bestTopic, storyIndex, usedLabels);
+    const memberTitles = members
+      .map((idx) => indexed[idx].title)
+      .filter((t): t is string => t !== null && t.trim().length > 0)
+      .map((t) => t.trim());
+    const label = makeLabel(bestTopic, storyIndex, usedLabels, memberTitles);
     storyIndex += 1;
     outputs.push({
       label,

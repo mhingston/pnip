@@ -496,8 +496,7 @@ describe("M7 end-to-end: deterministic markdown digest from ready edition", () =
 
     const fromRepo = await env.digestRepo.getByEdition(ed.id);
     expect(fromRepo).toBeDefined();
-    expect(fromRepo!.content).toContain("# Daily Digest — 2026-07-07");
-    expect(fromRepo!.content).toContain("## Executive Summary");
+    expect(fromRepo!.content).not.toContain("## Executive Summary");
     expect(fromRepo!.content).toContain("## Top Stories");
     expect(fromRepo!.content).toContain("## Sources");
     expect(fromRepo!.content).toMatch(/## Technology/);

@@ -35,6 +35,8 @@ import { createQualityRepository } from "../enrichment/quality/quality-repositor
 import { createClassifyQualityWorker } from "../enrichment/quality/classify-quality-worker.js";
 import { createEmbeddingRepository } from "../enrichment/embeddings/embedding-repository.js";
 import { createEmbedChunkWorker } from "../enrichment/embeddings/embed-chunk-worker.js";
+import { createClusterStoriesWorker } from "../clustering/cluster-stories-worker.js";
+import { createSummarizeStoryWorker } from "../clustering/summarize-story-worker.js";
 import { buildPluginRegistry } from "./process-registry.js";
 import { parseCommand } from "./args.js";
 import { runDiscoverCommand } from "./discover.js";
@@ -276,6 +278,35 @@ async function main(): Promise<number> {
         editionRepo,
       });
 
+      const storyRepo = createStoryRepository(db);
+      const signalRepo = createSignalRepository(db);
+      const sourceTrustRepo = createSourceTrustRepository(db);
+
+      const clusterStoriesWorker = createClusterStoriesWorker({
+        docRepo,
+        summaryRepo,
+        topicRepo,
+        embeddingRepo,
+        storyRepo,
+        provenanceRepo,
+        signalRepo,
+        sourceTrustRepo,
+      });
+
+      const summarizeStoryWorker = createSummarizeStoryWorker({
+        storyRepo,
+        storySummaryRepo: createStorySummaryRepository(db),
+        docRepo,
+        chunkRepo,
+        summaryRepo,
+        promptRepo,
+        promptExecutor,
+        provider: aiProvider,
+        provenanceRepo,
+        signalRepo,
+        model: cfg.AI_TEXT_MODEL,
+      });
+
       const runtime = createWorkerRuntime({
         db,
         queue,
@@ -287,6 +318,8 @@ async function main(): Promise<number> {
           topicsWorker,
           qualityWorker,
           embedWorker,
+          clusterStoriesWorker,
+          summarizeStoryWorker,
         ],
         logger: createLogger({ baseFields: { worker: "runtime" } }),
       });

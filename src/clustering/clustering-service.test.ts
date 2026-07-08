@@ -15,6 +15,7 @@ function makeInput(
   topics: string[],
   vector: number[],
   publishedAt: Date | null = null,
+  title?: string | null,
 ): DocumentClusterInput {
   return {
     documentId: id,
@@ -22,6 +23,7 @@ function makeInput(
     topics,
     embedding: vector,
     publishedAt,
+    title,
   };
 }
 
@@ -155,6 +157,45 @@ describe("clusterDocuments", () => {
       });
       expect(result[0]?.label).toMatch(/^story-ai-/);
     }
+  });
+
+  it("derives story labels from document titles when available", () => {
+    const a = makeVector([1, 0, 0]);
+    const b = makeVector([0.99, 0.01, 0]);
+    const inputs = [
+      makeInput("d1", ["ai"], a, null, "OpenAI Ships New Agent Framework"),
+      makeInput("d2", ["ai"], b, null, "Deep Dive: OpenAI's Latest Release"),
+    ];
+    const result = clusterDocuments(inputs, { similarityThreshold: 0.5 });
+    expect(result).toHaveLength(1);
+    expect(result[0].label).toBe("OpenAI Ships New Agent Framework");
+  });
+
+  it("picks the shortest title for the label (punchy headlines preferred)", () => {
+    const inputs = [
+      makeInput("d1", ["ai"], makeVector([1, 0]), null, "AI Breakthrough"),
+      makeInput("d2", ["ai"], makeVector([0.99, 0.01]), null, "Researchers Announce Major AI Breakthrough in Quantum Computing"),
+    ];
+    const result = clusterDocuments(inputs, { similarityThreshold: 0.5 });
+    expect(result[0].label).toBe("AI Breakthrough");
+  });
+
+  it("falls back to story-{topic}-{n} when no titles are available", () => {
+    const inputs = [
+      makeInput("d1", ["ai"], makeVector([1, 0])),
+      makeInput("d2", ["ai"], makeVector([0.99, 0.01])),
+    ];
+    const result = clusterDocuments(inputs, { similarityThreshold: 0.5 });
+    expect(result[0].label).toMatch(/^story-ai-/);
+  });
+
+  it("falls back to story-{topic}-{n} when titles are empty or whitespace", () => {
+    const inputs = [
+      makeInput("d1", ["ai"], makeVector([1, 0]), null, "  "),
+      makeInput("d2", ["ai"], makeVector([0.99, 0.01]), null, ""),
+    ];
+    const result = clusterDocuments(inputs, { similarityThreshold: 0.5 });
+    expect(result[0].label).toMatch(/^story-ai-/);
   });
 
   it("produces identical output for identical input across many runs (default RNG, no topic competition)", () => {

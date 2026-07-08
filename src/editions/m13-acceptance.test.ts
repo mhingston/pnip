@@ -1253,7 +1253,6 @@ describe("M13 §61 acceptance criteria — full pipeline", () => {
       )
     ).rows[0];
     expect(row).toBeDefined();
-    expect(row.content).toContain("# Daily Digest — 2026-07-07");
     expect(row.content).toMatch(/\[1\]/);
     expect(row.content).toContain("Story summary text combining source documents.");
     expect(row.story_count).toBeGreaterThan(0);
@@ -1281,7 +1280,7 @@ describe("M13 §61 acceptance criteria — full pipeline", () => {
     expect(row).toBeDefined();
     expect(row.html_content).toContain("<!doctype html>");
     expect(row.html_content).toContain("Daily Digest");
-    expect(row.html_content).toContain("story-ai-");
+    expect(row.html_content).toContain("AI Article");
     expect(row.html_content).toMatch(/\[1\]/);
     expect(row.text_content).toContain("Daily Digest");
   });

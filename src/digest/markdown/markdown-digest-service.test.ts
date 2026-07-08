@@ -223,8 +223,9 @@ describe("renderMarkdown", () => {
       stories: [],
       citationIndex: buildCitationIndex([]),
     });
-    expect(md).toContain("# Daily Digest — 2026-07-07");
-    expect(md).toContain("## Table of Contents");
+    expect(md).toContain("## Top Stories");
+    expect(md).not.toContain("## Table of Contents");
+    expect(md).not.toContain("Edition 2026-07-07 ·");
   });
 
   it("always emits Sources section even with no stories", () => {
@@ -262,11 +263,11 @@ describe("renderMarkdown", () => {
     expect(md).toContain("## Technology");
     expect(md).toContain("## Videos");
     expect(md).toContain("## Reddit Discussions");
-    expect(md).toContain("## Closing Summary");
+    expect(md).not.toContain("## Closing Summary");
     expect(md).toContain("## Sources");
   });
 
-  it("includes the Executive Summary bullets for top stories", () => {
+  it("omits the Executive Summary and per-story Sources line", () => {
     const stories = makeNStories(2, "Technology", "ai");
     const idx = buildCitationIndex(stories.flatMap((s) => s.claims.map((c) => ({ chunkId: c.chunkId, claimText: c.text }))));
     const md = svc.renderMarkdown({
@@ -275,7 +276,9 @@ describe("renderMarkdown", () => {
       stories,
       citationIndex: idx,
     });
-    expect(md).toMatch(/## Executive Summary[\s\S]+## Top Stories/);
+    expect(md).not.toContain("## Executive Summary");
+    expect(md).not.toContain("_Sources:_");
+    expect(md).toContain("## Top Stories");
   });
 
   it("uses deterministic citation numbering across two renders", () => {
@@ -463,7 +466,7 @@ describe("generate", () => {
     expect(result.citationCount).toBe(citationIndex.entries.length);
     expect(digestRepo.createForEdition).toHaveBeenCalledOnce();
     const arg = digestRepo.createForEdition.mock.calls[0]![0]!;
-    expect(arg.content).toContain("# Daily Digest — 2026-07-07");
+    expect(arg.content).toContain("## Top Stories");
   });
 
   it("recovers from a UNIQUE conflict by returning the existing row", async () => {

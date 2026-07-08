@@ -251,37 +251,6 @@ function formatPublicationDate(value: Date | string): string {
   return `${y}-${m}-${day}`;
 }
 
-function formatLongDate(value: Date | string): string {
-  if (typeof value === "string") {
-    const d = new Date(value);
-    if (!Number.isNaN(d.valueOf())) return d.toUTCString().split(" ").slice(0, 4).join(" ");
-    return value;
-  }
-  if (Number.isNaN(value.valueOf())) return formatPublicationDate(value);
-  return value.toUTCString().split(" ").slice(0, 4).join(" ");
-}
-
-function slugify(input: string): string {
-  const s = input
-    .toLowerCase()
-    .replace(/[^a-z0-9\s-]/g, "")
-    .trim()
-    .replace(/\s+/g, "-")
-    .replace(/-+/g, "-");
-  return s.length > 0 ? s : "section";
-}
-
-function uniqueSlug(base: string, taken: Set<string>): string {
-  let candidate = base;
-  let i = 2;
-  while (taken.has(candidate)) {
-    candidate = `${base}-${i}`;
-    i += 1;
-  }
-  taken.add(candidate);
-  return candidate;
-}
-
 function bullet(text: string): string {
   const trimmed = text.replace(/\s+/g, " ").trim();
   return `- ${trimmed}`;
@@ -515,7 +484,6 @@ export function createMarkdownDigestService(
 
     renderMarkdown({ edition, assembly, stories, citationIndex }) {
       const publicationDate = formatPublicationDate(edition.publication_date);
-      const longDate = formatLongDate(edition.publication_date);
 
       const validStories = stories.filter((s) => s.claims.length > 0);
       const topStories = validStories.slice(0, DIGEST_TOP_STORIES_LIMIT);
@@ -538,70 +506,7 @@ export function createMarkdownDigestService(
         a.sourceUrl.localeCompare(b.sourceUrl),
       );
 
-      const slugTaken = new Set<string>();
-      function addSection(label: string): string {
-        const anchor = uniqueSlug(slugify(label), slugTaken);
-        return anchor;
-      }
-
-      const executiveAnchor = addSection("Executive Summary");
-      const topAnchor = addSection("Top Stories");
-      const categoryAnchors: Record<DigestCategory, string | null> = {
-        Technology: null,
-        Politics: null,
-        Science: null,
-        Business: null,
-        "Interesting Reads": null,
-        Videos: null,
-        "Reddit Discussions": null,
-      };
-      const tocLabels: { anchor: string; label: string }[] = [];
-      tocLabels.push({ anchor: executiveAnchor, label: "Executive Summary" });
-      tocLabels.push({ anchor: topAnchor, label: "Top Stories" });
-      for (const cat of DIGEST_CATEGORY_ORDER) {
-        if ((buckets.get(cat) ?? []).length > 0) {
-          categoryAnchors[cat] = addSection(cat);
-          tocLabels.push({ anchor: categoryAnchors[cat]!, label: cat });
-        }
-      }
-      const closingAnchor = addSection("Closing Summary");
-      const sourcesAnchor = addSection("Sources");
-
       const lines: string[] = [];
-      lines.push(`# Daily Digest — ${publicationDate}`);
-      lines.push("");
-      const nounStory = validStories.length === 1 ? "story" : "stories";
-      const nounSource = allDocs.size === 1 ? "source" : "sources";
-      const nounCite = citationIndex.entries.length === 1 ? "citation" : "citations";
-      lines.push(
-        `Edition ${publicationDate} · ${validStories.length} ${nounStory} · ${allDocs.size} ${nounSource} · ${citationIndex.entries.length} ${nounCite}`,
-      );
-      lines.push("");
-      lines.push("## Table of Contents");
-      lines.push("");
-      for (const item of tocLabels) {
-        lines.push(`- [${item.label}](#${item.anchor})`);
-      }
-      lines.push(`- [Sources](#${sourcesAnchor})`);
-      lines.push("");
-
-      lines.push("## Executive Summary");
-      lines.push("");
-      if (topStories.length === 0) {
-        lines.push("_No stories were assembled for this edition._");
-      } else {
-        for (const s of topStories) {
-          const lede = s.summaryText
-            .split(/(?<=[.!?])\s+/)
-            .slice(0, 2)
-            .join(" ")
-            .trim();
-          const fallback = s.documents[0]?.title ?? "";
-          lines.push(`- **${escapeMarkdown(s.storyLabel)}** — ${escapeMarkdown(lede || fallback)}`);
-        }
-      }
-      lines.push("");
-
       lines.push("## Top Stories");
       lines.push("");
       if (topStories.length === 0) {
@@ -616,15 +521,10 @@ export function createMarkdownDigestService(
       lines.push("");
 
       for (const cat of DIGEST_CATEGORY_ORDER.slice(0, -2)) {
-        if (!categoryAnchors[cat]) continue;
         const items = buckets.get(cat) ?? [];
+        if (items.length === 0) continue;
         lines.push(`## ${cat}`);
         lines.push("");
-        if (items.length === 0) {
-          lines.push("_Nothing in this category today._");
-          lines.push("");
-          continue;
-        }
         for (const s of items) {
           for (const line of renderStorySection(s, citationIndex, true)) {
             lines.push(line);
@@ -633,11 +533,11 @@ export function createMarkdownDigestService(
         lines.push("");
       }
 
-      if (categoryAnchors["Videos"]) {
-        const items = buckets.get("Videos") ?? [];
+      const videoItems = buckets.get("Videos") ?? [];
+      if (videoItems.length > 0) {
         lines.push("## Videos");
         lines.push("");
-        for (const s of items) {
+        for (const s of videoItems) {
           for (const line of renderStorySection(s, citationIndex, true)) {
             lines.push(line);
           }
@@ -645,28 +545,17 @@ export function createMarkdownDigestService(
         lines.push("");
       }
 
-      if (categoryAnchors["Reddit Discussions"]) {
-        const items = buckets.get("Reddit Discussions") ?? [];
+      const redditItems = buckets.get("Reddit Discussions") ?? [];
+      if (redditItems.length > 0) {
         lines.push("## Reddit Discussions");
         lines.push("");
-        for (const s of items) {
+        for (const s of redditItems) {
           for (const line of renderStorySection(s, citationIndex, true)) {
             lines.push(line);
           }
         }
         lines.push("");
       }
-
-      lines.push("## Closing Summary");
-      lines.push("");
-      lines.push(`- Edition date: ${longDate}`);
-      lines.push(`- Stories: ${validStories.length}`);
-      lines.push(`- Sources: ${allDocs.size}`);
-      lines.push(`- Citations: ${citationIndex.entries.length}`);
-      lines.push(
-        `- Completeness: ${assembly.fullyEnrichedDocuments}/${assembly.totalDocuments} documents enriched; ${assembly.storiesWithSummaries}/${assembly.stories.length} stories summarised`,
-      );
-      lines.push("");
 
       lines.push("## Sources");
       lines.push("");
@@ -698,16 +587,6 @@ function renderStorySection(
   const out: string[] = [];
   out.push(`### ${escapeMarkdown(story.storyLabel)}`);
   out.push("");
-  if (story.documents.length > 0) {
-    const sourceLabels = story.documents
-      .map(
-        (d) =>
-          `[${escapeMarkdown(d.title)}](${d.canonicalUrl ?? d.sourceUrl})`,
-      )
-      .join(", ");
-    out.push(`_Sources:_ ${sourceLabels}`);
-    out.push("");
-  }
   if (!compact) {
     out.push(escapeMarkdown(story.summaryText));
     out.push("");

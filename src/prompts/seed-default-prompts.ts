@@ -63,12 +63,12 @@ Chunk text:
     name: "story_summary",
     purpose: "Per-story master summary with chunk citations",
     template: `You are writing a master summary of a news story that groups together multiple source documents. Produce a JSON object with two fields:
-- "summary": a concise 3-6 sentence summary synthesising the documents into a single coherent narrative
+- "summary": a concise 3-6 sentence news summary synthesising the source documents into a single coherent narrative. Write as a journalist — report the facts, events, and implications. Do NOT mention "documents", "chunks", "sources", or the story label. Do NOT start with "Story:" or restate the label. Just write the news.
 - "claims": an array of one or more atomic claims extracted from the summary (each a complete sentence) that are supported by the source documents. For every claim, append the source chunk indices that support it in square brackets, e.g. "The Federal Reserve raised rates [chunk 2, chunk 5]."
 
 The summary's claims must be supported by the provided document text. Each claim must reference at least one source chunk by its index as shown in the "Source chunks" list. Return ONLY the JSON object, no prose.
 
-Story label: {{story_label}}
+Story label (for reference only — do NOT restate this in the summary): {{story_label}}
 
 Document summaries:
 {{document_summaries}}
