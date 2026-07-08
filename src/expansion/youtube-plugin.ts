@@ -1,5 +1,4 @@
 import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import type {
   ExpansionPlugin,
   ExpandContext,
@@ -7,8 +6,6 @@ import type {
   SectionData,
 } from "./types.js";
 import { loadConfig } from "../config/index.js";
-
-const execFileAsync = promisify(execFile);
 
 export type TranscriptFetcher = (url: string) => Promise<string>;
 export type MetadataFetcher = (url: string) => Promise<YouTubeMetadata>;
@@ -29,12 +26,23 @@ const SEGMENTS_PER_SECTION = 10;
 
 async function defaultTranscriptFetcher(url: string): Promise<string> {
   const bin = loadConfig().FABRIC_BIN ?? "fabric";
-  const { stdout } = await execFileAsync(
-    bin,
-    ["-y", url, "--transcript-with-timestamps"],
-    { timeout: 120_000, maxBuffer: 10 * 1024 * 1024 },
-  );
-  return stdout;
+  return new Promise((resolve, reject) => {
+    const proc = execFile(
+      bin,
+      ["-y", url, "--transcript-with-timestamps"],
+      { timeout: 120_000, maxBuffer: 10 * 1024 * 1024 },
+      (err, stdout) => {
+        if (err) {
+          reject(err);
+          return;
+        }
+        resolve(stdout);
+      },
+    );
+    if (proc.stdin) {
+      proc.stdin.end();
+    }
+  });
 }
 
 async function defaultMetadataFetcher(url: string): Promise<YouTubeMetadata> {

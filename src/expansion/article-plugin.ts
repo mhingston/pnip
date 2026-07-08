@@ -1,11 +1,8 @@
 import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import type { ExpansionPlugin, ExpandContext, ExpandResult, SectionData } from "./types.js";
 import { loadConfig } from "../config/index.js";
 
 export type ContentFetcher = (url: string) => Promise<string>;
-
-const execFileAsync = promisify(execFile);
 
 interface FabricParsed {
   title?: string;
@@ -97,11 +94,18 @@ function parseSections(content: string): SectionData[] {
 
 async function defaultFetchContent(url: string): Promise<string> {
   const bin = loadConfig().FABRIC_BIN ?? "fabric";
-  const { stdout } = await execFileAsync(bin, ["-u", url], {
-    timeout: 60_000,
-    maxBuffer: 10 * 1024 * 1024,
+  return new Promise((resolve, reject) => {
+    const proc = execFile(bin, ["-u", url], { timeout: 60_000, maxBuffer: 10 * 1024 * 1024 }, (err, stdout) => {
+      if (err) {
+        reject(err);
+        return;
+      }
+      resolve(stdout);
+    });
+    if (proc.stdin) {
+      proc.stdin.end();
+    }
   });
-  return stdout;
 }
 
 export function createArticlePlugin(opts?: {
@@ -140,7 +144,7 @@ export function createArticlePlugin(opts?: {
         canonicalUrl: parsed.canonicalUrl,
         publishedAt: parsed.publishedAt,
         sections: titleSection
-          ? [titleSection, ...remainingSections]
+          ? [titleSection, ...remainingSections.map((s) => ({ ...s, order: s.order + 1 }))]
           : [
               {
                 order: 0,
@@ -148,7 +152,7 @@ export function createArticlePlugin(opts?: {
                 content_markdown: `# ${title}`,
                 content_text: title,
               },
-              ...remainingSections,
+              ...remainingSections.map((s) => ({ ...s, order: s.order + 1 })),
             ],
       };
     },

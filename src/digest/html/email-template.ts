@@ -67,9 +67,8 @@ export function buildEmailTemplate(input: EmailTemplateInput): EmailTemplate {
     <td align="center">
       <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="600" style="max-width:600px;background:#ffffff;border-radius:8px;overflow:hidden;border:1px solid #e5e7eb;">
         <tr>
-          <td style="padding:24px 32px;border-bottom:1px solid #e5e7eb;">
-            <h1 style="margin:0;font-size:20px;line-height:1.3;color:#0f172a;">${escapeHtml(input.title)}</h1>
-            <p style="margin:6px 0 0;color:#475569;font-size:14px;">Publication date: <strong>${escapeHtml(input.publicationDate)}</strong></p>
+          <td style="padding:12px 32px;border-bottom:1px solid #e5e7eb;background:#f8fafc;">
+            <p style="margin:0;color:#475569;font-size:13px;">Daily Digest &middot; <strong>${escapeHtml(input.publicationDate)}</strong></p>
           </td>
         </tr>
         <tr>

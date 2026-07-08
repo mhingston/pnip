@@ -1,5 +1,4 @@
 import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { randomBytes } from "node:crypto";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -11,8 +10,6 @@ import type {
   SectionData,
 } from "./types.js";
 import { loadConfig } from "../config/index.js";
-
-const execFileAsync = promisify(execFile);
 
 export type AudioDownloader = (url: string) => Promise<string>;
 export type TranscribeFetcher = (filePath: string) => Promise<string>;
@@ -76,11 +73,18 @@ async function defaultTranscribeFetcher(
 ): Promise<string> {
   const bin = loadConfig().FABRIC_BIN ?? "fabric";
   try {
-    const { stdout } = await execFileAsync(
-      bin,
-      ["--transcribe-file", filePath, "--transcribe-model", model],
-      { timeout: TRANSCRIBE_TIMEOUT_MS, maxBuffer: MAX_BUFFER },
-    );
+    const stdout = await new Promise<string>((resolve, reject) => {
+      const proc = execFile(
+        bin,
+        ["--transcribe-file", filePath, "--transcribe-model", model],
+        { timeout: TRANSCRIBE_TIMEOUT_MS, maxBuffer: MAX_BUFFER },
+        (err, out) => {
+          if (err) { reject(err); return; }
+          resolve(out);
+        },
+      );
+      if (proc.stdin) proc.stdin.end();
+    });
     return stdout;
   } catch (err) {
     const stderr =

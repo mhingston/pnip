@@ -1,5 +1,4 @@
 import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { randomBytes } from "node:crypto";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -11,8 +10,6 @@ import type {
   SectionData,
 } from "./types.js";
 import { loadConfig } from "../config/index.js";
-
-const execFileAsync = promisify(execFile);
 
 export type PdfDownloader = (url: string) => Promise<string>;
 export type MarkdownFetcher = (filePath: string) => Promise<string>;
@@ -42,9 +39,17 @@ async function defaultPdfDownloader(url: string): Promise<string> {
 async function defaultMarkdownFetcher(filePath: string): Promise<string> {
   const bin = loadConfig().MARKITDOWN_BIN ?? "markitdown";
   try {
-    const { stdout } = await execFileAsync(bin, [filePath], {
-      timeout: MARKITDOWN_TIMEOUT_MS,
-      maxBuffer: MAX_BUFFER,
+    const stdout = await new Promise<string>((resolve, reject) => {
+      const proc = execFile(
+        bin,
+        [filePath],
+        { timeout: MARKITDOWN_TIMEOUT_MS, maxBuffer: MAX_BUFFER },
+        (err, out) => {
+          if (err) { reject(err); return; }
+          resolve(out);
+        },
+      );
+      if (proc.stdin) proc.stdin.end();
     });
     return stdout;
   } catch (err) {
