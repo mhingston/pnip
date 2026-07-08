@@ -21,7 +21,9 @@ the clusterer re-rank by a hand-curated source-trust tier.
 
 Milestones **M0–M13** are complete, and all four phases of the §65
 Signal-to-Noise rollout have shipped (`1018/1018` tests pass against the
-project's Postgres test database; `tsc --noEmit` is clean).
+project's Postgres test database; `tsc --noEmit` is clean). A real
+end-to-end run has been verified against live Miniflux, Resend, and
+NotebookLM.
 
 | Milestone / Phase                       | Status   |
 | --------------------------------------- | -------- |
