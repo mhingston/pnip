@@ -10,6 +10,7 @@ import type {
   StoryClusterRow,
   ClusterMemberRow,
 } from "./story-repository.js";
+import type { SignalRepository, CreateSignalInput } from "../signals/signal-repository.js";
 import type { ProcessingJob } from "../database/kysely.js";
 
 function makeJob(overrides?: Partial<ProcessingJob>): ProcessingJob {
@@ -193,7 +194,15 @@ function makeDeps(overrides?: {
     resolveToDocuments: vi.fn(),
   };
 
-  return { docRepo, summaryRepo, topicRepo, embeddingRepo, storyRepo, provenanceRepo };
+  const signalRepo: SignalRepository = {
+    createBatch: vi.fn().mockResolvedValue([]),
+    getByEdition: vi.fn(),
+    getByEditionAndKind: vi.fn(),
+    countByEditionAndKind: vi.fn(),
+    getBySourceIdentity: vi.fn(),
+  };
+
+  return { docRepo, summaryRepo, topicRepo, embeddingRepo, storyRepo, provenanceRepo, signalRepo };
 }
 
 describe("ClusterStoriesWorker", () => {
@@ -305,5 +314,65 @@ describe("ClusterStoriesWorker", () => {
     await expect(
       worker.execute(makeJob({ target: null }), { db: {} as any, logger: silentLogger() }),
     ).rejects.toThrow(/invalid target/i);
+  });
+
+  it("writes clustered_into_story signals for each cluster member", async () => {
+    const docs = [makeDoc({ id: "doc-1" }), makeDoc({ id: "doc-2" })];
+    const summariesByDoc = new Map([
+      ["doc-1", [makeSummary("doc-1", "AI breakthrough")]],
+      ["doc-2", [makeSummary("doc-2", "AI breakthrough news")]],
+    ]);
+    const topicsByDoc = new Map([
+      ["doc-1", [makeTopic("doc-1", "ai", 0.9)]],
+      ["doc-2", [makeTopic("doc-2", "ai", 0.8)]],
+    ]);
+    const v = [1, 0, 0];
+    const embeddingsByDoc = new Map([
+      ["doc-1", [makeEmbedding("doc-1", v)]],
+      ["doc-2", [makeEmbedding("doc-2", v)]],
+    ]);
+    const deps = makeDeps({ documents: docs, summariesByDoc, topicsByDoc, embeddingsByDoc });
+    const worker = createClusterStoriesWorker(deps);
+
+    await worker.execute(makeJob(), { db: {} as any, logger: silentLogger() });
+
+    const createBatch = deps.signalRepo.createBatch as unknown as ReturnType<typeof vi.fn>;
+    expect(createBatch).toHaveBeenCalledTimes(1);
+    const rows = createBatch.mock.calls[0][0] as CreateSignalInput[];
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      expect(row.signal_kind).toBe("clustered_into_story");
+      expect(row.edition_id).toBe("edition-1");
+      expect(row.story_id).toBe("story-0");
+      expect(row.source_identity).toBe("example.com");
+    }
+    const docIds = rows.map((r) => r.document_id).sort();
+    expect(docIds).toEqual(["doc-1", "doc-2"]);
+  });
+
+  it("continues normally when signal insert fails", async () => {
+    const docs = [makeDoc({ id: "doc-1" }), makeDoc({ id: "doc-2" })];
+    const summariesByDoc = new Map([
+      ["doc-1", [makeSummary("doc-1", "AI breakthrough")]],
+      ["doc-2", [makeSummary("doc-2", "AI breakthrough news")]],
+    ]);
+    const topicsByDoc = new Map([
+      ["doc-1", [makeTopic("doc-1", "ai", 0.9)]],
+      ["doc-2", [makeTopic("doc-2", "ai", 0.8)]],
+    ]);
+    const v = [1, 0, 0];
+    const embeddingsByDoc = new Map([
+      ["doc-1", [makeEmbedding("doc-1", v)]],
+      ["doc-2", [makeEmbedding("doc-2", v)]],
+    ]);
+    const deps = makeDeps({ documents: docs, summariesByDoc, topicsByDoc, embeddingsByDoc });
+    (deps.signalRepo.createBatch as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("db down"));
+    const worker = createClusterStoriesWorker(deps);
+
+    const outcome = await worker.execute(makeJob(), { db: {} as any, logger: silentLogger() });
+
+    expect(outcome.childJobs).toBeDefined();
+    expect(outcome.childJobs).toHaveLength(1);
+    expect(outcome.childJobs![0].jobType).toBe("summarize_story");
   });
 });

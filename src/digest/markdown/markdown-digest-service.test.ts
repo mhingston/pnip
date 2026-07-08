@@ -7,6 +7,7 @@ import {
 import { buildCitationIndex } from "./citation-index.js";
 import type { Edition } from "../../database/kysely.js";
 import type { Logger } from "../../logging/logger.js";
+import type { CreateSignalInput } from "../../signals/signal-repository.js";
 
 function silentLogger(): Logger {
   return {
@@ -56,6 +57,7 @@ describe("categorizeStory", () => {
     chunkRepo: {} as never,
     topicRepo: {} as never,
     digestRepo: {} as never,
+    signalRepo: {} as never,
     logger: silentLogger(),
   });
 
@@ -203,6 +205,7 @@ describe("renderMarkdown", () => {
     chunkRepo: {} as never,
     topicRepo: {} as never,
     digestRepo: {} as never,
+    signalRepo: {} as never,
     logger: silentLogger(),
   });
   const svc = createMarkdownDigestService(baseDeps());
@@ -330,6 +333,7 @@ describe("generate", () => {
       chunkRepo: {} as never,
       topicRepo: {} as never,
       digestRepo: digestRepo as never,
+      signalRepo: { createBatch: vi.fn().mockResolvedValue([]) } as never,
       logger: silentLogger(),
     });
 
@@ -443,6 +447,7 @@ describe("generate", () => {
       chunkRepo: {} as never,
       topicRepo: {} as never,
       digestRepo: digestRepo as never,
+      signalRepo: { createBatch: vi.fn().mockResolvedValue([]) } as never,
       logger: silentLogger(),
     });
 
@@ -560,11 +565,251 @@ describe("generate", () => {
       chunkRepo: {} as never,
       topicRepo: {} as never,
       digestRepo: digestRepo as never,
+      signalRepo: { createBatch: vi.fn().mockResolvedValue([]) } as never,
       logger: silentLogger(),
     });
     const result = await svc.generate({ editionId: "ed-1" });
     expect(result.alreadyExisted).toBe(true);
     expect(result.digestId).toBe("md-3");
+  });
+
+  it("writes claimed_in_top signals for the top stories", async () => {
+    const stories = makeNStories(3, "Technology", "ai");
+    const assembledStories = stories.map((s) => makeAssembled(s));
+    const signalRepo = {
+      createBatch: vi.fn().mockResolvedValue([]),
+      getByEdition: vi.fn(),
+      getByEditionAndKind: vi.fn(),
+      countByEditionAndKind: vi.fn(),
+      getBySourceIdentity: vi.fn(),
+    };
+    const digestRepo = {
+      createForEdition: vi.fn().mockResolvedValue({
+        id: "md-sig",
+        edition_id: "ed-1",
+        content: "x",
+        story_count: 3,
+        document_count: 3,
+        citation_count: 6,
+        created_at: new Date(),
+      }),
+      getByEdition: vi.fn().mockResolvedValue(undefined),
+      deleteByEdition: vi.fn(),
+    };
+    const editionRepo = {
+      getById: vi.fn().mockResolvedValue(makeEdition()),
+      getByDate: vi.fn(),
+    };
+    const storySummaryRepo = {
+      getByStoryId: vi.fn().mockImplementation(async (storyId: string) => {
+        const snap = stories.find((s) => s.storyId === storyId)!;
+        return {
+          id: `sum-${storyId}`,
+          story_id: storyId,
+          content: snap.summaryText,
+          prompt_id: "p1",
+          prompt_version: 1,
+          model: "fake",
+          provider: "fake",
+          input_hash: "h",
+          created_at: new Date(),
+        };
+      }),
+      getCitationsBySummaryId: vi.fn().mockImplementation(async (summaryId: string) => {
+        const storyId = summaryId.replace(/^sum-/, "");
+        const snap = stories.find((s) => s.storyId === storyId)!;
+        return snap.claims.map((c, i) => ({
+          id: `cit-${storyId}-${i}`,
+          story_summary_id: summaryId,
+          chunk_id: c.chunkId,
+          claim_text: c.text,
+          claim_order: i,
+          created_at: new Date(),
+        }));
+      }),
+      replaceForStory: vi.fn(),
+      deleteByStoryId: vi.fn(),
+    };
+    const docRepo = {
+      getById: vi.fn().mockImplementation(async (documentId: string) => {
+        const snap = stories.flatMap((s) => s.documents).find((d) => d.id === documentId);
+        if (!snap) return undefined;
+        return {
+          id: snap.id,
+          edition_id: "ed-1",
+          source_type: snap.sourceType,
+          source_url: snap.sourceUrl,
+          canonical_url: snap.canonicalUrl,
+          title: snap.title,
+          subtitle: null,
+          authors: [],
+          publisher: snap.publisher,
+          published_at: null,
+          language: "en",
+          content_markdown: null,
+          content_text: null,
+          metadata: {},
+          created_at: new Date(),
+        };
+      }),
+      getByEdition: vi.fn().mockResolvedValue([]),
+      getByEditionAndUrl: vi.fn(),
+      create: vi.fn(),
+    };
+    const assembly = {
+      assemble: vi.fn().mockResolvedValue({
+        edition: makeEdition(),
+        stories: assembledStories,
+        ...DUMMY_ASSEMBLY,
+        totalDocuments: 3,
+        fullyEnrichedDocuments: 3,
+        storiesWithSummaries: 3,
+      }),
+      collectStories: vi.fn().mockResolvedValue(assembledStories),
+      getReadiness: vi.fn(),
+      isEditionReady: vi.fn(),
+    };
+    const svc = createMarkdownDigestService({
+      db: {} as never,
+      editionRepo: editionRepo as never,
+      assembly: assembly as never,
+      storySummaryRepo: storySummaryRepo as never,
+      docRepo: docRepo as never,
+      chunkRepo: {} as never,
+      topicRepo: {} as never,
+      digestRepo: digestRepo as never,
+      signalRepo: signalRepo as never,
+      logger: silentLogger(),
+    });
+
+    await svc.generate({ editionId: "ed-1" });
+
+    expect(signalRepo.createBatch).toHaveBeenCalledTimes(1);
+    const rows = signalRepo.createBatch.mock.calls[0][0] as CreateSignalInput[];
+    expect(rows).toHaveLength(3);
+    for (const row of rows) {
+      expect(row.signal_kind).toBe("claimed_in_top");
+      expect(row.edition_id).toBe("ed-1");
+      expect(row.source_identity).toBeNull();
+      expect(row.source_url).toBeNull();
+    }
+    expect(rows.map((r) => r.story_id)).toEqual(["s1", "s2", "s3"]);
+    expect(rows.map((r) => (r.payload as { top_position: number }).top_position)).toEqual([1, 2, 3]);
+  });
+
+  it("continues normally when signal insert fails", async () => {
+    const stories = makeNStories(2, "Politics", "election");
+    const assembledStories = stories.map((s) => makeAssembled(s));
+    const signalRepo = {
+      createBatch: vi.fn().mockRejectedValue(new Error("db down")),
+      getByEdition: vi.fn(),
+      getByEditionAndKind: vi.fn(),
+      countByEditionAndKind: vi.fn(),
+      getBySourceIdentity: vi.fn(),
+    };
+    const digestRepo = {
+      createForEdition: vi.fn().mockResolvedValue({
+        id: "md-err",
+        edition_id: "ed-1",
+        content: "x",
+        story_count: 2,
+        document_count: 2,
+        citation_count: 4,
+        created_at: new Date(),
+      }),
+      getByEdition: vi.fn().mockResolvedValue(undefined),
+      deleteByEdition: vi.fn(),
+    };
+    const editionRepo = {
+      getById: vi.fn().mockResolvedValue(makeEdition()),
+      getByDate: vi.fn(),
+    };
+    const storySummaryRepo = {
+      getByStoryId: vi.fn().mockImplementation(async (storyId: string) => {
+        const snap = stories.find((s) => s.storyId === storyId)!;
+        return {
+          id: `sum-${storyId}`,
+          story_id: storyId,
+          content: snap.summaryText,
+          prompt_id: "p1",
+          prompt_version: 1,
+          model: "fake",
+          provider: "fake",
+          input_hash: "h",
+          created_at: new Date(),
+        };
+      }),
+      getCitationsBySummaryId: vi.fn().mockImplementation(async (summaryId: string) => {
+        const storyId = summaryId.replace(/^sum-/, "");
+        const snap = stories.find((s) => s.storyId === storyId)!;
+        return snap.claims.map((c, i) => ({
+          id: `cit-${storyId}-${i}`,
+          story_summary_id: summaryId,
+          chunk_id: c.chunkId,
+          claim_text: c.text,
+          claim_order: i,
+          created_at: new Date(),
+        }));
+      }),
+      replaceForStory: vi.fn(),
+      deleteByStoryId: vi.fn(),
+    };
+    const docRepo = {
+      getById: vi.fn().mockImplementation(async (documentId: string) => {
+        const snap = stories.flatMap((s) => s.documents).find((d) => d.id === documentId);
+        if (!snap) return undefined;
+        return {
+          id: snap.id,
+          edition_id: "ed-1",
+          source_type: snap.sourceType,
+          source_url: snap.sourceUrl,
+          canonical_url: snap.canonicalUrl,
+          title: snap.title,
+          subtitle: null,
+          authors: [],
+          publisher: snap.publisher,
+          published_at: null,
+          language: "en",
+          content_markdown: null,
+          content_text: null,
+          metadata: {},
+          created_at: new Date(),
+        };
+      }),
+      getByEdition: vi.fn().mockResolvedValue([]),
+      getByEditionAndUrl: vi.fn(),
+      create: vi.fn(),
+    };
+    const assembly = {
+      assemble: vi.fn().mockResolvedValue({
+        edition: makeEdition(),
+        stories: assembledStories,
+        ...DUMMY_ASSEMBLY,
+        totalDocuments: 2,
+        fullyEnrichedDocuments: 2,
+        storiesWithSummaries: 2,
+      }),
+      collectStories: vi.fn().mockResolvedValue(assembledStories),
+      getReadiness: vi.fn(),
+      isEditionReady: vi.fn(),
+    };
+    const svc = createMarkdownDigestService({
+      db: {} as never,
+      editionRepo: editionRepo as never,
+      assembly: assembly as never,
+      storySummaryRepo: storySummaryRepo as never,
+      docRepo: docRepo as never,
+      chunkRepo: {} as never,
+      topicRepo: {} as never,
+      digestRepo: digestRepo as never,
+      signalRepo: signalRepo as never,
+      logger: silentLogger(),
+    });
+
+    const result = await svc.generate({ editionId: "ed-1" });
+    expect(result.alreadyExisted).toBe(false);
+    expect(result.digestId).toBe("md-err");
+    expect(digestRepo.createForEdition).toHaveBeenCalledOnce();
   });
 });
 

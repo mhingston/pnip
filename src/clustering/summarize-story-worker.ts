@@ -9,6 +9,7 @@ import type { AiProvider } from "../ai/provider.js";
 import type { ProvenanceRepository } from "../provenance/provenance-repository.js";
 import type { StoryRepository } from "./story-repository.js";
 import type { StorySummaryRepository } from "./story-summary-repository.js";
+import type { SignalRepository, CreateSignalInput } from "../signals/signal-repository.js";
 import { extractJson } from "../common/json-extract.js";
 
 const STORY_SUMMARY_PROMPT_NAME = "story_summary";
@@ -26,6 +27,7 @@ export interface SummarizeStoryDeps {
   promptExecutor: PromptExecutionService;
   provider: AiProvider;
   provenanceRepo: ProvenanceRepository;
+  signalRepo: SignalRepository;
   model?: string;
 }
 
@@ -254,6 +256,29 @@ export function createSummarizeStoryWorker(
         summaryId: summary.id,
         claimCount: citations.length,
       });
+
+      const editionId = job.edition_id;
+      if (editionId) {
+        const signalInputs: CreateSignalInput[] = citations
+          .filter((c) => c.chunk_id)
+          .map((c) => ({
+            signal_kind: "chunk_in_story",
+            edition_id: editionId,
+            story_id: storyId,
+            chunk_id: c.chunk_id,
+            source_url: null,
+            source_identity: null,
+            payload: { claim_text: c.claim_text },
+          }));
+        try {
+          await deps.signalRepo.createBatch(signalInputs);
+        } catch (err) {
+          ctx.logger.warn("failed to insert chunk_in_story signals", {
+            storyId,
+            error: err as Error,
+          });
+        }
+      }
 
       return {};
     },

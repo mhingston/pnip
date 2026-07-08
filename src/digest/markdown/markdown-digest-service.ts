@@ -15,6 +15,7 @@ import type {
   MarkdownDigestRepository,
   MarkdownDigestRow,
 } from "./markdown-digest-repository.js";
+import type { SignalRepository, CreateSignalInput } from "../../signals/signal-repository.js";
 import {
   buildCitationIndex,
   citationTokenFor,
@@ -134,6 +135,7 @@ export interface MarkdownDigestServiceDeps {
   chunkRepo: ChunkRepository;
   topicRepo: TopicRepository;
   digestRepo: MarkdownDigestRepository;
+  signalRepo: SignalRepository;
   logger?: Logger;
 }
 
@@ -167,6 +169,32 @@ export function createTopicsByDocumentLoader(deps: {
       return out;
     },
   };
+}
+
+async function writeClaimedInTopSignals(
+  deps: Pick<MarkdownDigestServiceDeps, "signalRepo" | "logger">,
+  editionId: string,
+  stories: StorySnapshot[],
+): Promise<void> {
+  const validStories = stories.filter((s) => s.claims.length > 0);
+  const topStories = validStories.slice(0, DIGEST_TOP_STORIES_LIMIT);
+  if (topStories.length === 0) return;
+  const signalInputs: CreateSignalInput[] = topStories.map((s, index) => ({
+    signal_kind: "claimed_in_top",
+    edition_id: editionId,
+    story_id: s.storyId,
+    source_url: null,
+    source_identity: null,
+    payload: { top_position: index + 1, label: s.storyLabel },
+  }));
+  try {
+    await deps.signalRepo.createBatch(signalInputs);
+  } catch (err) {
+    deps.logger?.warn("failed to insert claimed_in_top signals", {
+      editionId,
+      error: err as Error,
+    });
+  }
 }
 
 function formatPublicationDate(value: Date | string): string {
@@ -266,6 +294,15 @@ export function createMarkdownDigestService(
           editionId: input.editionId,
           digestId: existing.id,
         });
+        try {
+          const existingStories = await this.collectStories(input.editionId);
+          await writeClaimedInTopSignals(deps, input.editionId, existingStories);
+        } catch (err) {
+          deps.logger?.warn("failed to write claimed_in_top signals for existing digest", {
+            editionId: input.editionId,
+            error: err as Error,
+          });
+        }
         return {
           digestId: existing.id,
           edition,
@@ -323,6 +360,7 @@ export function createMarkdownDigestService(
               "markdown digest race resolved; returning existing row",
               { editionId: input.editionId, digestId: after.id },
             );
+            await writeClaimedInTopSignals(deps, input.editionId, stories);
             return {
               digestId: after.id,
               edition,
@@ -343,6 +381,8 @@ export function createMarkdownDigestService(
         documentCount: documentIds.size,
         citationCount: citationIndex.entries.length,
       });
+
+      await writeClaimedInTopSignals(deps, input.editionId, stories);
 
       return {
         digestId: row.id,

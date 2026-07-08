@@ -62,6 +62,7 @@ import {
   createPublicationService,
   type PublicationService,
 } from "../publication/publication-service.js";
+import { createSignalRepository } from "../signals/signal-repository.js";
 import { createExpandDocumentWorker } from "../expansion/expand-document-worker.js";
 import { createChunkDocumentWorker } from "../chunking/chunk-document-worker.js";
 import { createClusterStoriesWorker } from "../clustering/cluster-stories-worker.js";
@@ -121,6 +122,7 @@ const migrationSqlPaths = [
   "../database/migrations/021_create_email_digests.sql",
   "../database/migrations/022_create_notebooks.sql",
   "../database/migrations/023_create_podcasts.sql",
+  "../database/migrations/024_create_signals.sql",
 ];
 
 function readMigrationSql(relativePath: string): Promise<string> {
@@ -384,6 +386,7 @@ interface TestEnv {
   embeddingProvider: EmbeddingProvider;
   promptExecutor: ReturnType<typeof createPromptExecutionService>;
   publishService: ReturnType<typeof createPublicationService>;
+  signalRepo: ReturnType<typeof createSignalRepository>;
   captured: ResendCallRecord[];
 }
 
@@ -412,6 +415,7 @@ async function makeEnv(pool: PgPool, db: Kysely<Database>): Promise<TestEnv> {
   const promptRepo = createPromptRepository(db);
   const provenanceRepo = createProvenanceRepository(db);
   const markdownDigestRepo = createMarkdownDigestRepository(db);
+  const signalRepo = createSignalRepository(db);
   const markdownService = createMarkdownDigestService({
     db,
     editionRepo,
@@ -421,6 +425,7 @@ async function makeEnv(pool: PgPool, db: Kysely<Database>): Promise<TestEnv> {
     chunkRepo,
     topicRepo,
     digestRepo: markdownDigestRepo,
+    signalRepo,
     logger: silentLogger(),
   });
   const emailDigestRepo = createEmailDigestRepository(db);
@@ -475,6 +480,7 @@ async function makeEnv(pool: PgPool, db: Kysely<Database>): Promise<TestEnv> {
     embeddingProvider,
     promptExecutor,
     publishService,
+    signalRepo,
     captured,
   };
 }
@@ -769,6 +775,7 @@ async function runClusterStep(
     embeddingRepo: env.embeddingRepo,
     storyRepo: env.storyRepo,
     provenanceRepo: env.provenanceRepo,
+    signalRepo: env.signalRepo,
   });
   const job = await env.jobQueue.enqueue({
     jobType: "cluster_stories",
@@ -806,6 +813,7 @@ async function runSummarizeStep(
     promptExecutor: env.promptExecutor,
     provider: env.provider,
     provenanceRepo: env.provenanceRepo,
+    signalRepo: env.signalRepo,
   });
   const stories = await env.storyRepo.getByEdition(state.editionId);
   for (const s of stories) {
@@ -995,6 +1003,7 @@ describe("M13 §61 acceptance criteria — full pipeline", () => {
     await pool.query(`TRUNCATE TABLE ${schema}.documents CASCADE`);
     await pool.query(`TRUNCATE TABLE ${schema}.processing_jobs CASCADE`);
     await pool.query(`TRUNCATE TABLE ${schema}.discovery_events CASCADE`);
+    await pool.query(`TRUNCATE TABLE ${schema}.signals CASCADE`);
     await pool.query(`TRUNCATE TABLE ${schema}.editions CASCADE`);
     await pool.query(`TRUNCATE TABLE ${schema}.document_lineage CASCADE`);
     await pool.query(`TRUNCATE TABLE ${schema}.prompt_versions CASCADE`);
@@ -1453,5 +1462,30 @@ describe("M13 §61 acceptance criteria — full pipeline", () => {
       )
     ).rows[0].n;
     expect(docCountAfter).toBe(1);
+  });
+
+  itWithDb("§65.4 every published edition writes claimed_in_top, clustered_into_story, and chunk_in_story signals", async () => {
+    const state = await buildFullPipeline(env);
+
+    const published = await env.publishService.publish({ editionId: state.editionId });
+    expect(published.status).toBe("published");
+
+    const claimedInTop = await env.signalRepo.countByEditionAndKind(
+      state.editionId,
+      "claimed_in_top",
+    );
+    expect(claimedInTop).toBeGreaterThanOrEqual(1);
+
+    const clusteredIntoStory = await env.signalRepo.countByEditionAndKind(
+      state.editionId,
+      "clustered_into_story",
+    );
+    expect(clusteredIntoStory).toBeGreaterThanOrEqual(1);
+
+    const chunkInStory = await env.signalRepo.countByEditionAndKind(
+      state.editionId,
+      "chunk_in_story",
+    );
+    expect(chunkInStory).toBeGreaterThanOrEqual(1);
   });
 });

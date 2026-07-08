@@ -278,6 +278,13 @@ describe("M5 Story Clustering end-to-end", () => {
         resolveCitations: async () => [],
         resolveToDocuments: async () => [],
       } as any,
+      signalRepo: {
+        createBatch: async () => [],
+        getByEdition: async () => [],
+        getByEditionAndKind: async () => [],
+        countByEditionAndKind: async () => 0,
+        getBySourceIdentity: async () => [],
+      } as any,
     };
   }
 

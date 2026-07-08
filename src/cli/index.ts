@@ -98,6 +98,7 @@ import { createNotebookLmClient } from "../digest/notebooklm/notebooklm-client.j
 import { createNotebookService } from "../digest/notebooklm/notebook-service.js";
 import { createPodcastService } from "../digest/notebooklm/podcast-service.js";
 import { createPublicationService } from "../publication/publication-service.js";
+import { createSignalRepository } from "../signals/signal-repository.js";
 
 async function main(): Promise<number> {
   const cfg = loadConfig();
@@ -338,6 +339,7 @@ async function main(): Promise<number> {
         chunkRepo,
         topicRepo,
         digestRepo,
+        signalRepo: createSignalRepository(db),
         logger,
       });
       const { exitCode } = await runGenerateDigestCommand({

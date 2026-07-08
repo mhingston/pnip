@@ -6,6 +6,8 @@ import type { TopicRepository } from "../enrichment/topics/topic-repository.js";
 import type { EmbeddingRepository } from "../enrichment/embeddings/embedding-repository.js";
 import type { ProvenanceRepository } from "../provenance/provenance-repository.js";
 import type { StoryRepository } from "./story-repository.js";
+import type { SignalRepository, CreateSignalInput } from "../signals/signal-repository.js";
+import { deriveSourceIdentity } from "../signals/source-identity.js";
 import {
   clusterDocuments,
   type DocumentClusterInput,
@@ -22,6 +24,7 @@ export interface ClusterStoriesDeps {
   embeddingRepo: EmbeddingRepository;
   storyRepo: StoryRepository;
   provenanceRepo: ProvenanceRepository;
+  signalRepo: SignalRepository;
   options?: Partial<ClusterOptions>;
 }
 
@@ -132,6 +135,37 @@ export function createClusterStoriesWorker(
         documentCount: inputs.length,
         storyCount: stories.length,
       });
+
+      const docById = new Map(documents.map((d) => [d.id, d]));
+      const signalInputs: CreateSignalInput[] = [];
+      for (const s of stories) {
+        for (const m of s.members) {
+          const doc = docById.get(m.document_id);
+          if (!doc) continue;
+          signalInputs.push({
+            signal_kind: "clustered_into_story",
+            edition_id: editionId,
+            story_id: s.story.id,
+            document_id: m.document_id,
+            source_url: doc.source_url,
+            source_identity: deriveSourceIdentity({
+              sourceUrl: doc.source_url,
+              sourceType: doc.source_type,
+              publisher: doc.publisher,
+              metadata: doc.metadata,
+            }),
+            payload: { cluster_order: s.story.cluster_order, label: s.story.label },
+          });
+        }
+      }
+      try {
+        await deps.signalRepo.createBatch(signalInputs);
+      } catch (err) {
+        ctx.logger.warn("failed to insert clustered_into_story signals", {
+          editionId,
+          error: err as Error,
+        });
+      }
 
       const childJobs = stories.map((s) => ({
         jobType: SUMMARIZE_STORY_JOB_TYPE,

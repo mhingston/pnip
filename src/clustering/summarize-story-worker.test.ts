@@ -13,6 +13,7 @@ import type { PromptRepository } from "../prompts/prompt-repository.js";
 import type { PromptExecutionService } from "../ai/prompt-execution.js";
 import type { AiProvider } from "../ai/provider.js";
 import type { ProvenanceRepository } from "../provenance/provenance-repository.js";
+import type { SignalRepository, CreateSignalInput } from "../signals/signal-repository.js";
 import type { ProcessingJob, PromptVersion } from "../database/kysely.js";
 
 function makeJob(overrides?: Partial<ProcessingJob>): ProcessingJob {
@@ -240,6 +241,14 @@ function makeDeps(overrides?: {
     resolveToDocuments: vi.fn(),
   };
 
+  const signalRepo: SignalRepository = {
+    createBatch: vi.fn().mockResolvedValue([]),
+    getByEdition: vi.fn(),
+    getByEditionAndKind: vi.fn(),
+    countByEditionAndKind: vi.fn(),
+    getBySourceIdentity: vi.fn(),
+  };
+
   return {
     storyRepo,
     storySummaryRepo,
@@ -250,6 +259,7 @@ function makeDeps(overrides?: {
     promptExecutor,
     provider,
     provenanceRepo,
+    signalRepo,
   };
 }
 
@@ -440,5 +450,51 @@ describe("SummarizeStoryWorker", () => {
     await expect(
       worker.execute(makeJob({ target: null }), { db: {} as any, logger: silentLogger() }),
     ).rejects.toThrow(/invalid target/i);
+  });
+
+  it("writes chunk_in_story signals for each cited chunk", async () => {
+    const docs = new Map([["doc-1", makeDoc()]]);
+    const chunks = new Map([["doc-1", [makeChunk({ id: "chunk-1" })]]]);
+    const summaries = new Map([["doc-1", [makeSummary("doc-1", "Fed raised rates.")]]]);
+
+    const deps = makeDeps({
+      members: [{ document_id: "doc-1" }],
+      documents: docs,
+      chunks,
+      summaries,
+    });
+    const worker = createSummarizeStoryWorker(deps);
+
+    await worker.execute(makeJob(), { db: {} as any, logger: silentLogger() });
+
+    const createBatch = deps.signalRepo.createBatch as unknown as ReturnType<typeof vi.fn>;
+    expect(createBatch).toHaveBeenCalledTimes(1);
+    const rows = createBatch.mock.calls[0][0] as CreateSignalInput[];
+    expect(rows).toHaveLength(1);
+    expect(rows[0].signal_kind).toBe("chunk_in_story");
+    expect(rows[0].edition_id).toBe("edition-1");
+    expect(rows[0].story_id).toBe("story-1");
+    expect(rows[0].chunk_id).toBe("chunk-1");
+    expect(rows[0].source_identity).toBeNull();
+  });
+
+  it("continues normally when signal insert fails", async () => {
+    const docs = new Map([["doc-1", makeDoc()]]);
+    const chunks = new Map([["doc-1", [makeChunk({ id: "chunk-1" })]]]);
+    const summaries = new Map([["doc-1", [makeSummary("doc-1", "Fed raised rates.")]]]);
+
+    const deps = makeDeps({
+      members: [{ document_id: "doc-1" }],
+      documents: docs,
+      chunks,
+      summaries,
+    });
+    (deps.signalRepo.createBatch as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("db down"));
+    const worker = createSummarizeStoryWorker(deps);
+
+    const outcome = await worker.execute(makeJob(), { db: {} as any, logger: silentLogger() });
+
+    expect(outcome).toEqual({});
+    expect(deps.storySummaryRepo.replaceForStory).toHaveBeenCalledTimes(1);
   });
 });

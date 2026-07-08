@@ -120,6 +120,13 @@ async function makeEnv(pool: PgPool, db: Kysely<Database>): Promise<TestEnv> {
     chunkRepo,
     topicRepo,
     digestRepo,
+    signalRepo: {
+      createBatch: async () => [],
+      getByEdition: async () => [],
+      getByEditionAndKind: async () => [],
+      countByEditionAndKind: async () => 0,
+      getBySourceIdentity: async () => [],
+    } as never,
     logger: silentLogger(),
   });
   return {

@@ -362,6 +362,18 @@ export interface Database {
     metadata: unknown | null;
     created_at: Generated<Date>;
   };
+  signals: {
+    id: Generated<string>;
+    signal_kind: string;
+    edition_id: string;
+    story_id: string | null;
+    chunk_id: string | null;
+    document_id: string | null;
+    source_url: string | null;
+    source_identity: string | null;
+    payload: unknown;
+    created_at: Generated<Date>;
+  };
 }
 
 export function createKysely(pool: PgPool): Kysely<Database> {
