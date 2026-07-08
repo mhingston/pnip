@@ -45,11 +45,8 @@ const KNOWN_WORKERS = [
   "summarize_story",
 ];
 
-function resolveFailedThreshold(raw: string | undefined): number {
-  if (raw === undefined) return DEFAULT_FAILED_THRESHOLD;
-  const n = Number.parseInt(raw, 10);
-  if (Number.isNaN(n) || n <= 0) return DEFAULT_FAILED_THRESHOLD;
-  return n;
+function resolveFailedThreshold(raw: number | undefined): number {
+  return raw ?? DEFAULT_FAILED_THRESHOLD;
 }
 
 interface ProbeResult {

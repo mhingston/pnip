@@ -104,6 +104,22 @@ function makeFakeSignalRepo(opts: { rows?: SignalRow[]; error?: Error } = {}): S
     getByEditionAndKind: vi.fn().mockResolvedValue([]),
     countByEditionAndKind: vi.fn().mockResolvedValue(0),
     getBySourceIdentity: vi.fn().mockResolvedValue([]),
+    getFeedbackSummary: vi.fn().mockResolvedValue({
+      signalCounts: {},
+      totalSignals: 0,
+      topMutedSources: [],
+      topVotedStories: [],
+      topStarredChunks: [],
+      sourceIdentityCount: 0,
+      storyVoteCount: 0,
+    }),
+    getSourceIdentityStats: vi.fn().mockResolvedValue({
+      source_identity: "",
+      mute_count: 0,
+      chunk_star_count: 0,
+      cited_in_story_count: 0,
+      total_signals: 0,
+    }),
   };
 }
 

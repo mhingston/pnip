@@ -203,6 +203,8 @@ function makeDeps(overrides?: {
     getByEditionAndKind: vi.fn(),
     countByEditionAndKind: vi.fn(),
     getBySourceIdentity: vi.fn(),
+    getFeedbackSummary: vi.fn(),
+    getSourceIdentityStats: vi.fn(),
   };
 
   const sourceTrustRepo: SourceTrustRepository = {

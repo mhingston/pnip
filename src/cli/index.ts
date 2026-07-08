@@ -108,6 +108,10 @@ import {
   SOURCE_TRUST_HELP,
   runSourceTrustCommand,
 } from "./source-trust.js";
+import {
+  FEEDBACK_SUMMARY_HELP,
+  runFeedbackSummaryCommand,
+} from "./feedback-summary.js";
 
 async function main(): Promise<number> {
   const cfg = loadConfig();
@@ -655,8 +659,23 @@ async function main(): Promise<number> {
       return exitCode;
     }
 
+    if (command === "feedback-summary") {
+      if (rest[0] === "--help" || rest[0] === "-h") {
+        console.log(FEEDBACK_SUMMARY_HELP);
+        return 0;
+      }
+      const signalRepo = createSignalRepository(db);
+      const { exitCode } = await runFeedbackSummaryCommand({
+        db,
+        signalRepo,
+        args: rest,
+        log: (m) => console.log(m),
+      });
+      return exitCode;
+    }
+
     console.log(
-      "Usage: digestive <command>\nCommands: discover, process, maintenance, generate-digest, generate-email, generate-notebook, generate-podcast, publish-edition, generate-edition, retry, doctor, metrics, feedback, source-trust",
+      "Usage: digestive <command>\nCommands: discover, process, maintenance, generate-digest, generate-email, generate-notebook, generate-podcast, publish-edition, generate-edition, retry, doctor, metrics, feedback, feedback-summary, source-trust",
     );
     return 2;
   } finally {

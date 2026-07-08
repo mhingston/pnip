@@ -14,6 +14,9 @@ import { loadConfig } from "../config/index.js";
 import { createPool, closePool, type PgPool } from "../database/pool.js";
 import { closeKysely, type Database } from "../database/kysely.js";
 import { createEditionRepository } from "../editions/edition-repository.js";
+import { createDocumentRepository } from "../expansion/document-repository.js";
+import { createSectionRepository } from "../expansion/section-repository.js";
+import { createChunkRepository } from "../chunking/chunk-repository.js";
 import {
   createSignalRepository,
   type CreateSignalInput,
@@ -93,6 +96,57 @@ describe("SignalRepository", () => {
     const editionRepo = createEditionRepository(db);
     const ed = await editionRepo.create(publicationDate);
     return ed.id;
+  }
+
+  async function createStory(editionId: string, label: string): Promise<string> {
+    const row = await db
+      .insertInto("story_clusters")
+      .values({
+        edition_id: editionId,
+        label,
+        cluster_order: 0,
+      })
+      .returningAll()
+      .executeTakeFirstOrThrow();
+    return row.id;
+  }
+
+  async function createChunkForEdition(
+    editionId: string,
+    chunkId: string,
+  ): Promise<void> {
+    const docRepo = createDocumentRepository(db);
+    const sectionRepo = createSectionRepository(db);
+    const chunkRepo = createChunkRepository(db);
+    const doc = await docRepo.create({
+      editionId,
+      sourceType: "article",
+      sourceUrl: `https://example.com/${chunkId}`,
+    });
+    const section = await sectionRepo.createBatch([
+      {
+        documentId: doc.id,
+        order: 0,
+        type: "paragraph",
+        contentMarkdown: "body",
+        contentText: "body text",
+        metadata: {},
+      },
+    ]);
+    await chunkRepo.createBatch([
+      {
+        id: chunkId,
+        documentId: doc.id,
+        sectionId: section[0]!.id,
+        sequence: 0,
+        text: "body text",
+        tokenCount: 2,
+        startOffset: 0,
+        endOffset: 9,
+        paragraphStart: 0,
+        paragraphEnd: 0,
+      },
+    ]);
   }
 
   async function setCreatedAt(id: string, hoursAgo: number): Promise<void> {
@@ -248,5 +302,196 @@ describe("SignalRepository", () => {
     ).toBe(1);
     await db.deleteFrom("editions").where("id", "=", editionId).execute();
     expect(await repo.getByEdition(editionId)).toEqual([]);
+  });
+
+  it("getFeedbackSummary aggregates signalCounts, totals, and top lists for an edition", async () => {
+    const editionId = await createEdition("2026-07-08");
+    const storyId = await createStory(editionId, "Test Story");
+    await createChunkForEdition(editionId, "chunk-A");
+    await createChunkForEdition(editionId, "chunk-B");
+    const repo = createSignalRepository(db);
+    await repo.createBatch([
+      {
+        ...baseInput(editionId, "story_up"),
+        story_id: storyId,
+        source_identity: "theverge.com",
+      },
+      {
+        ...baseInput(editionId, "story_up"),
+        story_id: storyId,
+        source_identity: "theverge.com",
+      },
+      {
+        ...baseInput(editionId, "story_down"),
+        story_id: storyId,
+        source_identity: "theverge.com",
+      },
+      {
+        ...baseInput(editionId, "source_muted"),
+        source_identity: "theverge.com",
+      },
+      {
+        ...baseInput(editionId, "source_muted"),
+        source_identity: "reddit.com/r/ml",
+      },
+      {
+        ...baseInput(editionId, "chunk_starred"),
+        chunk_id: "chunk-A",
+        source_identity: "theverge.com",
+      },
+      {
+        ...baseInput(editionId, "chunk_starred"),
+        chunk_id: "chunk-A",
+        source_identity: "theverge.com",
+      },
+      {
+        ...baseInput(editionId, "chunk_starred"),
+        chunk_id: "chunk-B",
+        source_identity: "reddit.com/r/ml",
+      },
+    ]);
+
+    const summary = await repo.getFeedbackSummary({
+      editionId,
+      limit: 10,
+    });
+
+    expect(summary.totalSignals).toBe(8);
+    expect(summary.sourceIdentityCount).toBe(2);
+    expect(summary.storyVoteCount).toBe(1);
+    expect(summary.signalCounts).toEqual({
+      story_up: 2,
+      story_down: 1,
+      source_muted: 2,
+      chunk_starred: 3,
+    });
+    expect(summary.topMutedSources).toEqual([
+      { source_identity: "reddit.com/r/ml", mute_count: 1 },
+      { source_identity: "theverge.com", mute_count: 1 },
+    ]);
+    expect(summary.topVotedStories).toEqual([
+      {
+        story_id: storyId,
+        net_score: 1,
+        up: 2,
+        down: 1,
+      },
+    ]);
+    expect(summary.topStarredChunks).toEqual([
+      { chunk_id: "chunk-A", star_count: 2 },
+      { chunk_id: "chunk-B", star_count: 1 },
+    ]);
+  });
+
+  it("getFeedbackSummary with editionId filter excludes signals from other editions", async () => {
+    const edA = await createEdition("2026-07-08");
+    const edB = await createEdition("2026-07-09");
+    const storyA = await createStory(edA, "Story A");
+    const storyB = await createStory(edB, "Story B");
+    const repo = createSignalRepository(db);
+    await repo.createBatch([
+      { ...baseInput(edA, "story_up"), story_id: storyA },
+      { ...baseInput(edB, "story_up"), story_id: storyB },
+      { ...baseInput(edB, "story_down"), story_id: storyB },
+      { ...baseInput(edA, "source_muted"), source_identity: "theverge.com" },
+      { ...baseInput(edB, "source_muted"), source_identity: "reddit.com" },
+    ]);
+
+    const aSummary = await repo.getFeedbackSummary({
+      editionId: edA,
+      limit: 10,
+    });
+    expect(aSummary.totalSignals).toBe(2);
+    expect(aSummary.signalCounts).toEqual({
+      story_up: 1,
+      source_muted: 1,
+    });
+    expect(aSummary.sourceIdentityCount).toBe(1);
+    expect(aSummary.storyVoteCount).toBe(1);
+    expect(aSummary.topVotedStories).toEqual([
+      {
+        story_id: storyA,
+        net_score: 1,
+        up: 1,
+        down: 0,
+      },
+    ]);
+    expect(aSummary.topMutedSources).toEqual([
+      { source_identity: "theverge.com", mute_count: 1 },
+    ]);
+
+    const bSummary = await repo.getFeedbackSummary({
+      editionId: edB,
+      limit: 10,
+    });
+    expect(bSummary.totalSignals).toBe(3);
+    expect(bSummary.storyVoteCount).toBe(1);
+    expect(bSummary.topVotedStories).toEqual([
+      {
+        story_id: storyB,
+        net_score: 0,
+        up: 1,
+        down: 1,
+      },
+    ]);
+  });
+
+  it("getFeedbackSummary without editionId aggregates across all editions", async () => {
+    const edA = await createEdition("2026-07-08");
+    const edB = await createEdition("2026-07-09");
+    const storyA = await createStory(edA, "Story A");
+    const storyB = await createStory(edB, "Story B");
+    const repo = createSignalRepository(db);
+    await repo.createBatch([
+      { ...baseInput(edA, "story_up"), story_id: storyA },
+      { ...baseInput(edB, "story_up"), story_id: storyB },
+    ]);
+
+    const summary = await repo.getFeedbackSummary({ limit: 10 });
+    expect(summary.totalSignals).toBe(2);
+    expect(summary.storyVoteCount).toBe(2);
+    expect(summary.topVotedStories).toHaveLength(2);
+  });
+
+  it("getSourceIdentityStats returns counts for one source", async () => {
+    const ed1 = await createEdition("2026-07-08");
+    const ed2 = await createEdition("2026-07-09");
+    const sharedStory = await createStory(ed1, "Shared Story");
+    await createChunkForEdition(ed1, "c1");
+    await createChunkForEdition(ed1, "c2");
+    const repo = createSignalRepository(db);
+    await repo.createBatch([
+      { ...baseInput(ed1, "source_muted"), source_identity: "theverge.com" },
+      { ...baseInput(ed2, "source_muted"), source_identity: "theverge.com" },
+      { ...baseInput(ed1, "chunk_starred"), chunk_id: "c1", source_identity: "theverge.com" },
+      { ...baseInput(ed1, "story_up"), story_id: sharedStory, source_identity: "theverge.com" },
+      { ...baseInput(ed2, "story_down"), story_id: sharedStory, source_identity: "theverge.com" },
+      { ...baseInput(ed1, "chunk_starred"), chunk_id: "c2", source_identity: "reddit.com" },
+    ]);
+
+    const stats = await repo.getSourceIdentityStats("theverge.com");
+    expect(stats).toEqual({
+      source_identity: "theverge.com",
+      mute_count: 2,
+      chunk_star_count: 1,
+      cited_in_story_count: 1,
+      total_signals: 5,
+    });
+  });
+
+  it("getSourceIdentityStats returns zeros for a source with no signals", async () => {
+    const editionId = await createEdition("2026-07-08");
+    const repo = createSignalRepository(db);
+    await repo.createBatch([
+      baseInput(editionId, "story_up"),
+    ]);
+    const stats = await repo.getSourceIdentityStats("nope.example");
+    expect(stats).toEqual({
+      source_identity: "nope.example",
+      mute_count: 0,
+      chunk_star_count: 0,
+      cited_in_story_count: 0,
+      total_signals: 0,
+    });
   });
 });

@@ -237,7 +237,7 @@ describe("runDoctorCommand", () => {
 
   it("queue: threshold override via DOCTOR_FAILED_THRESHOLD lowers the pass/fail boundary", async () => {
     const r = await runDoctorCommand({
-      config: makeConfig({ DOCTOR_FAILED_THRESHOLD: "50" }),
+      config: makeConfig({ DOCTOR_FAILED_THRESHOLD: 50 }),
       pool: makeFakePool({}),
       queue: makeFakeQueue({
         counts: { pending: 0, running: 0, completed: 0, failed: 60, archived: 0 },
@@ -250,9 +250,9 @@ describe("runDoctorCommand", () => {
     expect(check?.detail).toContain("failed=60");
   });
 
-  it("queue: falls back to default threshold (100) when DOCTOR_FAILED_THRESHOLD is invalid", async () => {
+  it("queue: falls back to default threshold (100) when DOCTOR_FAILED_THRESHOLD is unset", async () => {
     const r = await runDoctorCommand({
-      config: makeConfig({ DOCTOR_FAILED_THRESHOLD: "not-a-number" }),
+      config: makeConfig({ DOCTOR_FAILED_THRESHOLD: undefined }),
       pool: makeFakePool({}),
       queue: makeFakeQueue({
         counts: { pending: 0, running: 0, completed: 0, failed: 150, archived: 0 },

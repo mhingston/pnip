@@ -57,4 +57,49 @@ describe("config", () => {
     const config = loadConfig();
     expect(config.MARKITDOWN_BIN).toBe("/usr/bin/markitdown");
   });
+
+  it("DOCTOR_FAILED_THRESHOLD coerces a numeric string to a number", () => {
+    process.env.DATABASE_URL = "postgres://localhost/db";
+    process.env.DOCTOR_FAILED_THRESHOLD = "5";
+    const config = loadConfig();
+    expect(config.DOCTOR_FAILED_THRESHOLD).toBe(5);
+  });
+
+  it("DOCTOR_FAILED_THRESHOLD throws when set to a non-numeric value", () => {
+    process.env.DATABASE_URL = "postgres://localhost/db";
+    process.env.DOCTOR_FAILED_THRESHOLD = "abc";
+    expect(() => loadConfig()).toThrow(/DOCTOR_FAILED_THRESHOLD/);
+  });
+
+  it("DOCTOR_FAILED_THRESHOLD throws when set to a non-positive integer", () => {
+    process.env.DATABASE_URL = "postgres://localhost/db";
+    process.env.DOCTOR_FAILED_THRESHOLD = "0";
+    expect(() => loadConfig()).toThrow(/DOCTOR_FAILED_THRESHOLD/);
+    process.env.DOCTOR_FAILED_THRESHOLD = "-3";
+    expect(() => loadConfig({ force: true })).toThrow(
+      /DOCTOR_FAILED_THRESHOLD/,
+    );
+  });
+
+  it("DOCTOR_FAILED_THRESHOLD throws when set to a non-integer", () => {
+    process.env.DATABASE_URL = "postgres://localhost/db";
+    process.env.DOCTOR_FAILED_THRESHOLD = "1.5";
+    expect(() => loadConfig()).toThrow(/DOCTOR_FAILED_THRESHOLD/);
+  });
+
+  it("DIGEST_BIAS_ENABLED accepts the literal strings 'true' and 'false'", () => {
+    process.env.DATABASE_URL = "postgres://localhost/db";
+    process.env.DIGEST_BIAS_ENABLED = "true";
+    expect(loadConfig().DIGEST_BIAS_ENABLED).toBe("true");
+    process.env.DIGEST_BIAS_ENABLED = "false";
+    expect(loadConfig({ force: true }).DIGEST_BIAS_ENABLED).toBe("false");
+  });
+
+  it("DIGEST_BIAS_ENABLED throws when set to anything other than 'true'/'false'", () => {
+    process.env.DATABASE_URL = "postgres://localhost/db";
+    process.env.DIGEST_BIAS_ENABLED = "yes";
+    expect(() => loadConfig()).toThrow(/DIGEST_BIAS_ENABLED/);
+    process.env.DIGEST_BIAS_ENABLED = "1";
+    expect(() => loadConfig({ force: true })).toThrow(/DIGEST_BIAS_ENABLED/);
+  });
 });

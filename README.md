@@ -20,7 +20,7 @@ the clusterer re-rank by a hand-curated source-trust tier.
 ## Status
 
 Milestones **M0–M13** are complete, and all four phases of the §65
-Signal-to-Noise rollout have shipped (`985/985` tests pass against the
+Signal-to-Noise rollout have shipped (`1018/1018` tests pass against the
 project's Postgres test database; `tsc --noEmit` is clean).
 
 | Milestone / Phase                       | Status   |
@@ -159,6 +159,7 @@ last published timestamp, oldest building age).
 | `digestive source-trust get <source_identity>`             | Print the trust tier for a source                |
 | `digestive source-trust list`                              | Print all trust rows                             |
 | `digestive source-trust delete <source_identity>`          | Remove a trust row                               |
+| `digestive feedback-summary [--edition YYYY-MM-DD] [--source-identity <key>] [--limit n]` | Read-only aggregate of `signals` for an edition (per-kind counts + top muted sources / voted stories / starred chunks) |
 
 **Source identity** is the normalized grouping key written alongside
 `source_url` in every signal. It is derived by a pure deterministic
@@ -237,7 +238,7 @@ anything required is missing.
 ## Development
 
 ```bash
-npm test                 # full vitest suite (985 tests)
+npm test                 # full vitest suite (1018 tests)
 npm run test:watch       # vitest in watch mode
 npm run typecheck        # tsc --noEmit
 ```
@@ -328,7 +329,7 @@ direct SQL.
   forbids multi-user). All `signals` rows are implicitly the same
   person who runs PNIP. There is no `user_id` column.
 - **No `digestive feedback` analytics export** — the `signals` table
-  is queryable via SQL but has no built-in aggregation CLI. Operators
-  can connect a BI tool or run ad-hoc SQL. A future `digestive
-  feedback-summary` command could surface per-source mute counts and
-  per-story vote totals.
+  is queryable via SQL and now has a built-in `digestive feedback-summary`
+  CLI that surfaces per-kind counts + top muted sources / voted stories
+  / starred chunks. Operators who need richer analytics can connect a
+  BI tool or run ad-hoc SQL.
