@@ -34,6 +34,7 @@ export interface CreateChunkInput {
 
 export interface ChunkRepository {
   createBatch(inputs: CreateChunkInput[]): Promise<DocumentChunkRow[]>;
+  getById(id: string): Promise<DocumentChunkRow | undefined>;
   getByDocumentId(documentId: string): Promise<DocumentChunkRow[]>;
   getBySectionId(sectionId: string): Promise<DocumentChunkRow[]>;
   getByDocumentIdOrdered(documentId: string): Promise<DocumentChunkRow[]>;
@@ -64,6 +65,14 @@ export function createChunkRepository(db: Kysely<Database>): ChunkRepository {
         )
         .returningAll()
         .execute();
+    },
+
+    async getById(id) {
+      return db
+        .selectFrom("document_chunks")
+        .selectAll()
+        .where("id", "=", id)
+        .executeTakeFirst();
     },
 
     async getByDocumentId(documentId) {

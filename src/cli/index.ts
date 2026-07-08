@@ -99,6 +99,15 @@ import { createNotebookService } from "../digest/notebooklm/notebook-service.js"
 import { createPodcastService } from "../digest/notebooklm/podcast-service.js";
 import { createPublicationService } from "../publication/publication-service.js";
 import { createSignalRepository } from "../signals/signal-repository.js";
+import { createSourceTrustRepository } from "../signals/source-trust-repository.js";
+import {
+  FEEDBACK_HELP,
+  runFeedbackCommand,
+} from "./feedback.js";
+import {
+  SOURCE_TRUST_HELP,
+  runSourceTrustCommand,
+} from "./source-trust.js";
 
 async function main(): Promise<number> {
   const cfg = loadConfig();
@@ -610,8 +619,44 @@ async function main(): Promise<number> {
       return exitCode;
     }
 
+    if (command === "feedback") {
+      const signalRepo = createSignalRepository(db);
+      const editionRepo = createEditionRepository(db);
+      const storyRepo = createStoryRepository(db);
+      const docRepo = createDocumentRepository(db);
+      const chunkRepo = createChunkRepository(db);
+      if (rest[0] === "--help" || rest[0] === "-h" || rest[0] === undefined) {
+        console.log(FEEDBACK_HELP);
+        return rest[0] === undefined ? 2 : 0;
+      }
+      const { exitCode } = await runFeedbackCommand({
+        signalRepo,
+        editionRepo,
+        storyRepo,
+        docRepo,
+        chunkRepo,
+        args: rest,
+        log: (m) => console.log(m),
+      });
+      return exitCode;
+    }
+
+    if (command === "source-trust") {
+      const repo = createSourceTrustRepository(db);
+      if (rest[0] === "--help" || rest[0] === "-h" || rest[0] === undefined) {
+        console.log(SOURCE_TRUST_HELP);
+        return rest[0] === undefined ? 2 : 0;
+      }
+      const { exitCode } = await runSourceTrustCommand({
+        repo,
+        args: rest,
+        log: (m) => console.log(m),
+      });
+      return exitCode;
+    }
+
     console.log(
-      "Usage: digestive <command>\nCommands: discover, process, maintenance, generate-digest, generate-email, generate-notebook, generate-podcast, publish-edition, generate-edition, retry, doctor, metrics",
+      "Usage: digestive <command>\nCommands: discover, process, maintenance, generate-digest, generate-email, generate-notebook, generate-podcast, publish-edition, generate-edition, retry, doctor, metrics, feedback, source-trust",
     );
     return 2;
   } finally {

@@ -1,13 +1,19 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   createMarkdownDigestService,
   DIGEST_CATEGORY_ORDER,
   type StorySnapshot,
+  type MarkdownDigestServiceDeps,
 } from "./markdown-digest-service.js";
 import { buildCitationIndex } from "./citation-index.js";
 import type { Edition } from "../../database/kysely.js";
 import type { Logger } from "../../logging/logger.js";
 import type { CreateSignalInput } from "../../signals/signal-repository.js";
+import { getBiasView, type BiasView } from "../../signals/bias-view.js";
+
+vi.mock("../../signals/bias-view.js", () => ({
+  getBiasView: vi.fn(),
+}));
 
 function silentLogger(): Logger {
   return {
@@ -810,6 +816,241 @@ describe("generate", () => {
     expect(result.alreadyExisted).toBe(false);
     expect(result.digestId).toBe("md-err");
     expect(digestRepo.createForEdition).toHaveBeenCalledOnce();
+  });
+});
+
+function emptyBiasView(): BiasView {
+  return {
+    storyBias: new Map(),
+    sourceBias: new Map(),
+    mutedSourceIdentities: new Set(),
+  };
+}
+
+function buildGenerateHarness(args: {
+  stories: StorySnapshot[];
+  biasEnabled?: boolean;
+  biasView?: BiasView;
+}) {
+  const stories = args.stories;
+  const allCitations = stories.flatMap((s) =>
+    s.claims.map((c) => ({ chunkId: c.chunkId, claimText: c.text })),
+  );
+  const citationIndex = buildCitationIndex(allCitations);
+  const assembledStories = stories.map((s) => makeAssembled(s));
+  const digestRepo = {
+    createForEdition: vi.fn().mockResolvedValue({
+      id: "md-bias",
+      edition_id: "ed-1",
+      content: "x",
+      story_count: stories.length,
+      document_count: stories.reduce((n, s) => n + s.documents.length, 0),
+      citation_count: citationIndex.entries.length,
+      created_at: new Date(),
+    }),
+    getByEdition: vi.fn().mockResolvedValue(undefined),
+    deleteByEdition: vi.fn(),
+  };
+  const editionRepo = {
+    getById: vi.fn().mockResolvedValue(makeEdition()),
+    getByDate: vi.fn(),
+  };
+  const storySummaryRepo = {
+    getByStoryId: vi.fn().mockImplementation(async (storyId: string) => {
+      const snap = stories.find((s) => s.storyId === storyId)!;
+      return {
+        id: `sum-${storyId}`,
+        story_id: storyId,
+        content: snap.summaryText,
+        prompt_id: "p1",
+        prompt_version: 1,
+        model: "fake",
+        provider: "fake",
+        input_hash: "h",
+        created_at: new Date(),
+      };
+    }),
+    getCitationsBySummaryId: vi.fn().mockImplementation(
+      async (summaryId: string) => {
+        const storyId = summaryId.replace(/^sum-/, "");
+        const snap = stories.find((s) => s.storyId === storyId)!;
+        return snap.claims.map((c, i) => ({
+          id: `cit-${storyId}-${i}`,
+          story_summary_id: summaryId,
+          chunk_id: c.chunkId,
+          claim_text: c.text,
+          claim_order: i,
+          created_at: new Date(),
+        }));
+      },
+    ),
+    replaceForStory: vi.fn(),
+    deleteByStoryId: vi.fn(),
+  };
+  const docRepo = {
+    getById: vi.fn().mockImplementation(async (documentId: string) => {
+      const snap = stories
+        .flatMap((s) => s.documents)
+        .find((d) => d.id === documentId);
+      if (!snap) return undefined;
+      return {
+        id: snap.id,
+        edition_id: "ed-1",
+        source_type: snap.sourceType,
+        source_url: snap.sourceUrl,
+        canonical_url: snap.canonicalUrl,
+        title: snap.title,
+        subtitle: null,
+        authors: [],
+        publisher: snap.publisher,
+        published_at: null,
+        language: "en",
+        content_markdown: null,
+        content_text: null,
+        metadata: {},
+        created_at: new Date(),
+      };
+    }),
+    getByEdition: vi.fn().mockResolvedValue([]),
+    getByEditionAndUrl: vi.fn(),
+    create: vi.fn(),
+  };
+  const assembly = {
+    assemble: vi.fn().mockResolvedValue({
+      edition: makeEdition(),
+      stories: assembledStories,
+      ...DUMMY_ASSEMBLY,
+      totalDocuments: stories.reduce((n, s) => n + s.documents.length, 0),
+      fullyEnrichedDocuments: stories.reduce((n, s) => n + s.documents.length, 0),
+      storiesWithSummaries: stories.length,
+    }),
+    collectStories: vi.fn().mockResolvedValue(assembledStories),
+    getReadiness: vi.fn(),
+    isEditionReady: vi.fn(),
+  };
+  const svc = createMarkdownDigestService({
+    db: {} as never,
+    editionRepo: editionRepo as never,
+    assembly: assembly as never,
+    storySummaryRepo: storySummaryRepo as never,
+    docRepo: docRepo as never,
+    chunkRepo: {} as never,
+    topicRepo: {} as never,
+    digestRepo: digestRepo as never,
+    signalRepo: { createBatch: vi.fn().mockResolvedValue([]) } as never,
+    biasEnabled: args.biasEnabled,
+    logger: silentLogger(),
+  });
+  return { svc, digestRepo };
+}
+
+describe("bias phase C", () => {
+  beforeEach(() => {
+    vi.mocked(getBiasView).mockReset();
+  });
+
+  it("does not query the bias view when biasEnabled is false (default)", async () => {
+    const stories = makeNStories(2, "Technology", "ai");
+    const { svc } = buildGenerateHarness({ stories });
+    await svc.generate({ editionId: "ed-1" });
+    expect(vi.mocked(getBiasView)).not.toHaveBeenCalled();
+  });
+
+  it("queries the bias view when biasEnabled is true and produces a digest when no signals are present", async () => {
+    const stories = makeNStories(2, "Technology", "ai");
+    const { svc, digestRepo } = buildGenerateHarness({
+      stories,
+      biasEnabled: true,
+      biasView: emptyBiasView(),
+    });
+    vi.mocked(getBiasView).mockResolvedValue(emptyBiasView());
+    const result = await svc.generate({ editionId: "ed-1" });
+    expect(vi.mocked(getBiasView)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(getBiasView)).toHaveBeenCalledWith({}, "ed-1");
+    expect(result.storyCount).toBe(2);
+    const content = digestRepo.createForEdition.mock.calls[0]![0]!.content;
+    expect(content).toContain("### Ai story 1");
+    expect(content).toContain("### Ai story 2");
+  });
+
+  it("drops a story whose every document is from a muted source", async () => {
+    const mutedStory = makeStoryAt("muted-1", 0, "Technology", "ai", {
+      sourceType: "article",
+      url: "https://mutedsite.com/x",
+    });
+    const keptStoryA = makeStoryAt("kept-a", 1, "Politics", "election", {
+      sourceType: "article",
+      url: "https://newssite-a.com/x",
+    });
+    const keptStoryB = makeStoryAt("kept-b", 2, "Politics", "election", {
+      sourceType: "article",
+      url: "https://newssite-b.com/x",
+    });
+    const stories = [mutedStory, keptStoryA, keptStoryB];
+    const biasView: BiasView = {
+      storyBias: new Map(),
+      sourceBias: new Map([
+        ["mutedsite.com", { source_identity: "mutedsite.com", muted: true, mute_count: 1 }],
+      ]),
+      mutedSourceIdentities: new Set(["mutedsite.com"]),
+    };
+    const { svc, digestRepo } = buildGenerateHarness({
+      stories,
+      biasEnabled: true,
+      biasView,
+    });
+    vi.mocked(getBiasView).mockResolvedValue(biasView);
+    await svc.generate({ editionId: "ed-1" });
+    const content = digestRepo.createForEdition.mock.calls[0]![0]!.content;
+    expect(content).toContain("### Politics: election story kept-a");
+    expect(content).toContain("### Politics: election story kept-b");
+    expect(content).not.toContain("muted-1");
+    expect(content).not.toContain("mutedsite.com/x");
+  });
+
+  it("moves a down-rated story out of Top Stories into a category bucket", async () => {
+    const stories: StorySnapshot[] = [];
+    for (let i = 1; i <= 6; i++) {
+      stories.push(
+        makeStoryAt(
+          `downrated-${i}`,
+          i - 1,
+          "Technology",
+          "ai",
+          { sourceType: "article", url: `https://bias${i}.com/x` },
+        ),
+      );
+    }
+    const biasView: BiasView = {
+      storyBias: new Map([
+        [
+          "downrated-1",
+          { story_id: "downrated-1", up_votes: 0, down_votes: 1, net_score: -1 },
+        ],
+      ]),
+      sourceBias: new Map(),
+      mutedSourceIdentities: new Set(),
+    };
+    const { svc, digestRepo } = buildGenerateHarness({
+      stories,
+      biasEnabled: true,
+      biasView,
+    });
+    vi.mocked(getBiasView).mockResolvedValue(biasView);
+    await svc.generate({ editionId: "ed-1" });
+    const content = digestRepo.createForEdition.mock.calls[0]![0]!.content;
+    const topIdx = content.indexOf("## Top Stories");
+    const techIdx = content.indexOf("## Technology\n");
+    expect(topIdx).toBeGreaterThan(-1);
+    expect(techIdx).toBeGreaterThan(topIdx);
+    const topSection = content.slice(topIdx, techIdx);
+    expect(topSection).not.toContain("### Technology: ai story downrated-1");
+    expect(topSection).not.toContain("bias1.com/x");
+    expect(topSection).toContain("### Technology: ai story downrated-2");
+    expect(topSection).toContain("### Technology: ai story downrated-6");
+    const techSection = content.slice(techIdx);
+    expect(techSection).toContain("### Technology: ai story downrated-1");
+    expect(content).toContain("bias1.com/x");
   });
 });
 

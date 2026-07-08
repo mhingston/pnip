@@ -285,6 +285,12 @@ describe("M5 Story Clustering end-to-end", () => {
         countByEditionAndKind: async () => 0,
         getBySourceIdentity: async () => [],
       } as any,
+      sourceTrustRepo: {
+        set: async () => { throw new Error("not used"); },
+        get: async () => undefined,
+        getAll: async () => [],
+        delete: async () => { throw new Error("not used"); },
+      } as any,
     };
   }
 

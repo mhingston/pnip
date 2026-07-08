@@ -11,6 +11,7 @@ import type {
   ClusterMemberRow,
 } from "./story-repository.js";
 import type { SignalRepository, CreateSignalInput } from "../signals/signal-repository.js";
+import type { SourceTrustRepository, SourceTrustRow } from "../signals/source-trust-repository.js";
 import type { ProcessingJob } from "../database/kysely.js";
 
 function makeJob(overrides?: Partial<ProcessingJob>): ProcessingJob {
@@ -120,11 +121,13 @@ function makeDeps(overrides?: {
   summariesByDoc?: Map<string, SummaryRow[]>;
   topicsByDoc?: Map<string, TopicRow[]>;
   embeddingsByDoc?: Map<string, EmbeddingRow[]>;
+  trustRows?: SourceTrustRow[];
 }) {
   const documents = overrides?.documents ?? [];
   const summariesByDoc = overrides?.summariesByDoc ?? new Map();
   const topicsByDoc = overrides?.topicsByDoc ?? new Map();
   const embeddingsByDoc = overrides?.embeddingsByDoc ?? new Map();
+  const trustRows = overrides?.trustRows ?? [];
 
   const docRepo: DocumentRepository = {
     create: vi.fn(),
@@ -202,7 +205,14 @@ function makeDeps(overrides?: {
     getBySourceIdentity: vi.fn(),
   };
 
-  return { docRepo, summaryRepo, topicRepo, embeddingRepo, storyRepo, provenanceRepo, signalRepo };
+  const sourceTrustRepo: SourceTrustRepository = {
+    set: vi.fn(),
+    get: vi.fn(),
+    getAll: vi.fn().mockResolvedValue(trustRows),
+    delete: vi.fn(),
+  };
+
+  return { docRepo, summaryRepo, topicRepo, embeddingRepo, storyRepo, provenanceRepo, signalRepo, sourceTrustRepo };
 }
 
 describe("ClusterStoriesWorker", () => {
@@ -374,5 +384,68 @@ describe("ClusterStoriesWorker", () => {
     expect(outcome.childJobs).toBeDefined();
     expect(outcome.childJobs).toHaveLength(1);
     expect(outcome.childJobs![0].jobType).toBe("summarize_story");
+  });
+
+  it("passes sourceIdentity + source-trust ranking to clusterDocuments so higher-trust clusters sort first", async () => {
+    const docs = [
+      makeDoc({
+        id: "doc-shady",
+        source_url: "https://shady.com/article",
+        source_type: "article",
+      }),
+      makeDoc({
+        id: "doc-trusted",
+        source_url: "https://trusted.com/article",
+        source_type: "article",
+      }),
+    ];
+    const summariesByDoc = new Map([
+      ["doc-shady", [makeSummary("doc-shady", "shady story")]],
+      ["doc-trusted", [makeSummary("doc-trusted", "trusted story")]],
+    ]);
+    const topicsByDoc = new Map([
+      ["doc-shady", [makeTopic("doc-shady", "ai", 0.9)]],
+      ["doc-trusted", [makeTopic("doc-trusted", "weather", 0.9)]],
+    ]);
+    const embeddingsByDoc = new Map([
+      ["doc-shady", [makeEmbedding("doc-shady", [1, 0])]],
+      ["doc-trusted", [makeEmbedding("doc-trusted", [0, 1])]],
+    ]);
+    const trustRows: SourceTrustRow[] = [
+      {
+        source_identity: "trusted.com",
+        tier: 1,
+        notes: null,
+        created_at: new Date(),
+        updated_at: new Date(),
+      },
+      {
+        source_identity: "shady.com",
+        tier: 5,
+        notes: null,
+        created_at: new Date(),
+        updated_at: new Date(),
+      },
+    ];
+    const deps = makeDeps({
+      documents: docs,
+      summariesByDoc,
+      topicsByDoc,
+      embeddingsByDoc,
+      trustRows,
+    });
+    const worker = createClusterStoriesWorker(deps);
+
+    await worker.execute(makeJob(), { db: {} as any, logger: silentLogger() });
+
+    expect(deps.sourceTrustRepo.getAll).toHaveBeenCalledTimes(1);
+    const replaceForEdition = deps.storyRepo.replaceForEdition as ReturnType<typeof vi.fn>;
+    expect(replaceForEdition).toHaveBeenCalledTimes(1);
+    const passed = replaceForEdition.mock.calls[0][0] as {
+      stories: { label: string; documentIds: string[] }[];
+    };
+    expect(passed.stories).toHaveLength(2);
+    expect(passed.stories[0].documentIds).toEqual(["doc-trusted"]);
+    expect(passed.stories[1].documentIds).toEqual(["doc-shady"]);
   });
 });

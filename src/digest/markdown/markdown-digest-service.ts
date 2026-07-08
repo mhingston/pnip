@@ -16,6 +16,8 @@ import type {
   MarkdownDigestRow,
 } from "./markdown-digest-repository.js";
 import type { SignalRepository, CreateSignalInput } from "../../signals/signal-repository.js";
+import { deriveSourceIdentity } from "../../signals/source-identity.js";
+import { getBiasView, type BiasView } from "../../signals/bias-view.js";
 import {
   buildCitationIndex,
   citationTokenFor,
@@ -87,6 +89,7 @@ interface DocumentSnapshot {
   canonicalUrl: string | null;
   sourceType: string;
   publisher: string | null;
+  metadata?: unknown;
 }
 
 export interface StorySnapshot {
@@ -136,6 +139,7 @@ export interface MarkdownDigestServiceDeps {
   topicRepo: TopicRepository;
   digestRepo: MarkdownDigestRepository;
   signalRepo: SignalRepository;
+  biasEnabled?: boolean;
   logger?: Logger;
 }
 
@@ -195,6 +199,46 @@ async function writeClaimedInTopSignals(
       error: err as Error,
     });
   }
+}
+
+function storyDocumentIdentities(story: StorySnapshot): (string | null)[] {
+  return story.documents.map((d) =>
+    deriveSourceIdentity({
+      sourceUrl: d.sourceUrl,
+      sourceType: d.sourceType,
+      publisher: d.publisher,
+      metadata: d.metadata ?? null,
+    }),
+  );
+}
+
+function applyBiasToStories(
+  stories: StorySnapshot[],
+  bias: BiasView,
+): StorySnapshot[] {
+  if (bias.mutedSourceIdentities.size === 0 && bias.storyBias.size === 0) {
+    return stories;
+  }
+  const kept: StorySnapshot[] = [];
+  for (const story of stories) {
+    if (story.documents.length > 0) {
+      const identities = storyDocumentIdentities(story);
+      const mutedCount = identities.filter(
+        (id) => id !== null && bias.mutedSourceIdentities.has(id),
+      ).length;
+      if (mutedCount === story.documents.length) continue;
+    }
+    kept.push(story);
+  }
+  const downRatedIds = new Set<string>();
+  for (const story of kept) {
+    const entry = bias.storyBias.get(story.storyId);
+    if (entry && entry.net_score < 0) downRatedIds.add(story.storyId);
+  }
+  if (downRatedIds.size === 0) return kept;
+  const nonDownRated = kept.filter((s) => !downRatedIds.has(s.storyId));
+  const downRated = kept.filter((s) => downRatedIds.has(s.storyId));
+  return [...nonDownRated, ...downRated];
 }
 
 function formatPublicationDate(value: Date | string): string {
@@ -323,7 +367,13 @@ export function createMarkdownDigestService(
         );
       }
 
-      const allCitations = stories.flatMap((s) =>
+      let effectiveStories = stories;
+      if (deps.biasEnabled) {
+        const biasView = await getBiasView(deps.db, input.editionId);
+        effectiveStories = applyBiasToStories(stories, biasView);
+      }
+
+      const allCitations = effectiveStories.flatMap((s) =>
         s.claims.map((c) => ({ chunkId: c.chunkId, claimText: c.text })),
       );
       const citationIndex = buildCitationIndex(allCitations);
@@ -331,12 +381,12 @@ export function createMarkdownDigestService(
       const markdown = this.renderMarkdown({
         edition,
         assembly,
-        stories,
+        stories: effectiveStories,
         citationIndex,
       });
 
       const documentIds = new Set<string>();
-      for (const s of stories) {
+      for (const s of effectiveStories) {
         for (const d of s.documents) documentIds.add(d.id);
       }
 
@@ -345,7 +395,7 @@ export function createMarkdownDigestService(
         row = await deps.digestRepo.createForEdition({
           editionId: input.editionId,
           content: markdown,
-          storyCount: stories.length,
+          storyCount: effectiveStories.length,
           documentCount: documentIds.size,
           citationCount: citationIndex.entries.length,
         });
@@ -360,7 +410,7 @@ export function createMarkdownDigestService(
               "markdown digest race resolved; returning existing row",
               { editionId: input.editionId, digestId: after.id },
             );
-            await writeClaimedInTopSignals(deps, input.editionId, stories);
+            await writeClaimedInTopSignals(deps, input.editionId, effectiveStories);
             return {
               digestId: after.id,
               edition,
@@ -377,17 +427,17 @@ export function createMarkdownDigestService(
       deps.logger?.info("markdown digest created", {
         editionId: edition.id,
         digestId: row.id,
-        storyCount: stories.length,
+        storyCount: effectiveStories.length,
         documentCount: documentIds.size,
         citationCount: citationIndex.entries.length,
       });
 
-      await writeClaimedInTopSignals(deps, input.editionId, stories);
+      await writeClaimedInTopSignals(deps, input.editionId, effectiveStories);
 
       return {
         digestId: row.id,
         edition,
-        storyCount: stories.length,
+        storyCount: effectiveStories.length,
         documentCount: documentIds.size,
         citationCount: citationIndex.entries.length,
         alreadyExisted: false,
@@ -417,6 +467,7 @@ export function createMarkdownDigestService(
             canonicalUrl: doc.canonical_url ?? null,
             sourceType: doc.source_type,
             publisher: doc.publisher ?? null,
+            metadata: doc.metadata,
           });
         }
         documents.sort((a, b) => a.sourceUrl.localeCompare(b.sourceUrl));

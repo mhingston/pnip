@@ -64,6 +64,7 @@ function makeDeps(overrides?: {
 
   const chunkRepo: ChunkRepository = {
     createBatch: vi.fn(),
+    getById: vi.fn(),
     getByDocumentId: vi.fn(),
     getBySectionId: vi.fn(),
     getByDocumentIdOrdered: vi.fn().mockImplementation(async () =>

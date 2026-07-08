@@ -30,6 +30,7 @@ const configSchema = z.object({
   WORKER_CONCURRENCY: z.string().optional(),
   RETRY_MAX_ATTEMPTS: z.string().optional(),
   DOCTOR_FAILED_THRESHOLD: z.string().optional(),
+  DIGEST_BIAS_ENABLED: z.string().optional(),
 });
 
 export type Config = z.infer<typeof configSchema>;

@@ -69,6 +69,7 @@ describe("migration runner", () => {
       "022_create_notebooks.sql",
       "023_create_podcasts.sql",
       "024_create_signals.sql",
+      "025_create_source_trust.sql",
     ]);
     expect(res.skipped).toEqual([]);
 
@@ -97,6 +98,7 @@ describe("migration runner", () => {
       "022_create_notebooks.sql",
       "023_create_podcasts.sql",
       "024_create_signals.sql",
+      "025_create_source_trust.sql",
     ]);
 
     const r = await pool.query("SELECT to_regclass('__smoke') AS exists");
@@ -157,6 +159,7 @@ describe("migration runner", () => {
       "022_create_notebooks.sql",
       "023_create_podcasts.sql",
       "024_create_signals.sql",
+      "025_create_source_trust.sql",
     ]);
 
     expect(await getAppliedMigrations(pool)).toEqual([
@@ -184,6 +187,7 @@ describe("migration runner", () => {
       "022_create_notebooks.sql",
       "023_create_podcasts.sql",
       "024_create_signals.sql",
+      "025_create_source_trust.sql",
     ]);
   });
 

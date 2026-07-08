@@ -374,6 +374,13 @@ export interface Database {
     payload: unknown;
     created_at: Generated<Date>;
   };
+  source_trust: {
+    source_identity: string;
+    tier: number;
+    notes: string | null;
+    created_at: Generated<Date>;
+    updated_at: Generated<Date>;
+  };
 }
 
 export function createKysely(pool: PgPool): Kysely<Database> {

@@ -63,6 +63,7 @@ import {
   type PublicationService,
 } from "../publication/publication-service.js";
 import { createSignalRepository } from "../signals/signal-repository.js";
+import { createSourceTrustRepository } from "../signals/source-trust-repository.js";
 import { createExpandDocumentWorker } from "../expansion/expand-document-worker.js";
 import { createChunkDocumentWorker } from "../chunking/chunk-document-worker.js";
 import { createClusterStoriesWorker } from "../clustering/cluster-stories-worker.js";
@@ -123,6 +124,7 @@ const migrationSqlPaths = [
   "../database/migrations/022_create_notebooks.sql",
   "../database/migrations/023_create_podcasts.sql",
   "../database/migrations/024_create_signals.sql",
+  "../database/migrations/025_create_source_trust.sql",
 ];
 
 function readMigrationSql(relativePath: string): Promise<string> {
@@ -387,6 +389,7 @@ interface TestEnv {
   promptExecutor: ReturnType<typeof createPromptExecutionService>;
   publishService: ReturnType<typeof createPublicationService>;
   signalRepo: ReturnType<typeof createSignalRepository>;
+  sourceTrustRepo: ReturnType<typeof createSourceTrustRepository>;
   captured: ResendCallRecord[];
 }
 
@@ -416,6 +419,7 @@ async function makeEnv(pool: PgPool, db: Kysely<Database>): Promise<TestEnv> {
   const provenanceRepo = createProvenanceRepository(db);
   const markdownDigestRepo = createMarkdownDigestRepository(db);
   const signalRepo = createSignalRepository(db);
+  const sourceTrustRepo = createSourceTrustRepository(db);
   const markdownService = createMarkdownDigestService({
     db,
     editionRepo,
@@ -481,6 +485,7 @@ async function makeEnv(pool: PgPool, db: Kysely<Database>): Promise<TestEnv> {
     promptExecutor,
     publishService,
     signalRepo,
+    sourceTrustRepo,
     captured,
   };
 }
@@ -776,6 +781,7 @@ async function runClusterStep(
     storyRepo: env.storyRepo,
     provenanceRepo: env.provenanceRepo,
     signalRepo: env.signalRepo,
+    sourceTrustRepo: env.sourceTrustRepo,
   });
   const job = await env.jobQueue.enqueue({
     jobType: "cluster_stories",

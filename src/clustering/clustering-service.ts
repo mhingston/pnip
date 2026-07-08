@@ -4,6 +4,7 @@ export interface DocumentClusterInput {
   topics: string[];
   embedding: number[];
   publishedAt: Date | null;
+  sourceIdentity?: string;
 }
 
 export interface DocumentCluster {
@@ -30,6 +31,11 @@ export interface ClusterOptions {
    * unset.
    */
   random?: () => number;
+}
+
+export interface ClusterRankingInput {
+  sourceTrust: Map<string, number>;
+  storyBias: Map<string, number>;
 }
 
 export const DEFAULT_CLUSTER_OPTIONS: ClusterOptions = {
@@ -105,6 +111,7 @@ function makeLabel(
 export function clusterDocuments(
   inputs: readonly DocumentClusterInput[],
   opts?: Partial<ClusterOptions>,
+  ranking?: ClusterRankingInput,
 ): ClusterOutput[] {
   const similarityThreshold =
     opts?.similarityThreshold ?? DEFAULT_CLUSTER_OPTIONS.similarityThreshold;
@@ -185,12 +192,37 @@ export function clusterDocuments(
     });
   }
 
-  outputs.sort((a, b) => {
-    if (b.documentIds.length !== a.documentIds.length) {
-      return b.documentIds.length - a.documentIds.length;
+  if (ranking) {
+    const docIdToSourceIdentity = new Map<string, string | undefined>();
+    for (const inp of inputs) {
+      docIdToSourceIdentity.set(inp.documentId, inp.sourceIdentity);
     }
-    return a.label.localeCompare(b.label);
-  });
+    const trustScore = (cluster: ClusterOutput): { sum: number; count: number } => {
+      let sum = 0;
+      for (const docId of cluster.documentIds) {
+        const identity = docIdToSourceIdentity.get(docId);
+        const tier = identity ? ranking.sourceTrust.get(identity) ?? 3 : 3;
+        sum += 6 - tier;
+      }
+      return { sum, count: cluster.documentIds.length };
+    };
+    const scored = outputs.map((c) => ({ cluster: c, s: trustScore(c) }));
+    scored.sort((a, b) => {
+      const left = a.s.sum * b.s.count;
+      const right = b.s.sum * a.s.count;
+      if (left !== right) return right - left;
+      if (b.s.count !== a.s.count) return b.s.count - a.s.count;
+      return a.cluster.label.localeCompare(b.cluster.label);
+    });
+    outputs.splice(0, outputs.length, ...scored.map((s) => s.cluster));
+  } else {
+    outputs.sort((a, b) => {
+      if (b.documentIds.length !== a.documentIds.length) {
+        return b.documentIds.length - a.documentIds.length;
+      }
+      return a.label.localeCompare(b.label);
+    });
+  }
 
   const relabeled: ClusterOutput[] = outputs.map((o, i) => ({
     label: o.label,

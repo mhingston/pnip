@@ -3,6 +3,7 @@ import {
   clusterDocuments,
   cosineSimilarityForTest,
   type DocumentClusterInput,
+  type ClusterRankingInput,
 } from "./clustering-service.js";
 
 function makeVector(values: number[]): number[] {
@@ -184,5 +185,97 @@ describe("clusterDocuments", () => {
       const result = clusterDocuments(inputs, { similarityThreshold: 0.5 });
       expect(result.map((c) => c.label)).toEqual(first.map((c) => c.label));
     }
+  });
+
+  describe("trust-tier re-ranking", () => {
+    function makeInputWithSource(
+      id: string,
+      topics: string[],
+      vector: number[],
+      sourceIdentity?: string,
+    ): DocumentClusterInput {
+      return {
+        documentId: id,
+        summary: `Summary for ${id}`,
+        topics,
+        embedding: vector,
+        publishedAt: null,
+        sourceIdentity,
+      };
+    }
+
+    it("no ranking input preserves the existing size-desc, label-asc order (regression guard)", () => {
+      const inputs = [
+        makeInput("d1", ["tech"], makeVector([1, 0])),
+        makeInput("d2", ["ai"], makeVector([0, 1])),
+        makeInput("d3", ["ai"], makeVector([0, 1])),
+      ];
+      const result = clusterDocuments(inputs, {
+        similarityThreshold: 0.9,
+        random: () => 0,
+      });
+      expect(result[0].documentIds.sort()).toEqual(["d2", "d3"]);
+      expect(result[1].documentIds).toEqual(["d1"]);
+    });
+
+    it("ranking with trust tiers sorts higher-trust clusters first", () => {
+      const inputs = [
+        makeInputWithSource("d1", ["ai"], makeVector([1, 0]), "shady.com"),
+        makeInputWithSource("d2", ["weather"], makeVector([0, 1]), "trusted.com"),
+      ];
+      const opts = { similarityThreshold: 0.9, random: () => 0 } as const;
+
+      const baseline = clusterDocuments(inputs, opts);
+      expect(baseline[0].documentIds).toEqual(["d1"]);
+
+      const ranking: ClusterRankingInput = {
+        sourceTrust: new Map([
+          ["shady.com", 5],
+          ["trusted.com", 1],
+        ]),
+        storyBias: new Map(),
+      };
+      const result = clusterDocuments(inputs, opts, ranking);
+      expect(result[0].documentIds).toEqual(["d2"]);
+      expect(result[1].documentIds).toEqual(["d1"]);
+    });
+
+    it("ranking with missing sourceIdentity on some inputs treats them as default tier 3", () => {
+      const inputs = [
+        makeInputWithSource("d1", ["ai"], makeVector([1, 0])),
+        makeInputWithSource("d2", ["ml"], makeVector([0, 1]), "unrated.com"),
+        makeInputWithSource("d3", ["weather"], makeVector([0.5, 0.5]), "trusted.com"),
+      ];
+      const opts = { similarityThreshold: 0.9, random: () => 0 } as const;
+      const ranking: ClusterRankingInput = {
+        sourceTrust: new Map([["trusted.com", 1]]),
+        storyBias: new Map(),
+      };
+      const result = clusterDocuments(inputs, opts, ranking);
+      const trustedCluster = result.find((c) => c.documentIds.includes("d3"));
+      const d1Cluster = result.find((c) => c.documentIds.includes("d1"));
+      const d2Cluster = result.find((c) => c.documentIds.includes("d2"));
+      expect(result.indexOf(trustedCluster!)).toBeLessThan(result.indexOf(d1Cluster!));
+      expect(result.indexOf(d1Cluster!)).toBeLessThan(result.indexOf(d2Cluster!));
+    });
+
+    it("ranking with an empty sourceTrust map yields the same order as no ranking", () => {
+      const inputs = [
+        makeInput("d1", ["tech"], makeVector([1, 0])),
+        makeInput("d2", ["ai"], makeVector([0, 1])),
+        makeInput("d3", ["ai"], makeVector([0, 1])),
+      ];
+      const opts = { similarityThreshold: 0.9, random: () => 0 } as const;
+      const baseline = clusterDocuments(inputs, opts);
+      const ranking: ClusterRankingInput = {
+        sourceTrust: new Map(),
+        storyBias: new Map(),
+      };
+      const result = clusterDocuments(inputs, opts, ranking);
+      expect(result.map((c) => c.label)).toEqual(baseline.map((c) => c.label));
+      expect(result.map((c) => c.documentIds)).toEqual(
+        baseline.map((c) => c.documentIds),
+      );
+    });
   });
 });

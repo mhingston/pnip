@@ -7,11 +7,13 @@ import type { EmbeddingRepository } from "../enrichment/embeddings/embedding-rep
 import type { ProvenanceRepository } from "../provenance/provenance-repository.js";
 import type { StoryRepository } from "./story-repository.js";
 import type { SignalRepository, CreateSignalInput } from "../signals/signal-repository.js";
+import type { SourceTrustRepository } from "../signals/source-trust-repository.js";
 import { deriveSourceIdentity } from "../signals/source-identity.js";
 import {
   clusterDocuments,
   type DocumentClusterInput,
   type ClusterOptions,
+  type ClusterRankingInput,
 } from "./clustering-service.js";
 
 const CLUSTER_JOB_TYPE = "cluster_stories";
@@ -25,6 +27,7 @@ export interface ClusterStoriesDeps {
   storyRepo: StoryRepository;
   provenanceRepo: ProvenanceRepository;
   signalRepo: SignalRepository;
+  sourceTrustRepo: SourceTrustRepository;
   options?: Partial<ClusterOptions>;
 }
 
@@ -76,6 +79,12 @@ export function createClusterStoriesWorker(
         return {};
       }
 
+      const trustRows = await deps.sourceTrustRepo.getAll();
+      const sourceTrust = new Map<string, number>();
+      for (const row of trustRows) {
+        sourceTrust.set(row.source_identity, row.tier);
+      }
+
       const inputs: DocumentClusterInput[] = [];
 
       for (const doc of documents) {
@@ -94,12 +103,20 @@ export function createClusterStoriesWorker(
         if (embeddings.length === 0) continue;
         const vector = averageEmbedding(embeddings.map((e) => e.vector));
 
+        const sourceIdentity = deriveSourceIdentity({
+          sourceUrl: doc.source_url,
+          sourceType: doc.source_type,
+          publisher: doc.publisher,
+          metadata: doc.metadata,
+        }) ?? undefined;
+
         inputs.push({
           documentId: doc.id,
           summary: summaryText,
           topics: topicList,
           embedding: vector,
           publishedAt: doc.published_at,
+          sourceIdentity,
         });
       }
 
@@ -111,7 +128,11 @@ export function createClusterStoriesWorker(
         return {};
       }
 
-      const clusters = clusterDocuments(inputs, deps.options);
+      const rankingInput: ClusterRankingInput = {
+        sourceTrust,
+        storyBias: new Map<string, number>(),
+      };
+      const clusters = clusterDocuments(inputs, deps.options, rankingInput);
 
       const { stories } = await deps.storyRepo.replaceForEdition({
         editionId,

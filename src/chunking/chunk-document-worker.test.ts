@@ -140,6 +140,7 @@ describe("ChunkDocumentWorker", () => {
     };
     const chunkRepo: ChunkRepository = {
       createBatch: vi.fn(),
+      getById: vi.fn(),
       getByDocumentId: vi.fn(),
       getBySectionId: vi.fn(),
       getByDocumentIdOrdered: vi.fn(),
@@ -190,6 +191,7 @@ describe("ChunkDocumentWorker", () => {
     };
     const chunkRepo: ChunkRepository = {
       createBatch: vi.fn(),
+      getById: vi.fn(),
       getByDocumentId: vi.fn().mockResolvedValue([]),
       getBySectionId: vi.fn(),
       getByDocumentIdOrdered: vi.fn(),
@@ -239,6 +241,7 @@ describe("ChunkDocumentWorker", () => {
     };
     const chunkRepo: ChunkRepository = {
       createBatch: vi.fn().mockResolvedValue([makeChunkRow()]),
+      getById: vi.fn(),
       getByDocumentId: vi.fn().mockResolvedValue([]),
       getBySectionId: vi.fn(),
       getByDocumentIdOrdered: vi.fn(),
@@ -318,6 +321,7 @@ describe("ChunkDocumentWorker", () => {
     };
     const chunkRepo: ChunkRepository = {
       createBatch: vi.fn().mockResolvedValue([replacement]),
+      getById: vi.fn(),
       getByDocumentId: vi.fn().mockResolvedValue([existing]),
       getBySectionId: vi.fn(),
       getByDocumentIdOrdered: vi.fn(),
@@ -370,6 +374,7 @@ describe("ChunkDocumentWorker", () => {
     };
     const chunkRepo: ChunkRepository = {
       createBatch: vi.fn().mockResolvedValue([makeChunkRow()]),
+      getById: vi.fn(),
       getByDocumentId: vi.fn().mockResolvedValue([]),
       getBySectionId: vi.fn(),
       getByDocumentIdOrdered: vi.fn(),
