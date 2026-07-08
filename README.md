@@ -12,41 +12,51 @@ idempotent stages; every generated artifact carries complete provenance
 back to the original source chunks; every Edition becomes immutable after
 publication.
 
+The project also includes a self-attributed feedback loop: the operator
+can rate stories, mute sources, and star chunks, and (optionally) have
+the digest apply that feedback as a deterministic re-ordering or have
+the clusterer re-rank by a hand-curated source-trust tier.
+
 ## Status
 
-Milestones **M0–M13** are complete (`877/877` tests pass against the
+Milestones **M0–M13** are complete, and all four phases of the §65
+Signal-to-Noise rollout have shipped (`985/985` tests pass against the
 project's Postgres test database; `tsc --noEmit` is clean).
 
-| Milestone | Phase                              | Status      |
-| --------- | ---------------------------------- | ----------- |
-| M0        | Foundation & infrastructure        | Complete    |
-| M1        | Discovery Worker / Events          | Complete    |
-| M2        | Expansion & Canonical Documents    | Complete    |
-| M3        | Chunking                           | Complete    |
-| M4        | AI Enrichment                      | Complete    |
-| M5        | Story Clustering                   | Complete    |
-| M6        | Edition Assembly & Lifecycle       | Complete    |
-| M7        | Markdown Digest                    | Complete    |
-| M8        | HTML Email                         | Complete    |
-| M9        | NotebookLM notebook                | Complete    |
-| M10       | NotebookLM podcast                 | Complete    |
-| M11       | Publication                        | Complete    |
-| M12       | CLI & Operations                   | Complete    |
-| M13       | Testing & Hardening (§61 audit)    | Complete    |
+| Milestone / Phase                       | Status   |
+| --------------------------------------- | -------- |
+| M0 Foundation & infrastructure          | Complete |
+| M1 Discovery Worker / Events            | Complete |
+| M2 Expansion & Canonical Documents      | Complete |
+| M3 Chunking                             | Complete |
+| M4 AI Enrichment                        | Complete |
+| M5 Story Clustering                     | Complete |
+| M6 Edition Assembly & Lifecycle         | Complete |
+| M7 Markdown Digest                      | Complete |
+| M8 HTML Email                           | Complete |
+| M9 NotebookLM notebook                  | Complete |
+| M10 NotebookLM podcast                  | Complete |
+| M11 Publication                         | Complete |
+| M12 CLI & Operations                    | Complete |
+| M13 Testing & Hardening (§61 audit)     | Complete |
+| §65 Phase A — passive signal capture   | Complete |
+| §65 Phase B — feedback CLI             | Complete |
+| §65 Phase C — bias views + opt-in re-ordering | Complete |
+| §65 Phase D — source-trust re-ranking  | Complete |
 
 The full implementation specification — architecture, data model,
 milestones, and acceptance criteria — is at [`docs/PLAN.md`](docs/PLAN.md).
 
 ## Prerequisites
 
-| Component       | Required for                         | Notes                                   |
-| --------------- | ------------------------------------ | --------------------------------------- |
-| PostgreSQL 14+  | the database                         | `pgvector` extension (auto-installed)   |
-| Miniflux        | `digestive discover`                 | an account + API token                  |
-| Resend          | `digestive generate-email`           | an API key + verified sender domain     |
-| `notebooklm-py` | `generate-notebook` / `generate-podcast` | the CLI must be on `$PATH` and `auth check --test --json` must succeed |
-| Fabric (optional)| article / youtube / pdf / reddit extraction | only needed for live content extraction |
-| An AI provider  | enrichment + summaries               | OpenAI, an OpenAI-compatible gateway, or `AI_PROVIDER=fake` for offline dev |
+| Component        | Required for                              | Notes                                                       |
+| ---------------- | ----------------------------------------- | ----------------------------------------------------------- |
+| PostgreSQL 14+   | the database                              | `pgvector` extension (auto-installed)                       |
+| Miniflux         | `digestive discover`                      | an account + API token                                      |
+| Resend           | `digestive generate-email`                | an API key + verified sender domain                         |
+| `notebooklm-py`  | `generate-notebook` / `generate-podcast`  | the CLI must be on `$PATH` and `auth check --test --json` must succeed |
+| Fabric (optional)| article / youtube / pdf / reddit extraction | only needed for live content extraction                |
+| An AI provider   | enrichment + summaries                    | OpenAI, an OpenAI-compatible gateway, or `AI_PROVIDER=fake` for offline dev |
 
 ## Quick start
 
@@ -59,27 +69,30 @@ cp .env.example .env
 # edit .env: set DATABASE_URL, MINIFLUX_*, RESEND_API_KEY, EMAIL_FROM, ...
 
 # 3. run the database migrations (automatic on every command, but explicit here)
-npx tsx src/cli/index.ts process --help   # any command runs migrations first
+npm run digestive -- process --help   # any command runs migrations first
 
 # 4. confirm connectivity
-npx tsx src/cli/index.ts doctor
+npm run digestive -- doctor
 # expect: summary: 8/8 checks ok
 
 # 5. seed today's edition, discover fresh items, drain the queue
-npx tsx src/cli/index.ts discover
-npx tsx src/cli/index.ts process
+npm run digestive -- discover
+npm run digestive -- process
 
 # 6. generate the day's outputs (Markdown → email → NotebookLM → podcast)
-npx tsx src/cli/index.ts generate-digest  --date $(date +%F)
-npx tsx src/cli/index.ts generate-email   --date $(date +%F)
-npx tsx src/cli/index.ts generate-notebook --date $(date +%F) --wait
-npx tsx src/cli/index.ts generate-podcast  --date $(date +%F) --wait
+npm run digestive -- generate-digest   --date $(date +%F)
+npm run digestive -- generate-email    --date $(date +%F)
+npm run digestive -- generate-notebook --date $(date +%F) --wait
+npm run digestive -- generate-podcast  --date $(date +%F) --wait
 
 # 7. publish
-npx tsx src/cli/index.ts publish-edition --date $(date +%F)
+npm run digestive -- publish-edition --date $(date +%F)
+
+# 8. (optional) inspect the day's signal data
+npm run digestive -- metrics
 ```
 
-All commands also work via `npm run digestive -- <command> ...`.
+All commands also work via `npx tsx src/cli/index.ts <command> ...`.
 
 ## CLI command reference
 
@@ -108,6 +121,7 @@ accepts `--dry-run` to gate-check without mutating state.
 | Command                         | Purpose                                                            |
 | ------------------------------- | ------------------------------------------------------------------ |
 | `digestive doctor`              | Read-only diagnostics: PG, migrations, queue, external APIs        |
+| `digestive metrics`             | §58 internal metrics: queue depth, throughput, latency, edition publication duration |
 | `digestive retry`               | List and requeue failed jobs (filters: edition, worker, age, limit) |
 | `digestive maintenance`         | Bound `processing_jobs` growth (archive completed/failed, purge)   |
 | `digestive generate-edition`    | Evaluate the Building → Ready transition in isolation              |
@@ -124,7 +138,44 @@ accepts `--dry-run` to gate-check without mutating state.
 `miniflux` (`GET /v1/me`), `resend` (`GET /domains`), `notebooklm`
 (`auth check --test --json`), and `workers` (known vs registered).
 Optional integrations report `ok=true` with `detail="skipped (config
-not set)"` when their config is absent.
+not set)"` when their config is absent. The queue check's failed-job
+threshold defaults to 100 and is configurable via
+`DOCTOR_FAILED_THRESHOLD`.
+
+`metrics` reports queue depth (pending / running / completed / failed /
+archived), total retries, max retries, avg processing latency,
+throughput (last hour / last day), oldest pending age, and edition
+metrics (total / by status, published count, avg publication duration,
+last published timestamp, oldest building age).
+
+### Feedback loop (§65)
+
+| Command                                                    | Purpose                                          |
+| ---------------------------------------------------------- | ------------------------------------------------ |
+| `digestive feedback rate <edition_id> <story_id> [--up\|--down]` | Write a `story_up` or `story_down` signal  |
+| `digestive feedback hide <source_url>`                     | Write a `source_muted` signal (derives the `source_identity` for the URL — see below) |
+| `digestive feedback star <chunk_id>`                       | Write a `chunk_starred` signal                   |
+| `digestive source-trust set <source_identity> <tier> [--notes ...]` | Set the trust tier (1–5) for a source identity |
+| `digestive source-trust get <source_identity>`             | Print the trust tier for a source                |
+| `digestive source-trust list`                              | Print all trust rows                             |
+| `digestive source-trust delete <source_identity>`          | Remove a trust row                               |
+
+**Source identity** is the normalized grouping key written alongside
+`source_url` in every signal. It is derived by a pure deterministic
+function so that all sources that should be grouped together share a
+key:
+
+- `article` / `pdf` → hostname (strip `www.`, keep subdomains)
+- `reddit` → `reddit.com/r/{subreddit}` (extracted from the URL path)
+- `youtube` → `youtube.com/channel:{id}` (from `metadata.author_url`)
+- `podcast` → `podcast:{publisher}` (from the publisher column)
+
+§65 Phase A writes signals passively from the clusterer, digest
+service, and summarize-story worker. Phase B provides the CLI surface
+above. Phase C (opt-in via `DIGEST_BIAS_ENABLED=true`) drops stories
+whose every document is from a muted source and moves down-rated
+stories out of Top Stories. Phase D re-orders clusters by the
+`source_trust` tier when the worker loads the trust table.
 
 ## Recommended operations cadence
 
@@ -152,6 +203,8 @@ Tuning notes:
 - Maintenance is idempotent and bounded; the daily `--apply` is the real
   cleanup; dry-run previews are cheap and useful for surfacing
   regressions in queue growth.
+- `metrics` is a read-only snapshot — safe to run from cron. Useful for
+  alerting on queue depth or tracking publication duration over time.
 
 ## Environment
 
@@ -177,19 +230,21 @@ anything required is missing.
 | `NOTEBOOKLM_OUTPUT_DIR`   | optional   | directory for downloaded podcast mp3s (default `./notebooks`) |
 | `FABRIC_BIN`              | optional   | path to the Fabric CLI                                     |
 | `MARKITDOWN_BIN`          | optional   | path to the MarkItDown CLI                                 |
+| `DIGEST_BIAS_ENABLED`     | optional   | `true` to apply §65 Phase C bias (muted-source drop + down-rated move); default off |
+| `DOCTOR_FAILED_THRESHOLD` | optional   | integer 1+; `digestive doctor` fails the queue check when `failed > N` (default 100) |
 | `LOG_LEVEL`               | optional   | `debug` / `info` / `warn` / `error` (default `info`)       |
 
 ## Development
 
 ```bash
-npm test                 # full vitest suite (877 tests)
+npm test                 # full vitest suite (985 tests)
 npm run test:watch       # vitest in watch mode
 npm run typecheck        # tsc --noEmit
 ```
 
 Integration tests need `TEST_DATABASE_URL` pointing to a live Postgres
 with the `pgvector` extension available; without it, the integration
-suites auto-skip (518 unit tests still run).
+suites auto-skip (~696 unit tests still run).
 
 The project is plain Node + TypeScript — no bundler, no codegen. Build
 artefacts are produced on demand by `tsx` for the CLI entry point.
@@ -203,7 +258,7 @@ src/
   logging/              # structured JSON logger
   database/             # pool, migrations (forward-only, transactional)
   jobs/
-    queue/              # ProcessingJobQueue — claim/complete/cancel/listFailed/requeue
+    queue/              # ProcessingJobQueue — claim/complete/cancel/listFailed/requeue/getMetrics
     workers/            # generic Worker runtime + claim/execute/persist contract
   discovery/            # Miniflux client + DiscoveryService
   expansion/            # ExpansionPlugin + plugins (article, youtube, podcast, pdf, reddit)
@@ -213,10 +268,11 @@ src/
   clustering/           # story clustering + summarize_story
   editions/             # Edition lifecycle, assembly, readiness gate, M6/M7/M8/M11/M13 audits
   digest/
-    markdown/           # Markdown digest service + citation renderer
+    markdown/           # Markdown digest service + citation renderer + §65 bias application
     html/               # Markdown→HTML renderer, Resend client, email template
     notebooklm/         # NotebookLM + Podcast services (fire-and-forget)
   publication/          # M11 PublicationService — completion gate + state transition
+  signals/              # §65 signal capture: source-identity, signal-repository, bias-view, source-trust
   prompts/              # prompt_versions repository + default-prompt seeding
   provenance/           # lineage graph + citation resolution
   ai/                   # provider abstraction + vercel / openai-compatible / fake
@@ -234,14 +290,19 @@ direct SQL.
 - **Full specification** — [`docs/PLAN.md`](docs/PLAN.md) covers §1
   architecture, §15–§38 pipeline + data model, §39–§53 edition lifecycle
   + publication, §54–§64 operations + delivery, and the implementation
-  milestones M0–M13.
+  milestones M0–M13 + §65 signal-to-noise.
 - **Milestone status blocks** — each milestone in `docs/PLAN.md` has a
-  `Status: ✅ Complete (2026-07-07)` block with a Delivered /
-  Architecture notes / Known technical debt breakdown.
+  `Status: ✅ Complete` block with a Delivered / Architecture notes /
+  Known technical debt breakdown.
 - **§61 acceptance criteria** — exercised by
   `src/editions/m13-acceptance.test.ts` (12 `itWithDb` tests mapping to
   the 20 criteria). The audit runs against a real Postgres with every
   external service mocked; it auto-skips without `TEST_DATABASE_URL`.
+- **§65 signal-to-noise** — covered in `docs/PLAN.md` §65. Phase A is
+  passive (signals written from workers). Phase B is the
+  `digestive feedback` CLI. Phase C is opt-in via
+  `DIGEST_BIAS_ENABLED=true`. Phase D is opt-in via
+  `source_trust` rows.
 
 ## Known technical debt (v1)
 
@@ -257,9 +318,17 @@ direct SQL.
 - **No `runtime.listRegisteredWorkers()`** — the `doctor` workers
   check prints the static known-worker list. A future iteration could
   expose the live registered set.
-- **§65 Signal-to-Noise and Feedback** — a deliberately deferred
-  four-phase rollout (capture-only → CLI ingest → read-only ranking
-  hints → feedback-aware re-ranking) that should start with Phase A only
-  once the rss-digest project's `editorial_profile.md` is being
-  compared against PNIP digests in practice. See `docs/PLAN.md` §65 for
-  the full plan.
+- **§65 Phase C is a deterministic re-order, not an LLM block** — the
+  M7 digest is template-based, not LLM-generated, so the "previously
+  muted sources / down-rated stories" block the plan describes
+  materialized as a filter + reorder step. If a future revision
+  introduces LLM-generated digest prose, the bias block can be added to
+  the prompt behind the same `DIGEST_BIAS_ENABLED` flag.
+- **§65 feedback is single-user / self-attributed** — by design (§63
+  forbids multi-user). All `signals` rows are implicitly the same
+  person who runs PNIP. There is no `user_id` column.
+- **No `digestive feedback` analytics export** — the `signals` table
+  is queryable via SQL but has no built-in aggregation CLI. Operators
+  can connect a BI tool or run ad-hoc SQL. A future `digestive
+  feedback-summary` command could surface per-source mute counts and
+  per-story vote totals.
