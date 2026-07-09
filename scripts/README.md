@@ -3,7 +3,110 @@
 Ad-hoc operator scripts for the `digestive` pipeline. These are not part of the
 test suite and are intentionally not run in CI.
 
-## `m6-e2e-driver.ts`
+## Cron-driven scripts
+
+PNIP does not ship a scheduler; recurring commands are scheduled by the
+operator (cron, systemd timer, launchd, etc.). The `cron-install.sh` helper
+installs the recommended schedule into the user's crontab in one step.
+
+### `digest-drain.sh`
+
+Drains new Miniflux entries into PNIP and processes them. Designed to run
+on a tight cron (every 5–15 minutes) throughout the day. Both `discover`
+and `process` are idempotent, so overlapping or duplicate runs are safe.
+
+Logs to stdout; cron appends the output to `logs/digest-drain.log`.
+
+```bash
+*/10 * * * *  /opt/pnip/scripts/digest-drain.sh >> /opt/pnip/logs/digest-drain.log 2>&1
+```
+
+### `daily-publish.sh`
+
+Sequences the daily publication for the operator's local-timezone edition.
+Reads `PARTITION_CONFIG` from `.env` and produces a master notebook (and
+master podcast) plus, for any configured partition that meets its
+`min_articles` threshold, a per-partition notebook.
+
+Sequence:
+
+1. `digestive generate-digest --date <local-today>` (master)
+2. `digestive generate-email --date <local-today>` (master)
+3. Fire-and-forget `generate-notebook` and (where `with_podcast: true`)
+   `generate-podcast` for every active partition.
+4. `--wait` on every active partition's notebook and (where applicable)
+   podcast. This is the wall-clock heavy step (~10–20 min per source).
+5. `digestive publish-edition --date <local-today> --dry-run` (gate check)
+6. `digestive publish-edition --date <local-today>` (real publish)
+
+Environment overrides:
+- `PNIP_PUBLISH_DATE=YYYY-MM-DD` — publish a specific date instead of today
+- `PNIP_DRY_RUN=1` — stop after the dry-run gate check
+- `PNIP_LOG_DIR=/path/to/logs` — override the log directory
+
+```bash
+0 6 * * *  /opt/pnip/scripts/daily-publish.sh >> /opt/pnip/logs/daily-publish.log 2>&1
+```
+
+### `cron-install.sh`
+
+Installs, removes, or shows the PNIP cron block in the current user's
+crontab. The block is tagged `# pnip-managed` so removal is precise and
+other cron entries are untouched. Idempotent.
+
+```bash
+# Install with the default schedule
+scripts/cron-install.sh install
+
+# Customise the publication time
+scripts/cron-install.sh install --schedule-publish "30 5 * * *"
+
+# Customise the drain interval
+scripts/cron-install.sh install --schedule-drain "*/15 * * * *"
+
+# Show the installed block
+scripts/cron-install.sh show
+
+# Remove
+scripts/cron-install.sh remove
+```
+
+Default schedule:
+
+| Cron expression     | Script                  | Purpose                                  |
+| ------------------- | ----------------------- | ---------------------------------------- |
+| `*/10 * * * *`      | `digest-drain.sh`       | Drain Miniflux → editions                |
+| `0 */6 * * *`       | (inline)                | Cheap maintenance dry-run                 |
+| `0 6 * * *`         | `daily-publish.sh`      | Daily publication at 06:00 local         |
+
+All entries use the system clock's local time. The `daily-publish.sh`
+script uses the local date as the edition date; the operator can override
+with `PNIP_PUBLISH_DATE`.
+
+The script also installs a `logs/` subdirectory if it doesn't exist, so
+the redirect targets are valid on first install.
+
+## Helpers
+
+### `load-env.mjs`
+
+Loads the project `.env` via `dotenv` and prints `export KEY=VALUE` lines
+that bash can `eval`. Used by the cron scripts to source env vars
+without the risk of bash mishandling values that contain angle brackets
+or other shell-meaningful characters (notably `EMAIL_FROM`).
+
+### `parse-partitions.mjs`
+
+Reads `PARTITION_CONFIG` from the environment and prints one line per
+partition the publication sequence should generate a notebook for. The
+format is `<partition_key>` or `<partition_key>:with_podcast` when the
+operator has enabled the per-partition podcast. Master is always emitted
+and always gets a podcast. Used by `daily-publish.sh` to iterate
+partitions without `jq` or any other JSON parser.
+
+## One-shot drivers
+
+### `m6-e2e-driver.ts`
 
 End-to-end driver for the M6 (Edition Assembly & Lifecycle) code path on a live
 database. Demonstrates the full M6 flow end-to-end without depending on the
@@ -36,7 +139,7 @@ set -a; . /path/to/pnip.env; set +a
 The script hard-codes the edition id it targets; update `editionId` in
 `main()` before running against a different edition.
 
-## `demo-gate-fire.ts`
+### `demo-gate-fire.ts`
 
 Replays the enrichment-tracker + gate sequence against enrichments that were
 actually produced by the real LLM (via `process`). Useful for validating the

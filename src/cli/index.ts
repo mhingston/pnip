@@ -1,5 +1,5 @@
 import { loadConfig, parsePartitionConfig } from "../config/index.js";
-import { createPool, closePool } from "../database/pool.js";
+import { createPool } from "../database/pool.js";
 import { runMigrations } from "../database/migrations.js";
 import { createKysely, closeKysely } from "../database/kysely.js";
 import { createMinifluxClient } from "../discovery/miniflux-client.js";
@@ -749,7 +749,6 @@ async function main(): Promise<number> {
     return 2;
   } finally {
     if (db) await closeKysely(db);
-    await closePool(pool);
   }
 }
 
