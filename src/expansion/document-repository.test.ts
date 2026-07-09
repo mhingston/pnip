@@ -42,6 +42,12 @@ const storyClustersMigrationPath = fileURLToPath(
     import.meta.url,
   ),
 );
+const qualityClassificationsMigrationPath = fileURLToPath(
+  new URL(
+    "../database/migrations/015_create_quality_classifications.sql",
+    import.meta.url,
+  ),
+);
 
 function schemaName(prefix: string): string {
   return prefix + randomUUID().replace(/-/g, "");
@@ -247,6 +253,10 @@ describe("DocumentRepository.getRankedByEditionAndPartition", () => {
     const promptVersionsSql = await readFile(promptVersionsMigrationPath, "utf8");
     const documentSectionsSql = await readFile(documentSectionsMigrationPath, "utf8");
     const documentChunksSql = await readFile(documentChunksMigrationPath, "utf8");
+    const qualityClassificationsSql = await readFile(
+      qualityClassificationsMigrationPath,
+      "utf8",
+    );
 
     const partitionSql = `
       DO $$ BEGIN
@@ -272,6 +282,7 @@ describe("DocumentRepository.getRankedByEditionAndPartition", () => {
       await client.query(documentSectionsSql);
       await client.query(documentChunksSql);
       await client.query(storyClustersSql);
+      await client.query(qualityClassificationsSql);
       await client.query(partitionSql);
     } finally {
       client.release();
@@ -310,6 +321,7 @@ describe("DocumentRepository.getRankedByEditionAndPartition", () => {
   });
 
   beforeEach(async () => {
+    await db.deleteFrom("quality_classifications").execute();
     await db.deleteFrom("cluster_members").execute();
     await db.deleteFrom("story_clusters").execute();
     await db.deleteFrom("documents").execute();
@@ -355,6 +367,63 @@ describe("DocumentRepository.getRankedByEditionAndPartition", () => {
         .execute();
     }
     return cluster.id;
+  }
+
+  let promptCounter = 0;
+  async function seedQuality(
+    documentId: string,
+    label: string,
+    confidence: number,
+  ): Promise<void> {
+    promptCounter += 1;
+    const section = await db
+      .insertInto("document_sections")
+      .values({
+        document_id: documentId,
+        section_order: promptCounter,
+      })
+      .returningAll()
+      .executeTakeFirstOrThrow();
+    const chunkId = `${documentId}-chunk-${promptCounter}`;
+    await db
+      .insertInto("document_chunks")
+      .values({
+        id: chunkId,
+        document_id: documentId,
+        section_id: section.id,
+        chunk_sequence: 0,
+        content_text: "x",
+        token_count: 1,
+        start_offset: 0,
+        end_offset: 1,
+        paragraph_start: 0,
+        paragraph_end: 0,
+      })
+      .execute();
+    const prompt = await db
+      .insertInto("prompt_versions")
+      .values({
+        name: `quality-test-${promptCounter}`,
+        version: 1,
+        template: "{}",
+        purpose: "test",
+      })
+      .returningAll()
+      .executeTakeFirstOrThrow();
+    await db
+      .insertInto("quality_classifications")
+      .values({
+        chunk_id: chunkId,
+        document_id: documentId,
+        label,
+        confidence,
+        prompt_id: prompt.id,
+        prompt_version: prompt.version,
+        model: "test",
+        provider: "test",
+        input_hash: `h-${promptCounter}`,
+      })
+      .execute();
   }
 
   it("returns kept=[] excluded=[] when there are no documents", async () => {
@@ -513,5 +582,80 @@ describe("DocumentRepository.getRankedByEditionAndPartition", () => {
     expect(result.kept.every((d) => d.partition_key === "youtube")).toBe(true);
     expect(result.kept.length).toBe(3);
     void masterIds;
+  });
+
+  it("within a cluster, higher-confidence docs come before lower-confidence docs at the same label", async () => {
+    const ids = await seedDocs(2, "qc");
+    await seedCluster(0, "top", ids);
+    await seedQuality(ids[0]!, "high", 0.9);
+    await seedQuality(ids[1]!, "high", 0.5);
+
+    const result = await repo.getRankedByEditionAndPartition(
+      editionId,
+      "master",
+      50,
+    );
+    expect(result.kept.map((d) => d.id)).toEqual([ids[0]!, ids[1]!]);
+  });
+
+  it("within a cluster, docs with higher-ranked quality labels come before lower-ranked ones", async () => {
+    const ids = await seedDocs(3, "ql");
+    await seedCluster(0, "top", ids);
+    await seedQuality(ids[0]!, "low", 0.9);
+    await seedQuality(ids[1]!, "medium", 0.9);
+    await seedQuality(ids[2]!, "high", 0.9);
+
+    const result = await repo.getRankedByEditionAndPartition(
+      editionId,
+      "master",
+      50,
+    );
+    expect(result.kept.map((d) => d.id)).toEqual([
+      ids[2]!,
+      ids[1]!,
+      ids[0]!,
+    ]);
+  });
+
+  it("within a cluster, unclassified docs sort after classified docs at the same cluster", async () => {
+    const ids = await seedDocs(2, "qu");
+    await seedCluster(0, "top", ids);
+    await seedQuality(ids[0]!, "medium", 0.8);
+
+    const result = await repo.getRankedByEditionAndPartition(
+      editionId,
+      "master",
+      50,
+    );
+    expect(result.kept.map((d) => d.id)).toEqual([ids[0]!, ids[1]!]);
+  });
+
+  it("across clusters, cluster_order is the primary signal regardless of quality", async () => {
+    const ids = await seedDocs(2, "cross");
+    await seedCluster(0, "top", [ids[0]!]);
+    await seedCluster(1, "second", [ids[1]!]);
+    await seedQuality(ids[0]!, "low", 0.5);
+    await seedQuality(ids[1]!, "high", 0.99);
+
+    const result = await repo.getRankedByEditionAndPartition(
+      editionId,
+      "master",
+      50,
+    );
+    expect(result.kept.map((d) => d.id)).toEqual([ids[0]!, ids[1]!]);
+  });
+
+  it("unclustered docs sort after clustered docs even when unclustered have higher quality", async () => {
+    const ids = await seedDocs(2, "uncq");
+    await seedCluster(0, "top", [ids[1]!]);
+    await seedQuality(ids[0]!, "high", 0.99);
+    await seedQuality(ids[1]!, "low", 0.5);
+
+    const result = await repo.getRankedByEditionAndPartition(
+      editionId,
+      "master",
+      50,
+    );
+    expect(result.kept.map((d) => d.id)).toEqual([ids[1]!, ids[0]!]);
   });
 });

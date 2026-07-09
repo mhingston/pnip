@@ -133,9 +133,25 @@ export function createDocumentRepository(db: Kysely<Database>): DocumentReposito
         .groupBy("cm.document_id")
         .as("bc");
 
+      const docQuality = db
+        .selectFrom("quality_classifications as qc")
+        .select([
+          "qc.document_id",
+          sql<number>`min(case
+        when qc.label = 'high' then 1
+        when qc.label = 'medium' then 2
+        when qc.label = 'low' then 3
+        else 4
+      end)`.as("label_rank"),
+          sql<number>`avg(qc.confidence)`.as("avg_confidence"),
+        ])
+        .groupBy("qc.document_id")
+        .as("dq");
+
       const rows = await db
         .selectFrom("documents as d")
         .leftJoin(bestCluster, "bc.document_id", "d.id")
+        .leftJoin(docQuality, "dq.document_id", "d.id")
         .select([
           "d.id",
           "d.edition_id",
@@ -154,15 +170,24 @@ export function createDocumentRepository(db: Kysely<Database>): DocumentReposito
           "d.created_at",
           "d.partition_key",
           "bc.best_cluster_order",
+          "dq.label_rank",
+          "dq.avg_confidence",
         ])
         .where("d.edition_id", "=", editionId)
         .where("d.partition_key", "=", partitionKey)
         .orderBy("bc.best_cluster_order", "asc")
+        .orderBy("dq.label_rank", "asc")
+        .orderBy("dq.avg_confidence", "desc")
         .orderBy("d.id", "asc")
         .execute();
 
       const docs: DocumentRow[] = rows.map((r) => {
-        const { best_cluster_order: _omit, ...row } = r;
+        const {
+          best_cluster_order: _bc,
+          label_rank: _lr,
+          avg_confidence: _ac,
+          ...row
+        } = r;
         return row as DocumentRow;
       });
 
