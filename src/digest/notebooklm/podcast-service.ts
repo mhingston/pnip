@@ -45,13 +45,15 @@ export interface PodcastServiceResult {
   url: string | null;
   localPath: string | null;
   durationSeconds: number | null;
-  status: "ready" | "generating" | "failed";
+  status: "ready" | "generating" | "failed" | "skipped";
   alreadyExisted: boolean;
   failureReason: string | null;
+  partitionKey: string;
 }
 
 export interface GeneratePodcastInput {
   editionId: string;
+  partitionKey?: string;
   /**
    * When true (opt-in), the call blocks until NotebookLM finishes generating
    * the audio, then downloads the file and marks the row `ready`. Default
@@ -66,12 +68,14 @@ export interface PodcastService {
   generate(input: GeneratePodcastInput): Promise<PodcastServiceResult>;
   generateForDate(input: {
     editionDate: string | Date;
+    partitionKey?: string;
     wait?: boolean;
   }): Promise<PodcastServiceResult>;
 }
 
 const DEFAULT_FORMAT: "deep-dive" = "deep-dive";
 const DEFAULT_LENGTH: "default" = "default";
+const DEFAULT_PARTITION_KEY = "master";
 const DEFAULT_INSTRUCTIONS =
   "Produce a deep-dive conversational audio overview of this edition's curated sources and digest narrative. Highlight cross-source themes, factual claims, and any points of disagreement. Speak to an informed general audience.";
 const DEFAULT_ARTIFACT_WAIT_TIMEOUT_SEC = 1500;
@@ -121,14 +125,16 @@ export function createPodcastService(
       url: row.url,
       localPath: row.local_path,
       durationSeconds: row.duration_seconds,
-      status: row.status as "ready" | "generating" | "failed",
+      status: row.status as "ready" | "generating" | "failed" | "skipped",
       alreadyExisted: options.alreadyExisted,
       failureReason: options.failureReason ?? row.failure_reason ?? null,
+      partitionKey: row.partition_key,
     };
   }
 
   async function ensureFailedRow(input: {
     editionId: string;
+    partitionKey: string;
     row: PodcastRow | null;
     notebookId: string | null;
     reason: string;
@@ -143,6 +149,7 @@ export function createPodcastService(
       } catch (updateErr) {
         deps.logger?.error("podcast: failed to mark existing row failed", {
           editionId: input.editionId,
+          partitionKey: input.partitionKey,
           podcastId: input.row.id,
           reason: input.reason,
           error:
@@ -155,6 +162,7 @@ export function createPodcastService(
     try {
       await deps.podcastRepo.createForEdition({
         editionId: input.editionId,
+        partitionKey: input.partitionKey,
         notebookId: input.notebookId,
         artifactExternalId: PENDING_ARTIFACT_PLACEHOLDER,
         status: "failed",
@@ -162,7 +170,7 @@ export function createPodcastService(
       });
     } catch (err) {
       if (err instanceof PodcastConflictError) {
-        const after = await deps.podcastRepo.getByEdition(input.editionId);
+        const after = await deps.podcastRepo.getByNotebookId(input.notebookId);
         if (after) {
           await deps.podcastRepo.updateDelivery(after.id, {
             status: "failed",
@@ -177,6 +185,7 @@ export function createPodcastService(
   }
 
   async function generate(input: GeneratePodcastInput): Promise<PodcastServiceResult> {
+    const partitionKey = input.partitionKey ?? DEFAULT_PARTITION_KEY;
     const edition = await resolveEdition(input.editionId);
 
     const markdown = await deps.markdownDigestRepo.getByEdition(
@@ -191,30 +200,38 @@ export function createPodcastService(
       );
     }
 
-    const notebook = await deps.notebookRepo.getByEdition(input.editionId);
+    const notebook = await deps.notebookRepo.getByEditionAndPartition(
+      input.editionId,
+      partitionKey,
+    );
     if (!notebook) {
       throw new Error(
-        `no notebook for edition ${input.editionId}; ` +
+        `no notebook for edition ${input.editionId} partition '${partitionKey}'; ` +
           `run "digestive generate-notebook --date ${formatPublicationDate(
             edition.publication_date,
-          )}" first`,
+          )} --partition ${partitionKey}" first`,
       );
     }
     if (notebook.status !== "ready") {
       throw new Error(
-        `notebook for edition ${input.editionId} is in status '${notebook.status}'; ` +
+        `notebook for edition ${input.editionId} partition '${partitionKey}' is in status '${notebook.status}'; ` +
           `audio generation requires all sources to be ingested (status='ready'). ` +
           `Re-run "digestive generate-notebook --date ${formatPublicationDate(
             edition.publication_date,
-          )} --wait" to poll until the notebook is ready, then run generate-podcast again.`,
+          )} --partition ${partitionKey} --wait" to poll until the notebook is ready, then run generate-podcast again.`,
       );
     }
 
-    const existing = await deps.podcastRepo.getByEdition(input.editionId);
+    const existing = await deps.podcastRepo.getByNotebookId(notebook.id);
     if (existing && existing.status === "ready" && existing.url) {
       deps.logger?.info(
         "podcast already ready for edition; idempotent return",
-        { editionId: input.editionId, podcastId: existing.id },
+        {
+          editionId: input.editionId,
+          partitionKey,
+          notebookId: notebook.id,
+          podcastId: existing.id,
+        },
       );
       return rowToResult(existing, edition, { alreadyExisted: true });
     }
@@ -241,6 +258,7 @@ export function createPodcastService(
         try {
           row = await deps.podcastRepo.createForEdition({
             editionId: input.editionId,
+            partitionKey,
             notebookId: notebook.id,
             artifactExternalId: PENDING_ARTIFACT_PLACEHOLDER,
             format,
@@ -250,11 +268,16 @@ export function createPodcastService(
           });
         } catch (err) {
           if (err instanceof PodcastConflictError) {
-            const after = await deps.podcastRepo.getByEdition(input.editionId);
+            const after = await deps.podcastRepo.getByNotebookId(notebook.id);
             if (after && after.status === "ready" && after.url) {
               deps.logger?.info(
                 "podcast race resolved; returning existing ready row",
-                { editionId: input.editionId, podcastId: after.id },
+                {
+                  editionId: input.editionId,
+                  partitionKey,
+                  notebookId: notebook.id,
+                  podcastId: after.id,
+                },
               );
               return rowToResult(after, edition, { alreadyExisted: true });
             }
@@ -300,6 +323,8 @@ export function createPodcastService(
 
         deps.logger?.info("podcast generation kicked off", {
           editionId: input.editionId,
+          partitionKey,
+          notebookId: notebook.id,
           podcastId: row.id,
           artifactExternalId: row.artifact_external_id,
         });
@@ -371,6 +396,7 @@ export function createPodcastService(
           "podcast download failed; keeping URL as canonical artifact",
           {
             editionId: input.editionId,
+            partitionKey,
             podcastId: row.id,
             destinationPath,
             error: err instanceof Error ? err : new Error(String(err)),
@@ -406,6 +432,8 @@ export function createPodcastService(
 
       deps.logger?.info("podcast ready", {
         editionId: input.editionId,
+        partitionKey,
+        notebookId: notebook.id,
         podcastId: updated.id,
         artifactExternalId: updated.artifact_external_id,
         localPath: updated.local_path,
@@ -419,6 +447,7 @@ export function createPodcastService(
       const reason = failureReasonOf(err);
       await ensureFailedRow({
         editionId: input.editionId,
+        partitionKey,
         row,
         notebookId: notebook.id,
         reason,
@@ -428,12 +457,12 @@ export function createPodcastService(
   }
 
   return {
-    async generateForDate({ editionDate, wait }) {
+    async generateForDate({ editionDate, partitionKey, wait }) {
       const edition = await deps.editionRepo.getByDate(editionDate);
       if (!edition) {
         throw new Error(`no edition found for date ${String(editionDate)}`);
       }
-      return generate({ editionId: edition.id, wait });
+      return generate({ editionId: edition.id, partitionKey, wait });
     },
     generate,
   };

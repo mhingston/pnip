@@ -43,6 +43,7 @@ function fakeEdition(overrides?: Partial<Edition>): Edition {
     failure_reason: null,
     cluster_stories_enqueued_at: null,
     metadata: null,
+    partition_key: overrides?.partition_key ?? "master",
   };
 }
 
@@ -74,6 +75,7 @@ function fakeDocument(overrides?: Partial<DocumentRow>): DocumentRow {
     content_text: null,
     metadata: overrides?.metadata ?? null,
     created_at: new Date(),
+    partition_key: overrides?.partition_key ?? "master",
   };
 }
 
@@ -161,6 +163,7 @@ function makeFakeDocRepo(opts: {
     getById: vi.fn().mockResolvedValue(opts.byId),
     getByEdition: vi.fn().mockResolvedValue([]),
     getByEditionAndUrl: vi.fn().mockResolvedValue(opts.byEditionAndUrl),
+    getByEditionAndPartition: vi.fn().mockResolvedValue([]),
   };
 }
 

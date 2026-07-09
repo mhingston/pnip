@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
+import type { Kysely } from "kysely";
 import {
   createPublicationService,
   PublicationGateFailedError,
@@ -9,6 +10,7 @@ import {
   InvalidEditionTransitionError,
 } from "../editions/edition-repository.js";
 import type {
+  Database,
   Edition,
   EditionStatus,
 } from "../database/kysely.js";
@@ -43,6 +45,7 @@ function makeEdition(overrides: Partial<Edition> = {}): Edition {
     failure_reason: null,
     cluster_stories_enqueued_at: null,
     metadata: null,
+    partition_key: "master",
     ...overrides,
   };
 }
@@ -94,6 +97,7 @@ function makeNotebook(overrides: Partial<NotebookRow> = {}): NotebookRow {
     provider_response: null,
     created_at: new Date(),
     completed_at: new Date(),
+    partition_key: "master",
     ...overrides,
   };
 }
@@ -116,6 +120,7 @@ function makePodcast(overrides: Partial<PodcastRow> = {}): PodcastRow {
     started_at: new Date(),
     completed_at: new Date(),
     created_at: new Date(),
+    partition_key: "master",
     ...overrides,
   };
 }
@@ -130,8 +135,15 @@ interface FakeDeps {
     };
     markdownDigestRepo: { getByEdition: ReturnType<typeof vi.fn> };
     emailDigestRepo: { getByEdition: ReturnType<typeof vi.fn> };
-    notebookRepo: { getByEdition: ReturnType<typeof vi.fn> };
-    podcastRepo: { getByEdition: ReturnType<typeof vi.fn> };
+    notebookRepo: {
+      getByEdition: ReturnType<typeof vi.fn>;
+      getByEditionAndPartition: ReturnType<typeof vi.fn>;
+      getById: ReturnType<typeof vi.fn>;
+    };
+    podcastRepo: {
+      getByEdition: ReturnType<typeof vi.fn>;
+      getByNotebookId: ReturnType<typeof vi.fn>;
+    };
     jobQueue: { cancelForEdition: ReturnType<typeof vi.fn> };
   };
 }
@@ -144,8 +156,15 @@ function makeFakeDeps(): FakeDeps {
   };
   const markdownDigestRepo = { getByEdition: vi.fn() };
   const emailDigestRepo = { getByEdition: vi.fn() };
-  const notebookRepo = { getByEdition: vi.fn() };
-  const podcastRepo = { getByEdition: vi.fn() };
+  const notebookRepo = {
+    getByEdition: vi.fn(),
+    getByEditionAndPartition: vi.fn(),
+    getById: vi.fn(),
+  };
+  const podcastRepo = {
+    getByEdition: vi.fn(),
+    getByNotebookId: vi.fn(),
+  };
   const jobQueue = { cancelForEdition: vi.fn() };
 
   const deps: PublicationServiceDeps = {
@@ -622,5 +641,278 @@ describe("publishForDate", () => {
     await expect(
       svc.publishForDate({ editionDate: "2030-01-01" }),
     ).rejects.toThrow(/no edition found for date 2030-01-01/);
+  });
+});
+
+function makeFakeDb(counts: Record<string, number>): Kysely<Database> {
+  const rows = Object.entries(counts).map(([partition_key, n]) => ({
+    partition_key,
+    n: n as number,
+  }));
+  const chain: Record<string, unknown> = {};
+  chain["select"] = vi.fn().mockReturnValue(chain);
+  chain["where"] = vi.fn().mockReturnValue(chain);
+  chain["groupBy"] = vi.fn().mockReturnValue(chain);
+  chain["execute"] = vi.fn().mockResolvedValue(rows);
+  const db = { selectFrom: vi.fn().mockReturnValue(chain) };
+  return db as unknown as Kysely<Database>;
+}
+
+interface FakeDepsWithConfig {
+  deps: PublicationServiceDeps;
+  mocks: FakeDeps["mocks"];
+}
+
+function makeFakeDepsWithConfig(input: {
+  partitionConfig: Record<string, { min_articles?: number; enabled?: boolean; with_podcast?: boolean }>;
+  documentCounts: Record<string, number>;
+  partitionNotebook?: { status: string };
+  partitionPodcast?: { status: string; url: string | null };
+}): FakeDepsWithConfig {
+  const base = makeFakeDeps();
+  const db = makeFakeDb(input.documentCounts);
+  const deps: PublicationServiceDeps = {
+    ...base.deps,
+    db,
+    partitionConfig: input.partitionConfig,
+  };
+  if (input.partitionNotebook) {
+    base.mocks.notebookRepo.getByEditionAndPartition.mockResolvedValue(
+      makeNotebook(input.partitionNotebook),
+    );
+    base.mocks.notebookRepo.getById.mockResolvedValue(
+      makeNotebook(input.partitionNotebook),
+    );
+  } else {
+    base.mocks.notebookRepo.getByEditionAndPartition.mockResolvedValue(
+      undefined,
+    );
+  }
+  if (input.partitionPodcast) {
+    base.mocks.podcastRepo.getByNotebookId.mockResolvedValue(
+      makePodcast(input.partitionPodcast),
+    );
+  } else {
+    base.mocks.podcastRepo.getByNotebookId.mockResolvedValue(undefined);
+  }
+  return { deps, mocks: base.mocks };
+}
+
+describe("checkCompletion with partition config", () => {
+  function stubMasterArtifactsReady(
+    mocks: FakeDeps["mocks"],
+  ): void {
+    mocks.editionRepo.getById.mockResolvedValue(makeEdition());
+    mocks.markdownDigestRepo.getByEdition.mockResolvedValue(makeMarkdown());
+    mocks.emailDigestRepo.getByEdition.mockResolvedValue(
+      makeEmail({ delivery_status: "sent" }),
+    );
+    mocks.notebookRepo.getByEdition.mockResolvedValue(
+      makeNotebook({ status: "ready" }),
+    );
+    mocks.podcastRepo.getByEdition.mockResolvedValue(
+      makePodcast({ status: "ready", url: "https://cdn.example.com/x.mp3" }),
+    );
+  }
+
+  it("empty partition config: same behaviour as before (no partitionNotebooks entries, no DB call to selectFrom)", async () => {
+    const { deps, mocks } = makeFakeDeps();
+    stubMasterArtifactsReady(mocks);
+    const svc = createPublicationService(deps);
+    const report = await svc.checkCompletion("ed-1");
+    expect(report.partitionNotebooks).toEqual([]);
+    expect(report.missingArtifacts).toEqual([]);
+    expect(mocks.notebookRepo.getByEditionAndPartition).not.toHaveBeenCalled();
+    expect(mocks.podcastRepo.getByNotebookId).not.toHaveBeenCalled();
+  });
+
+  it("enabled partition with ready notebook: gate passes; entry recorded in partitionNotebooks", async () => {
+    const { deps, mocks } = makeFakeDepsWithConfig({
+      partitionConfig: { youtube: { min_articles: 5, enabled: true } },
+      documentCounts: { master: 19, youtube: 7 },
+      partitionNotebook: { status: "ready" },
+    });
+    stubMasterArtifactsReady(mocks);
+    const svc = createPublicationService(deps);
+    const report = await svc.checkCompletion("ed-1");
+    expect(report.partitionNotebooks).toEqual([
+      {
+        partitionKey: "youtube",
+        documentCount: 7,
+        notebookReady: true,
+        podcastRequired: false,
+        podcastReady: true,
+      },
+    ]);
+    expect(report.missingArtifacts).toEqual([]);
+    expect(mocks.notebookRepo.getByEditionAndPartition).toHaveBeenCalledWith(
+      "ed-1",
+      "youtube",
+    );
+    expect(mocks.podcastRepo.getByNotebookId).not.toHaveBeenCalled();
+  });
+
+  it("enabled partition with pending notebook: gate fails with the partition notebook label", async () => {
+    const { deps, mocks } = makeFakeDepsWithConfig({
+      partitionConfig: { youtube: { min_articles: 5, enabled: true } },
+      documentCounts: { master: 19, youtube: 7 },
+      partitionNotebook: { status: "pending" },
+    });
+    stubMasterArtifactsReady(mocks);
+    const svc = createPublicationService(deps);
+    const report = await svc.checkCompletion("ed-1");
+    expect(report.partitionNotebooks[0]?.notebookReady).toBe(false);
+    expect(report.missingArtifacts).toContain(
+      "notebook not ready (partition youtube)",
+    );
+  });
+
+  it("enabled partition with no notebook row yet: gate fails", async () => {
+    const { deps, mocks } = makeFakeDepsWithConfig({
+      partitionConfig: { youtube: { min_articles: 5, enabled: true } },
+      documentCounts: { master: 19, youtube: 7 },
+    });
+    stubMasterArtifactsReady(mocks);
+    const svc = createPublicationService(deps);
+    const report = await svc.checkCompletion("ed-1");
+    expect(report.partitionNotebooks[0]?.notebookReady).toBe(false);
+    expect(report.missingArtifacts).toContain(
+      "notebook not ready (partition youtube)",
+    );
+  });
+
+  it("enabled partition below threshold: not in the report and gate is unaffected", async () => {
+    const { deps, mocks } = makeFakeDepsWithConfig({
+      partitionConfig: { youtube: { min_articles: 5, enabled: true } },
+      documentCounts: { master: 19, youtube: 4 },
+      partitionNotebook: { status: "ready" },
+    });
+    stubMasterArtifactsReady(mocks);
+    const svc = createPublicationService(deps);
+    const report = await svc.checkCompletion("ed-1");
+    expect(report.partitionNotebooks).toEqual([]);
+    expect(report.missingArtifacts).toEqual([]);
+    expect(mocks.notebookRepo.getByEditionAndPartition).not.toHaveBeenCalled();
+  });
+
+  it("enabled partition that requires podcast and has it ready: gate passes", async () => {
+    const { deps, mocks } = makeFakeDepsWithConfig({
+      partitionConfig: {
+        reddit: { min_articles: 1, enabled: true, with_podcast: true },
+      },
+      documentCounts: { master: 19, reddit: 5 },
+      partitionNotebook: { status: "ready" },
+      partitionPodcast: { status: "ready", url: "https://cdn.example.com/r.mp3" },
+    });
+    stubMasterArtifactsReady(mocks);
+    const svc = createPublicationService(deps);
+    const report = await svc.checkCompletion("ed-1");
+    expect(report.partitionNotebooks[0]?.podcastRequired).toBe(true);
+    expect(report.partitionNotebooks[0]?.podcastReady).toBe(true);
+    expect(report.missingArtifacts).toEqual([]);
+    expect(mocks.podcastRepo.getByNotebookId).toHaveBeenCalled();
+  });
+
+  it("enabled partition that requires podcast but podcast is pending: gate fails with the partition podcast label", async () => {
+    const { deps, mocks } = makeFakeDepsWithConfig({
+      partitionConfig: {
+        reddit: { min_articles: 1, enabled: true, with_podcast: true },
+      },
+      documentCounts: { master: 19, reddit: 5 },
+      partitionNotebook: { status: "ready" },
+      partitionPodcast: { status: "pending", url: null },
+    });
+    stubMasterArtifactsReady(mocks);
+    const svc = createPublicationService(deps);
+    const report = await svc.checkCompletion("ed-1");
+    expect(report.partitionNotebooks[0]?.podcastReady).toBe(false);
+    expect(report.missingArtifacts).toContain(
+      "podcast not ready or no URL (partition reddit)",
+    );
+  });
+
+  it("enabled partition that requires podcast but podcast is missing entirely: gate fails", async () => {
+    const { deps, mocks } = makeFakeDepsWithConfig({
+      partitionConfig: {
+        reddit: { min_articles: 1, enabled: true, with_podcast: true },
+      },
+      documentCounts: { master: 19, reddit: 5 },
+      partitionNotebook: { status: "ready" },
+    });
+    stubMasterArtifactsReady(mocks);
+    const svc = createPublicationService(deps);
+    const report = await svc.checkCompletion("ed-1");
+    expect(report.partitionNotebooks[0]?.podcastReady).toBe(false);
+    expect(report.missingArtifacts).toContain(
+      "podcast not ready or no URL (partition reddit)",
+    );
+  });
+
+  it("enabled: false partitions are skipped (not checked, not in report)", async () => {
+    const { deps, mocks } = makeFakeDepsWithConfig({
+      partitionConfig: { youtube: { min_articles: 1, enabled: false } },
+      documentCounts: { master: 19, youtube: 50 },
+      partitionNotebook: { status: "pending" },
+    });
+    stubMasterArtifactsReady(mocks);
+    const svc = createPublicationService(deps);
+    const report = await svc.checkCompletion("ed-1");
+    expect(report.partitionNotebooks).toEqual([]);
+    expect(report.missingArtifacts).toEqual([]);
+    expect(mocks.notebookRepo.getByEditionAndPartition).not.toHaveBeenCalled();
+  });
+
+  it("multiple enabled partitions: each is checked and recorded", async () => {
+    const { deps, mocks } = makeFakeDepsWithConfig({
+      partitionConfig: {
+        youtube: { min_articles: 5, enabled: true },
+        blogs: { min_articles: 3, enabled: true },
+        reddit: { min_articles: 5, enabled: true },
+      },
+      documentCounts: { master: 19, youtube: 7, blogs: 5, reddit: 1 },
+      partitionNotebook: { status: "pending" },
+    });
+    stubMasterArtifactsReady(mocks);
+    const svc = createPublicationService(deps);
+    const report = await svc.checkCompletion("ed-1");
+    const keys = report.partitionNotebooks.map((p) => p.partitionKey).sort();
+    expect(keys).toEqual(["blogs", "youtube"]);
+    const labels = report.missingArtifacts.filter((m) =>
+      m.startsWith("notebook not ready (partition "),
+    );
+    expect(labels).toContain("notebook not ready (partition youtube)");
+    expect(labels).toContain("notebook not ready (partition blogs)");
+    expect(labels).not.toContain("notebook not ready (partition reddit)");
+  });
+
+  it("publish() throws PublicationGateFailedError when a partition notebook is missing", async () => {
+    const { deps, mocks } = makeFakeDepsWithConfig({
+      partitionConfig: { youtube: { min_articles: 5, enabled: true } },
+      documentCounts: { master: 19, youtube: 7 },
+      partitionNotebook: { status: "pending" },
+    });
+    mocks.editionRepo.getById.mockResolvedValue(
+      makeEdition({ status: "ready" }),
+    );
+    mocks.markdownDigestRepo.getByEdition.mockResolvedValue(makeMarkdown());
+    mocks.emailDigestRepo.getByEdition.mockResolvedValue(
+      makeEmail({ delivery_status: "sent" }),
+    );
+    mocks.notebookRepo.getByEdition.mockResolvedValue(
+      makeNotebook({ status: "ready" }),
+    );
+    mocks.podcastRepo.getByEdition.mockResolvedValue(
+      makePodcast({ status: "ready", url: "https://cdn.example.com/x.mp3" }),
+    );
+
+    const svc = createPublicationService(deps);
+    await expect(svc.publish({ editionId: "ed-1" })).rejects.toBeInstanceOf(
+      PublicationGateFailedError,
+    );
+    await expect(svc.publish({ editionId: "ed-1" })).rejects.toThrow(
+      /notebook not ready \(partition youtube\)/,
+    );
+    expect(mocks.editionRepo.transition).not.toHaveBeenCalled();
+    expect(mocks.jobQueue.cancelForEdition).not.toHaveBeenCalled();
   });
 });

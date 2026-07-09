@@ -33,6 +33,7 @@ function fakeEdition(overrides?: Partial<Edition>): Edition {
     failure_reason: null,
     cluster_stories_enqueued_at: null,
     metadata: null,
+    partition_key: overrides?.partition_key ?? "master",
     ...overrides,
   };
 }

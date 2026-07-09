@@ -1,16 +1,34 @@
+import type { Kysely } from "kysely";
 import {
   PublicationGateFailedError,
   type CompletionReport,
   type PublicationService,
   type PublicationServiceResult,
 } from "../publication/publication-service.js";
-import type { Edition } from "../database/kysely.js";
+import type { Database, Edition } from "../database/kysely.js";
+import type { PartitionConfig } from "../config/index.js";
+import { PARTITION_MASTER } from "../discovery/partition-resolver.js";
+
+const DEFAULT_MIN_ARTICLES = 5;
+
+export interface PartitionBreakdownEntry {
+  partitionKey: string;
+  documentCount: number;
+  active: boolean;
+  minArticles: number;
+  enabled: boolean;
+  notebookReady: boolean | null;
+  podcastRequired: boolean | null;
+  podcastReady: boolean | null;
+}
 
 export interface PublishEditionCommandDeps {
   service: PublicationService;
   editionLookup: {
     getByDate(editionDate: string | Date): Promise<Edition | undefined>;
   };
+  db?: Kysely<Database>;
+  partitionConfig?: PartitionConfig;
   editionDate?: string | Date;
   dryRun?: boolean;
   log?: (msg: string) => void;
@@ -24,6 +42,83 @@ export interface PublishEditionCommandResult {
 
 export function todayDate(): string {
   return new Date().toISOString().slice(0, 10);
+}
+
+export async function buildPartitionBreakdown(input: {
+  db: Kysely<Database>;
+  editionId: string;
+  config: PartitionConfig;
+  completion: CompletionReport;
+}): Promise<PartitionBreakdownEntry[]> {
+  const { db, editionId, config, completion } = input;
+  const rows = await db
+    .selectFrom("documents")
+    .select((eb) => [
+      "partition_key",
+      eb.fn.count<number>("id").as("n"),
+    ])
+    .where("edition_id", "=", editionId)
+    .groupBy("partition_key")
+    .execute();
+  const counts = new Map<string, number>();
+  for (const r of rows) {
+    counts.set(r.partition_key, Number(r.n));
+  }
+
+  const breakdown: PartitionBreakdownEntry[] = [
+    {
+      partitionKey: PARTITION_MASTER,
+      documentCount: counts.get(PARTITION_MASTER) ?? 0,
+      active: true,
+      minArticles: 0,
+      enabled: true,
+      notebookReady: completion.notebookReady,
+      podcastRequired: true,
+      podcastReady: completion.podcastReady,
+    },
+  ];
+
+  for (const [partitionKey, entry] of Object.entries(config)) {
+    if (entry.enabled === false) continue;
+    const minArticles = entry.min_articles ?? DEFAULT_MIN_ARTICLES;
+    const documentCount = counts.get(partitionKey) ?? 0;
+    const active = documentCount >= minArticles;
+    const partitionStatus = completion.partitionNotebooks.find(
+      (p) => p.partitionKey === partitionKey,
+    );
+    breakdown.push({
+      partitionKey,
+      documentCount,
+      active,
+      minArticles,
+      enabled: true,
+      notebookReady: partitionStatus?.notebookReady ?? null,
+      podcastRequired: partitionStatus?.podcastRequired ?? null,
+      podcastReady: partitionStatus?.podcastReady ?? null,
+    });
+  }
+
+  return breakdown;
+}
+
+function renderBreakdownLine(entry: PartitionBreakdownEntry): string {
+  const docStr = `${entry.documentCount} docs`;
+  if (entry.partitionKey === PARTITION_MASTER) {
+    return `  master: ${docStr}, ` +
+      `notebook=${entry.notebookReady ? "ready" : "pending"}, ` +
+      `podcast=${entry.podcastReady ? "ready" : "pending"}`;
+  }
+  if (!entry.active) {
+    return `  ${entry.partitionKey}: ${docStr}, ` +
+      `skipped (below min_articles=${entry.minArticles})`;
+  }
+  const notebookState = entry.notebookReady ? "ready" : "pending";
+  if (entry.podcastRequired) {
+    const podcastState = entry.podcastReady ? "ready" : "pending";
+    return `  ${entry.partitionKey}: ${docStr}, ` +
+      `notebook=${notebookState}, podcast=${podcastState}`;
+  }
+  return `  ${entry.partitionKey}: ${docStr}, notebook=${notebookState}`;
 }
 
 export async function runPublishEditionCommand(
@@ -42,11 +137,34 @@ export async function runPublishEditionCommand(
     }
 
     const report = await deps.service.checkCompletion(edition.id);
+
+    log(
+      `publish-edition --dry-run: partition breakdown for edition ${edition.id} ` +
+        `(date=${String(editionDate)}):`,
+    );
+    if (deps.db) {
+      const breakdown = await buildPartitionBreakdown({
+        db: deps.db,
+        editionId: edition.id,
+        config: deps.partitionConfig ?? {},
+        completion: report,
+      });
+      for (const entry of breakdown) {
+        log(renderBreakdownLine(entry));
+      }
+    } else {
+      log(`  master: notebook=${report.notebookReady ? "ready" : "pending"}, ` +
+        `podcast=${report.podcastReady ? "ready" : "pending"}`);
+    }
+
     const allReady =
       report.markdownNonEmpty &&
       report.emailSent &&
       report.notebookReady &&
-      report.podcastReady;
+      report.podcastReady &&
+      report.partitionNotebooks.every(
+        (p) => p.notebookReady && (!p.podcastRequired || p.podcastReady),
+      );
 
     if (allReady) {
       log(
@@ -163,19 +281,24 @@ Flags:
   --dry-run              read-only gate check; does not mutate state. Exits 0
                          if all four artifacts are ready (markdown digest
                          exists & non-empty, email sent, notebook ready,
-                         podcast ready with a URL); exits 1 and lists the
-                         missing artifacts otherwise.
+                         podcast ready with a URL) AND every active partition
+                         (per PARTITION_CONFIG) has its notebook ready (and
+                         its podcast ready if with_podcast=true); exits 1
+                         and lists the missing artifacts otherwise.
   -h, --help             show this help
 
 The command:
   1. resolves the Edition by publication date
-  2. (with --dry-run) calls checkCompletion(editionId) only; logs the report
+  2. (with --dry-run) calls checkCompletion(editionId) only; logs a per-partition
+     breakdown (master plus each configured partition) and the report
   3. (without --dry-run) calls publishForDate({ editionDate }):
      - verifies the completion gate (§49): markdown_digests row exists and
        is non-empty, email_digests row with delivery_status='sent' exists,
        notebooks row with status='ready' exists, podcasts row with
-       status='ready' and a non-null URL exists. Gate failure throws
-       PublicationGateFailedError and exits 1.
+       status='ready' and a non-null URL exists. When PARTITION_CONFIG is
+       set, every active non-master partition must also have a ready
+       notebook (and ready podcast if with_podcast=true). Gate failure
+       throws PublicationGateFailedError and exits 1.
      - transitions Ready → Publishing → Published (Publishing → Failed is
        handled by InvalidEditionTransitionError from the repo).
      - cancels all pending and running processing_jobs for the edition

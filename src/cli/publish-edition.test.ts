@@ -1,6 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
+import type { Kysely } from "kysely";
 import {
   PUBLISH_EDITION_HELP,
+  buildPartitionBreakdown,
   parsePublishEditionFlags,
   runPublishEditionCommand,
   todayDate,
@@ -11,7 +13,8 @@ import {
   type PublicationService,
   type PublicationServiceResult,
 } from "../publication/publication-service.js";
-import type { Edition } from "../database/kysely.js";
+import type { Database, Edition } from "../database/kysely.js";
+import type { PartitionConfig } from "../config/index.js";
 
 function makeFakeService(
   impl: Partial<PublicationService> = {},
@@ -36,6 +39,21 @@ function makeFakeLookup(
   };
 }
 
+function makeFakeDb(
+  counts: Record<string, number>,
+): Kysely<Database> {
+  const rows = Object.entries(counts).map(([partition_key, n]) => ({
+    partition_key,
+    n: n as number,
+  }));
+  const chain: Record<string, unknown> = {};
+  chain["select"] = vi.fn().mockReturnValue(chain);
+  chain["where"] = vi.fn().mockReturnValue(chain);
+  chain["groupBy"] = vi.fn().mockReturnValue(chain);
+  chain["execute"] = vi.fn().mockResolvedValue(rows);
+  return { selectFrom: vi.fn().mockReturnValue(chain) } as unknown as Kysely<Database>;
+}
+
 function makeEdition(overrides: Partial<Edition> = {}): Edition {
   return {
     id: "ed-1",
@@ -48,6 +66,7 @@ function makeEdition(overrides: Partial<Edition> = {}): Edition {
     failure_reason: null,
     cluster_stories_enqueued_at: null,
     metadata: null,
+    partition_key: "master",
     ...overrides,
   };
 }
@@ -61,6 +80,7 @@ function makeReadyCompletionReport(
     emailSent: true,
     notebookReady: true,
     podcastReady: true,
+    partitionNotebooks: [],
     missingArtifacts: [],
     ...overrides,
   };
@@ -204,6 +224,220 @@ describe("runPublishEditionCommand", () => {
     expect(logs.some((l) => l.includes("no edition"))).toBe(true);
     expect(logs.some((l) => l.includes("2030-01-01"))).toBe(true);
     expect(service.checkCompletion).not.toHaveBeenCalled();
+  });
+
+  it("dry-run with empty partition config: only master in breakdown; master status reflects completion", async () => {
+    const service = makeFakeService({
+      checkCompletion: vi
+        .fn()
+        .mockResolvedValue(makeReadyCompletionReport()),
+    });
+    const lookup = makeFakeLookup({
+      getByDate: vi.fn().mockResolvedValue(makeEdition()),
+    });
+    const db = makeFakeDb({ master: 19 });
+    const logs: string[] = [];
+    const result = await runPublishEditionCommand({
+      service,
+      editionLookup: lookup,
+      db,
+      partitionConfig: {},
+      editionDate: "2026-07-07",
+      dryRun: true,
+      log: (m) => {
+        logs.push(m);
+      },
+    });
+    expect(result.exitCode).toBe(0);
+    expect(logs.some((l) => l.startsWith("  master:"))).toBe(true);
+    expect(logs.some((l) => l.includes("notebook=ready"))).toBe(true);
+    expect(logs.some((l) => l.startsWith("  youtube"))).toBe(false);
+    expect(logs.some((l) => l.startsWith("  blogs"))).toBe(false);
+  });
+
+  it("dry-run with configured partition above threshold: shows configured partition with correct count", async () => {
+    const service = makeFakeService({
+      checkCompletion: vi.fn().mockResolvedValue(
+        makeReadyCompletionReport({
+          partitionNotebooks: [
+            {
+              partitionKey: "youtube",
+              documentCount: 7,
+              notebookReady: true,
+              podcastRequired: false,
+              podcastReady: true,
+            },
+          ],
+        }),
+      ),
+    });
+    const lookup = makeFakeLookup({
+      getByDate: vi.fn().mockResolvedValue(makeEdition()),
+    });
+    const db = makeFakeDb({ master: 19, youtube: 7 });
+    const config: PartitionConfig = {
+      youtube: { min_articles: 5, enabled: true },
+    };
+    const logs: string[] = [];
+    const result = await runPublishEditionCommand({
+      service,
+      editionLookup: lookup,
+      db,
+      partitionConfig: config,
+      editionDate: "2026-07-07",
+      dryRun: true,
+      log: (m) => {
+        logs.push(m);
+      },
+    });
+    expect(result.exitCode).toBe(0);
+    const ytLine = logs.find((l) => l.startsWith("  youtube:"));
+    expect(ytLine).toBeDefined();
+    expect(ytLine).toContain("7 docs");
+    expect(ytLine).toContain("notebook=ready");
+    expect(ytLine).not.toContain("skipped");
+  });
+
+  it("dry-run with partition below threshold: shows 'skipped (below min_articles=N)'", async () => {
+    const service = makeFakeService({
+      checkCompletion: vi
+        .fn()
+        .mockResolvedValue(makeReadyCompletionReport()),
+    });
+    const lookup = makeFakeLookup({
+      getByDate: vi.fn().mockResolvedValue(makeEdition()),
+    });
+    const db = makeFakeDb({ master: 19, reddit: 1 });
+    const config: PartitionConfig = {
+      reddit: { min_articles: 5, enabled: true },
+    };
+    const logs: string[] = [];
+    const result = await runPublishEditionCommand({
+      service,
+      editionLookup: lookup,
+      db,
+      partitionConfig: config,
+      editionDate: "2026-07-07",
+      dryRun: true,
+      log: (m) => {
+        logs.push(m);
+      },
+    });
+    expect(result.exitCode).toBe(0);
+    const redditLine = logs.find((l) => l.startsWith("  reddit:"));
+    expect(redditLine).toBeDefined();
+    expect(redditLine).toContain("1 docs");
+    expect(redditLine).toContain("skipped (below min_articles=5)");
+  });
+
+  it("dry-run without db: still logs the master status line from completion", async () => {
+    const service = makeFakeService({
+      checkCompletion: vi
+        .fn()
+        .mockResolvedValue(makeReadyCompletionReport()),
+    });
+    const lookup = makeFakeLookup({
+      getByDate: vi.fn().mockResolvedValue(makeEdition()),
+    });
+    const logs: string[] = [];
+    await runPublishEditionCommand({
+      service,
+      editionLookup: lookup,
+      editionDate: "2026-07-07",
+      dryRun: true,
+      log: (m) => {
+        logs.push(m);
+      },
+    });
+    expect(logs.some((l) => l.startsWith("  master:"))).toBe(true);
+  });
+
+  it("dry-run fails gate when a partition notebook is pending", async () => {
+    const service = makeFakeService({
+      checkCompletion: vi.fn().mockResolvedValue(
+        makeReadyCompletionReport({
+          partitionNotebooks: [
+            {
+              partitionKey: "youtube",
+              documentCount: 7,
+              notebookReady: false,
+              podcastRequired: false,
+              podcastReady: true,
+            },
+          ],
+          missingArtifacts: ["notebook not ready (partition youtube)"],
+        }),
+      ),
+    });
+    const lookup = makeFakeLookup({
+      getByDate: vi.fn().mockResolvedValue(makeEdition()),
+    });
+    const db = makeFakeDb({ master: 19, youtube: 7 });
+    const config: PartitionConfig = {
+      youtube: { min_articles: 5, enabled: true },
+    };
+    const logs: string[] = [];
+    const result = await runPublishEditionCommand({
+      service,
+      editionLookup: lookup,
+      db,
+      partitionConfig: config,
+      editionDate: "2026-07-07",
+      dryRun: true,
+      log: (m) => {
+        logs.push(m);
+      },
+    });
+    expect(result.exitCode).toBe(1);
+    const ytLine = logs.find((l) => l.startsWith("  youtube:"));
+    expect(ytLine).toBeDefined();
+    expect(ytLine).toContain("notebook=pending");
+    expect(
+      logs.some((l) =>
+        l.includes("notebook not ready (partition youtube)"),
+      ),
+    ).toBe(true);
+  });
+
+  it("dry-run with podcast-required partition shows notebook AND podcast state", async () => {
+    const service = makeFakeService({
+      checkCompletion: vi.fn().mockResolvedValue(
+        makeReadyCompletionReport({
+          partitionNotebooks: [
+            {
+              partitionKey: "reddit",
+              documentCount: 5,
+              notebookReady: true,
+              podcastRequired: true,
+              podcastReady: true,
+            },
+          ],
+        }),
+      ),
+    });
+    const lookup = makeFakeLookup({
+      getByDate: vi.fn().mockResolvedValue(makeEdition()),
+    });
+    const db = makeFakeDb({ master: 19, reddit: 5 });
+    const config: PartitionConfig = {
+      reddit: { min_articles: 1, enabled: true, with_podcast: true },
+    };
+    const logs: string[] = [];
+    await runPublishEditionCommand({
+      service,
+      editionLookup: lookup,
+      db,
+      partitionConfig: config,
+      editionDate: "2026-07-07",
+      dryRun: true,
+      log: (m) => {
+        logs.push(m);
+      },
+    });
+    const redditLine = logs.find((l) => l.startsWith("  reddit:"));
+    expect(redditLine).toBeDefined();
+    expect(redditLine).toContain("notebook=ready");
+    expect(redditLine).toContain("podcast=ready");
   });
 
   it("real run calls publishForDate (NOT checkCompletion), logs the result, exits 0 on published", async () => {
@@ -384,5 +618,70 @@ describe("PUBLISH_EDITION_HELP", () => {
     expect(PUBLISH_EDITION_HELP).toContain("--date");
     expect(PUBLISH_EDITION_HELP).toContain("--dry-run");
     expect(PUBLISH_EDITION_HELP).toContain("--help");
+  });
+});
+
+describe("buildPartitionBreakdown", () => {
+  it("with empty config returns just the master entry", async () => {
+    const db = makeFakeDb({ master: 19 });
+    const breakdown = await buildPartitionBreakdown({
+      db,
+      editionId: "ed-1",
+      config: {},
+      completion: makeReadyCompletionReport(),
+    });
+    expect(breakdown).toEqual([
+      {
+        partitionKey: "master",
+        documentCount: 19,
+        active: true,
+        minArticles: 0,
+        enabled: true,
+        notebookReady: true,
+        podcastRequired: true,
+        podcastReady: true,
+      },
+    ]);
+  });
+
+  it("marks configured partition as inactive when below min_articles", async () => {
+    const db = makeFakeDb({ master: 19, reddit: 1 });
+    const breakdown = await buildPartitionBreakdown({
+      db,
+      editionId: "ed-1",
+      config: { reddit: { min_articles: 5, enabled: true } },
+      completion: makeReadyCompletionReport(),
+    });
+    const reddit = breakdown.find((b) => b.partitionKey === "reddit");
+    expect(reddit).toBeDefined();
+    expect(reddit?.active).toBe(false);
+    expect(reddit?.documentCount).toBe(1);
+    expect(reddit?.minArticles).toBe(5);
+    expect(reddit?.notebookReady).toBeNull();
+  });
+
+  it("propagates partitionNotebook readiness into the breakdown entry", async () => {
+    const db = makeFakeDb({ master: 19, youtube: 7 });
+    const completion = makeReadyCompletionReport({
+      partitionNotebooks: [
+        {
+          partitionKey: "youtube",
+          documentCount: 7,
+          notebookReady: true,
+          podcastRequired: false,
+          podcastReady: true,
+        },
+      ],
+    });
+    const breakdown = await buildPartitionBreakdown({
+      db,
+      editionId: "ed-1",
+      config: { youtube: { min_articles: 5, enabled: true } },
+      completion,
+    });
+    const yt = breakdown.find((b) => b.partitionKey === "youtube");
+    expect(yt?.active).toBe(true);
+    expect(yt?.notebookReady).toBe(true);
+    expect(yt?.podcastRequired).toBe(false);
   });
 });

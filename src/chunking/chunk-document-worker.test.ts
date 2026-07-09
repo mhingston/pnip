@@ -131,6 +131,7 @@ describe("ChunkDocumentWorker", () => {
       getById: vi.fn().mockResolvedValue(undefined),
       getByEdition: vi.fn(),
       getByEditionAndUrl: vi.fn(),
+      getByEditionAndPartition: vi.fn(),
     };
     const sectionRepo: SectionRepository = {
       createBatch: vi.fn(),
@@ -182,6 +183,7 @@ describe("ChunkDocumentWorker", () => {
       getById: vi.fn().mockResolvedValue({ id: "doc-1", edition_id: "edition-1" }),
       getByEdition: vi.fn(),
       getByEditionAndUrl: vi.fn(),
+      getByEditionAndPartition: vi.fn(),
     };
     const sectionRepo: SectionRepository = {
       createBatch: vi.fn(),
@@ -232,6 +234,7 @@ describe("ChunkDocumentWorker", () => {
       getById: vi.fn().mockResolvedValue({ id: "doc-1", edition_id: "edition-1" }),
       getByEdition: vi.fn(),
       getByEditionAndUrl: vi.fn(),
+      getByEditionAndPartition: vi.fn(),
     };
     const sectionRepo: SectionRepository = {
       createBatch: vi.fn(),
@@ -312,6 +315,7 @@ describe("ChunkDocumentWorker", () => {
       getById: vi.fn().mockResolvedValue({ id: "doc-1", edition_id: "edition-1" }),
       getByEdition: vi.fn(),
       getByEditionAndUrl: vi.fn(),
+      getByEditionAndPartition: vi.fn(),
     };
     const sectionRepo: SectionRepository = {
       createBatch: vi.fn(),
@@ -365,6 +369,7 @@ describe("ChunkDocumentWorker", () => {
       getById: vi.fn().mockResolvedValue({ id: "doc-1", edition_id: "edition-1" }),
       getByEdition: vi.fn(),
       getByEditionAndUrl: vi.fn(),
+      getByEditionAndPartition: vi.fn(),
     };
     const sectionRepo: SectionRepository = {
       createBatch: vi.fn(),

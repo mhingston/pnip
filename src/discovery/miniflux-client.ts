@@ -1,3 +1,5 @@
+export type MinifluxCategory = { id: number; title: string };
+
 export interface MinifluxEntry {
   id: number;
   feedId: number;
@@ -6,6 +8,7 @@ export interface MinifluxEntry {
   hash?: string;
   publishedAt?: string;
   createdAt?: string;
+  category?: MinifluxCategory | null;
 }
 
 export interface MinifluxEntriesResponse {
@@ -46,6 +49,7 @@ interface RawMinifluxEntry {
   hash?: string;
   published_at?: string;
   created_at?: string;
+  category?: MinifluxCategory | null;
 }
 
 interface RawEntriesResponse {
@@ -62,6 +66,7 @@ function mapEntry(raw: RawMinifluxEntry): MinifluxEntry {
     hash: raw.hash,
     publishedAt: raw.published_at,
     createdAt: raw.created_at,
+    category: raw.category ?? null,
   };
 }
 

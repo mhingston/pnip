@@ -16,6 +16,7 @@ export interface Edition {
   failure_reason: string | null;
   cluster_stories_enqueued_at: Date | null;
   metadata: unknown | null;
+  partition_key: string;
 }
 
 export interface ProcessingJob {
@@ -68,6 +69,7 @@ export interface DiscoveryEvent {
   discovered_at: Date;
   metadata: unknown | null;
   created_at: Date;
+  partition_key: string;
 }
 
 export interface EntityRef {
@@ -104,6 +106,7 @@ export interface Database {
     failure_reason: string | null;
     cluster_stories_enqueued_at: Date | null;
     metadata: unknown | null;
+    partition_key: Generated<string>;
   };
   prompt_versions: {
     id: Generated<string>;
@@ -139,6 +142,7 @@ export interface Database {
     content_text: string | null;
     metadata: unknown;
     created_at: Generated<Date>;
+    partition_key: Generated<string>;
   };
   document_sections: {
     id: Generated<string>;
@@ -330,6 +334,7 @@ export interface Database {
     provider_response: unknown | null;
     created_at: Generated<Date>;
     completed_at: Date | null;
+    partition_key: Generated<string>;
   };
   podcasts: {
     id: Generated<string>;
@@ -348,6 +353,7 @@ export interface Database {
     started_at: Date | null;
     completed_at: Date | null;
     created_at: Generated<Date>;
+    partition_key: Generated<string>;
   };
   discovery_events: {
     id: Generated<string>;
@@ -361,6 +367,7 @@ export interface Database {
     discovered_at: Generated<Date>;
     metadata: unknown | null;
     created_at: Generated<Date>;
+    partition_key: Generated<string>;
   };
   signals: {
     id: Generated<string>;

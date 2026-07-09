@@ -6,14 +6,56 @@ import {
   type MetricsCommandDeps,
 } from "./metrics.js";
 import type { QueueMetrics } from "../jobs/queue/processing-job-queue.js";
-import type { EditionMetrics } from "../editions/edition-metrics.js";
-import { getEditionMetrics } from "../editions/edition-metrics.js";
+import type {
+  EditionMetrics,
+  PartitionMetrics,
+} from "../editions/edition-metrics.js";
+import {
+  getEditionMetrics,
+  getPartitionMetrics,
+} from "../editions/edition-metrics.js";
 
 vi.mock("../editions/edition-metrics.js", () => ({
   getEditionMetrics: vi.fn(),
+  getPartitionMetrics: vi.fn(),
 }));
 
 const mockedGetEditionMetrics = vi.mocked(getEditionMetrics);
+const mockedGetPartitionMetrics = vi.mocked(getPartitionMetrics);
+
+const basePartitionMetrics: PartitionMetrics = {
+  byPartition: [
+    {
+      partition_key: "master",
+      total_documents: 1234,
+      distinct_days: 30,
+      latest_edition_date: "2026-07-08",
+      latest_document_count: 19,
+    },
+    {
+      partition_key: "youtube",
+      total_documents: 367,
+      distinct_days: 29,
+      latest_edition_date: "2026-07-08",
+      latest_document_count: 22,
+    },
+    {
+      partition_key: "blogs",
+      total_documents: 226,
+      distinct_days: 39,
+      latest_edition_date: "2026-07-08",
+      latest_document_count: 5,
+    },
+    {
+      partition_key: "reddit",
+      total_documents: 154,
+      distinct_days: 26,
+      latest_edition_date: "2026-07-08",
+      latest_document_count: 1,
+    },
+  ],
+  perDayLast7Days: [],
+};
 
 function makeFakeQueue(metrics: QueueMetrics): {
   queue: MetricsCommandDeps["queue"];
@@ -89,6 +131,8 @@ describe("runMetricsCommand", () => {
   beforeEach(() => {
     mockedGetEditionMetrics.mockReset();
     mockedGetEditionMetrics.mockResolvedValue(baseEditionMetrics);
+    mockedGetPartitionMetrics.mockReset();
+    mockedGetPartitionMetrics.mockResolvedValue(basePartitionMetrics);
   });
 
   it("calls queue.getMetrics and returns exitCode 0 with both metric payloads", async () => {
@@ -104,23 +148,26 @@ describe("runMetricsCommand", () => {
     expect(getMetrics).toHaveBeenCalledTimes(1);
     expect(mockedGetEditionMetrics).toHaveBeenCalledTimes(1);
     expect(mockedGetEditionMetrics).toHaveBeenCalledWith(deps.db);
+    expect(mockedGetPartitionMetrics).toHaveBeenCalledTimes(1);
+    expect(mockedGetPartitionMetrics).toHaveBeenCalledWith(deps.db);
     expect(result.exitCode).toBe(0);
     expect(result.queue).toBe(baseQueueMetrics);
     expect(result.editions).toBe(baseEditionMetrics);
   });
 
-  it("logs exactly four summary lines starting with queue:/editions:", async () => {
+  it("logs exactly five summary lines starting with queue:/editions:/partitions:", async () => {
     const { queue } = makeFakeQueue(baseQueueMetrics);
     const log = vi.fn();
     const deps: MetricsCommandDeps = { db: {} as never, queue, log };
 
     await runMetricsCommand(deps);
 
-    expect(log).toHaveBeenCalledTimes(4);
+    expect(log).toHaveBeenCalledTimes(5);
     expect(log).toHaveBeenNthCalledWith(1, expect.stringMatching(/^queue: /));
     expect(log).toHaveBeenNthCalledWith(2, expect.stringMatching(/^queue: /));
     expect(log).toHaveBeenNthCalledWith(3, expect.stringMatching(/^editions: /));
     expect(log).toHaveBeenNthCalledWith(4, expect.stringMatching(/^editions: /));
+    expect(log).toHaveBeenNthCalledWith(5, expect.stringMatching(/^partitions: /));
   });
 
   it("queue line 1 includes pending/running/completed/failed/archived from byStatus", async () => {
@@ -197,9 +244,86 @@ describe("runMetricsCommand", () => {
     expect(fourth).toContain("lastPublishedAt=2026-07-07T08:00:00.000Z");
   });
 
+  it("partitions line lists partitions sorted by total_documents desc then partition_key asc", async () => {
+    const { queue } = makeFakeQueue(baseQueueMetrics);
+    const log = vi.fn();
+    const deps: MetricsCommandDeps = { db: {} as never, queue, log };
+    mockedGetPartitionMetrics.mockResolvedValueOnce({
+      byPartition: [
+        {
+          partition_key: "reddit",
+          total_documents: 154,
+          distinct_days: 26,
+          latest_edition_date: "2026-07-08",
+          latest_document_count: 1,
+        },
+        {
+          partition_key: "youtube",
+          total_documents: 367,
+          distinct_days: 29,
+          latest_edition_date: "2026-07-08",
+          latest_document_count: 22,
+        },
+        {
+          partition_key: "master",
+          total_documents: 1234,
+          distinct_days: 30,
+          latest_edition_date: "2026-07-08",
+          latest_document_count: 19,
+        },
+      ],
+      perDayLast7Days: [],
+    });
+
+    await runMetricsCommand(deps);
+    const fifth = log.mock.calls[4]![0] as string;
+    expect(fifth).toBe(
+      "partitions: master=1234 youtube=367 reddit=154",
+    );
+  });
+
+  it("partitions line is '(no partitions)' when no partitions exist", async () => {
+    const { queue } = makeFakeQueue(baseQueueMetrics);
+    const log = vi.fn();
+    const deps: MetricsCommandDeps = { db: {} as never, queue, log };
+    mockedGetPartitionMetrics.mockResolvedValueOnce({
+      byPartition: [],
+      perDayLast7Days: [],
+    });
+
+    await runMetricsCommand(deps);
+    const fifth = log.mock.calls[4]![0] as string;
+    expect(fifth).toBe("partitions: (no partitions)");
+  });
+
+  it("partitions line truncates with '+N more' when more than 20 partitions exist", async () => {
+    const { queue } = makeFakeQueue(baseQueueMetrics);
+    const log = vi.fn();
+    const deps: MetricsCommandDeps = { db: {} as never, queue, log };
+    const entries = Array.from({ length: 25 }, (_, i) => ({
+      partition_key: `p${String(i).padStart(2, "0")}`,
+      total_documents: 100 - i,
+      distinct_days: 5,
+      latest_edition_date: "2026-07-08",
+      latest_document_count: 1,
+    }));
+    mockedGetPartitionMetrics.mockResolvedValueOnce({
+      byPartition: entries,
+      perDayLast7Days: [],
+    });
+
+    await runMetricsCommand(deps);
+    const fifth = log.mock.calls[4]![0] as string;
+    expect(fifth).toContain("…(+5 more)");
+    const beforeSuffix = fifth.split(" …(")[0]!;
+    const parts = beforeSuffix.replace(/^partitions: /, "").split(" ");
+    expect(parts.length).toBe(20);
+  });
+
   it("METRICS_HELP mentions §58 internal metrics, the -h/--help flag, and the read-only guarantee", () => {
     expect(METRICS_HELP).toContain("§58");
     expect(METRICS_HELP).toContain("--help");
     expect(METRICS_HELP).toMatch(/read-only/i);
+    expect(METRICS_HELP).toContain("per-partition");
   });
 });

@@ -55,6 +55,7 @@ function makeEdition(overrides: Partial<Edition> = {}): Edition {
     failure_reason: null,
     cluster_stories_enqueued_at: null,
     metadata: null,
+    partition_key: "master",
     ...overrides,
   };
 }
@@ -85,6 +86,7 @@ function makeNotebookRow(
     provider_response: null,
     created_at: new Date(),
     completed_at: new Date(),
+    partition_key: "master",
     ...overrides,
   };
 }
@@ -109,6 +111,7 @@ function makePodcastRow(
     started_at: new Date(),
     completed_at: new Date(),
     created_at: new Date(),
+    partition_key: "master",
     ...overrides,
   };
 }
@@ -169,10 +172,12 @@ interface DepsOverrides {
   edition?: Edition | undefined;
   markdownRow?: MarkdownDigestRow | undefined;
   notebookRow?: NotebookRow | undefined;
+  notebookForPartition?: Record<string, NotebookRow | undefined>;
   existingPodcastRow?: PodcastRow | undefined;
   notebookLm?: NotebookLmClient;
   createThrows?: Error;
   config?: PodcastServiceConfig;
+  podcastRepo?: Partial<PodcastRepository>;
 }
 
 function makeDeps(overrides: DepsOverrides = {}) {
@@ -187,10 +192,6 @@ function makeDeps(overrides: DepsOverrides = {}) {
   const hasNotebookOverride = Object.prototype.hasOwnProperty.call(
     overrides,
     "notebookRow",
-  );
-  const hasExistingPodcastOverride = Object.prototype.hasOwnProperty.call(
-    overrides,
-    "existingPodcastRow",
   );
   const defaultEdition = makeEdition();
   const defaultMarkdown = makeMarkdown();
@@ -213,22 +214,44 @@ function makeDeps(overrides: DepsOverrides = {}) {
     getByEdition: vi.fn().mockImplementation(async () =>
       hasNotebookOverride ? overrides.notebookRow : defaultNotebook,
     ),
-  };
-  const podcastRepo = {
-    getByEdition: vi
+    getByEditionAndPartition: vi
       .fn()
       .mockImplementation(
-        async () => overrides.existingPodcastRow,
+        async (_ed: string, partitionKey: string) => {
+          if (overrides.notebookForPartition) {
+            const map = overrides.notebookForPartition;
+            if (Object.prototype.hasOwnProperty.call(map, partitionKey)) {
+              return map[partitionKey];
+            }
+            if (Object.prototype.hasOwnProperty.call(map, "master")) {
+              return map["master"];
+            }
+            return defaultNotebook;
+          }
+          return hasNotebookOverride
+            ? overrides.notebookRow
+            : defaultNotebook;
+        },
       ),
+  };
+  const podcastById = new Map<string, PodcastRow>();
+  const podcastRepo: PodcastRepository = {
+    getByEdition: vi
+      .fn()
+      .mockImplementation(async () => overrides.existingPodcastRow),
+    getByNotebookId: vi
+      .fn()
+      .mockImplementation(async () => overrides.existingPodcastRow),
     createForEdition: vi
       .fn()
       .mockImplementation(
-        async (input: Parameters<PodcastRepository["createForEdition"]>[0]) =>
-          makePodcastRow({
+        async (input: Parameters<PodcastRepository["createForEdition"]>[0]) => {
+          const row = makePodcastRow({
             id: "pod-row-1",
             edition_id: input.editionId,
             notebook_id: input.notebookId,
             artifact_external_id: input.artifactExternalId,
+            partition_key: input.partitionKey ?? "master",
             title: input.title ?? null,
             format: input.format ?? null,
             language: input.language ?? null,
@@ -236,7 +259,10 @@ function makeDeps(overrides: DepsOverrides = {}) {
             failure_reason: input.failureReason ?? null,
             started_at: input.startedAt ?? null,
             provider_response: input.providerResponse ?? null,
-          }),
+          });
+          podcastById.set(row.id, row);
+          return row;
+        },
       ),
     getById: vi.fn(),
     getByArtifactExternalId: vi.fn(),
@@ -246,8 +272,9 @@ function makeDeps(overrides: DepsOverrides = {}) {
         async (
           id: string,
           update: Parameters<PodcastRepository["updateDelivery"]>[1],
-        ) =>
-          makePodcastRow({
+        ) => {
+          const previous = podcastById.get(id);
+          const row = makePodcastRow({
             id,
             status: update.status ?? "pending",
             url: update.url === undefined ? null : update.url,
@@ -261,13 +288,19 @@ function makeDeps(overrides: DepsOverrides = {}) {
               update.completedAt === undefined ? null : update.completedAt,
             artifact_external_id:
               update.artifactExternalId ?? "artifact-1",
+            partition_key: previous?.partition_key ?? "master",
             provider_response:
               update.providerResponse === undefined
                 ? null
                 : update.providerResponse,
-          }),
+          });
+          podcastById.set(id, row);
+          return row;
+        },
       ),
     deleteByEdition: vi.fn(),
+    deleteByNotebookId: vi.fn(),
+    ...overrides.podcastRepo,
   };
   const notebookLm =
     overrides.notebookLm ?? makeFakeNotebookLmClient();
@@ -277,7 +310,7 @@ function makeDeps(overrides: DepsOverrides = {}) {
     editionRepo: editionRepo as never,
     markdownDigestRepo: markdownDigestRepo as never,
     notebookRepo: notebookRepo as never,
-    podcastRepo: podcastRepo as never,
+    podcastRepo,
     notebookLm,
     ...(overrides.config !== undefined ? { config: overrides.config } : {}),
     logger: silentLogger(),
@@ -649,20 +682,22 @@ describe("generate — UNIQUE race", () => {
       status: "ready",
       url: "https://cdn.example.com/already.mp3",
     });
-    let getByEditionCalls = 0;
+    let getByNotebookIdCalls = 0;
     const podcastRepo = {
-      getByEdition: vi.fn().mockImplementation(async () => {
-        getByEditionCalls++;
-        if (getByEditionCalls === 1) return undefined;
+      getByEdition: vi.fn().mockImplementation(async () => undefined),
+      getByNotebookId: vi.fn().mockImplementation(async () => {
+        getByNotebookIdCalls++;
+        if (getByNotebookIdCalls === 1) return undefined;
         return readyExisting;
       }),
       createForEdition: vi.fn().mockImplementation(async () => {
-        throw new PodcastConflictError("ed-1");
+        throw new PodcastConflictError("ed-1", "master");
       }),
       getById: vi.fn(),
       getByArtifactExternalId: vi.fn(),
       updateDelivery: vi.fn(),
       deleteByEdition: vi.fn(),
+      deleteByNotebookId: vi.fn(),
     };
     const { deps } = makeDeps({ existingPodcastRow: undefined });
     deps.podcastRepo = podcastRepo as never;
@@ -679,20 +714,22 @@ describe("generate — UNIQUE race", () => {
       status: "failed",
       url: null,
     });
-    let getByEditionCalls = 0;
+    let getByNotebookIdCalls = 0;
     const podcastRepo = {
-      getByEdition: vi.fn().mockImplementation(async () => {
-        getByEditionCalls++;
-        if (getByEditionCalls === 1) return undefined;
+      getByEdition: vi.fn().mockImplementation(async () => undefined),
+      getByNotebookId: vi.fn().mockImplementation(async () => {
+        getByNotebookIdCalls++;
+        if (getByNotebookIdCalls === 1) return undefined;
         return failedExisting;
       }),
       createForEdition: vi.fn().mockImplementation(async () => {
-        throw new PodcastConflictError("ed-1");
+        throw new PodcastConflictError("ed-1", "master");
       }),
       getById: vi.fn(),
       getByArtifactExternalId: vi.fn(),
       updateDelivery: vi.fn(),
       deleteByEdition: vi.fn(),
+      deleteByNotebookId: vi.fn(),
     };
     const { deps } = makeDeps({ existingPodcastRow: undefined });
     deps.podcastRepo = podcastRepo as never;
@@ -726,6 +763,145 @@ describe("generateForDate", () => {
     await expect(
       svc.generateForDate({ editionDate: "2030-01-01" }),
     ).rejects.toThrow(/no edition found/);
+  });
+
+  it("forwards partitionKey to the service", async () => {
+    const { deps, mocks } = makeDeps();
+    const svc = createPodcastService(deps);
+    await svc.generateForDate({
+      editionDate: "2026-07-07",
+      partitionKey: "youtube",
+      wait: true,
+    });
+    expect(
+      (
+        mocks.notebookRepo.getByEditionAndPartition as ReturnType<typeof vi.fn>
+      ).mock.calls[0]!,
+    ).toEqual(["ed-1", "youtube"]);
+    expect(
+      mocks.podcastRepo.getByNotebookId as ReturnType<typeof vi.fn>,
+    ).toHaveBeenCalledWith("nb-row-1");
+  });
+});
+
+describe("generate — partition awareness", () => {
+  it("uses getByEditionAndPartition (not getByEdition) to look up the notebook", async () => {
+    const { deps, mocks } = makeDeps();
+    const svc = createPodcastService(deps);
+    await svc.generate({
+      editionId: "ed-1",
+      partitionKey: "youtube",
+      wait: true,
+    });
+    expect(
+      (
+        mocks.notebookRepo.getByEditionAndPartition as ReturnType<typeof vi.fn>
+      ).mock.calls[0]!,
+    ).toEqual(["ed-1", "youtube"]);
+    expect(
+      (mocks.notebookRepo.getByEdition as ReturnType<typeof vi.fn>),
+    ).not.toHaveBeenCalled();
+  });
+
+  it("uses getByNotebookId (not getByEdition) for the existing podcast lookup", async () => {
+    const { deps, mocks } = makeDeps();
+    const svc = createPodcastService(deps);
+    await svc.generate({
+      editionId: "ed-1",
+      partitionKey: "youtube",
+      wait: true,
+    });
+    expect(
+      (mocks.podcastRepo.getByNotebookId as ReturnType<typeof vi.fn>),
+    ).toHaveBeenCalledWith("nb-row-1");
+    expect(
+      (mocks.podcastRepo.getByEdition as ReturnType<typeof vi.fn>),
+    ).not.toHaveBeenCalled();
+    const createCalls = (
+      mocks.podcastRepo.createForEdition as ReturnType<typeof vi.fn>
+    ).mock.calls;
+    expect(createCalls[0]![0]).toMatchObject({
+      editionId: "ed-1",
+      notebookId: "nb-row-1",
+      partitionKey: "youtube",
+    });
+  });
+
+  it("active: existing podcast in the partition is reused via getByNotebookId", async () => {
+    const youtubeNotebook = makeNotebookRow({
+      id: "nb-youtube",
+      partition_key: "youtube",
+      notebook_external_id: "nb-ext-youtube",
+    });
+    const existingPod = makePodcastRow({
+      id: "pod-youtube-existing",
+      notebook_id: "nb-youtube",
+      partition_key: "youtube",
+      status: "ready",
+      url: "https://cdn.example.com/youtube.mp3",
+      artifact_external_id: "artifact-youtube",
+    });
+    const { deps, mocks } = makeDeps({
+      notebookForPartition: { youtube: youtubeNotebook, master: undefined },
+      existingPodcastRow: existingPod,
+    });
+    const svc = createPodcastService(deps);
+    const result = await svc.generate({
+      editionId: "ed-1",
+      partitionKey: "youtube",
+      wait: true,
+    });
+    expect(result.alreadyExisted).toBe(true);
+    expect(result.status).toBe("ready");
+    expect(result.podcastId).toBe("pod-youtube-existing");
+    expect(result.url).toBe("https://cdn.example.com/youtube.mp3");
+    expect(
+      (mocks.podcastRepo.getByNotebookId as ReturnType<typeof vi.fn>),
+    ).toHaveBeenCalledWith("nb-youtube");
+    expect(
+      (mocks.notebookLm.generateAudio as ReturnType<typeof vi.fn>),
+    ).not.toHaveBeenCalled();
+  });
+
+  it("errors when no notebook exists for the partition", async () => {
+    const { deps, mocks } = makeDeps({
+      notebookForPartition: { youtube: undefined, master: undefined },
+    });
+    const svc = createPodcastService(deps);
+    await expect(
+      svc.generate({ editionId: "ed-1", partitionKey: "youtube" }),
+    ).rejects.toThrow(/no notebook for edition ed-1 partition 'youtube'/);
+    expect(
+      (mocks.notebookLm.generateAudio as ReturnType<typeof vi.fn>),
+    ).not.toHaveBeenCalled();
+  });
+
+  it("active: notebook exists in the partition, podcast is created with the partition key", async () => {
+    const youtubeNotebook = makeNotebookRow({
+      id: "nb-youtube",
+      partition_key: "youtube",
+      notebook_external_id: "nb-ext-youtube",
+      status: "ready",
+    });
+    const { deps, mocks } = makeDeps({
+      notebookForPartition: { youtube: youtubeNotebook, master: undefined },
+    });
+    const svc = createPodcastService(deps);
+    const result = await svc.generate({
+      editionId: "ed-1",
+      partitionKey: "youtube",
+      wait: true,
+    });
+    expect(result.status).toBe("ready");
+    expect(result.alreadyExisted).toBe(false);
+    expect(result.partitionKey).toBe("youtube");
+    const createCalls = (
+      mocks.podcastRepo.createForEdition as ReturnType<typeof vi.fn>
+    ).mock.calls;
+    expect(createCalls[0]![0]).toMatchObject({
+      partitionKey: "youtube",
+      notebookId: "nb-youtube",
+    });
   });
 });
 

@@ -6,6 +6,7 @@ import type {
 } from "../jobs/queue/processing-job-queue.js";
 import {
   getEditionMetrics,
+  getPartitionMetrics,
   type EditionMetrics,
 } from "../editions/edition-metrics.js";
 
@@ -49,8 +50,9 @@ export function parseMetricsFlags(
 }
 
 /**
- * Read-only §58 metrics snapshot. Calls `queue.getMetrics()` and
- * `getEditionMetrics(db)`, logs a four-line summary, and exits 0.
+ * Read-only §58 metrics snapshot. Calls `queue.getMetrics()`,
+ * `getEditionMetrics(db)`, and `getPartitionMetrics(db)`, logs a five-line
+ * summary, and exits 0.
  */
 export async function runMetricsCommand(
   deps: MetricsCommandDeps,
@@ -59,6 +61,7 @@ export async function runMetricsCommand(
 
   const queueMetrics = await deps.queue.getMetrics();
   const editionMetrics = await getEditionMetrics(deps.db);
+  const partitionMetrics = await getPartitionMetrics(deps.db);
 
   log(
     "queue: " +
@@ -101,6 +104,28 @@ export async function runMetricsCommand(
       ].join(" "),
   );
 
+  const partitionsSummary = partitionMetrics.byPartition
+    .slice()
+    .sort((a, b) => {
+      if (b.total_documents !== a.total_documents) {
+        return b.total_documents - a.total_documents;
+      }
+      return a.partition_key.localeCompare(b.partition_key);
+    })
+    .map((p) => `${p.partition_key}=${p.total_documents}`)
+    .join(" ");
+  const MAX_PARTITIONS_LINE = 20;
+  const partitionsLine =
+    partitionMetrics.byPartition.length === 0
+      ? "(no partitions)"
+      : partitionMetrics.byPartition.length > MAX_PARTITIONS_LINE
+        ? partitionsSummary
+            .split(" ")
+            .slice(0, MAX_PARTITIONS_LINE)
+            .join(" ") + ` …(+${partitionMetrics.byPartition.length - MAX_PARTITIONS_LINE} more)`
+        : partitionsSummary;
+  log(`partitions: ${partitionsLine}`);
+
   return {
     exitCode: 0,
     queue: queueMetrics,
@@ -119,6 +144,8 @@ Read-only snapshot of queue and edition health. Surfaces:
   - avg publication duration (created_at -> published_at, ms)
   - last published edition timestamp
   - oldest building edition age (ms since created_at)
+  - per-partition total document counts (partition=count, sorted desc;
+    truncated to 20 partitions with a "+N more" suffix when exceeded)
 
 No rows are written. Safe to run against a live queue or an empty DB.
 

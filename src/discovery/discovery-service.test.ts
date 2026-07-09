@@ -26,7 +26,7 @@ import {
   type ProcessingJobQueue,
 } from "../jobs/queue/processing-job-queue.js";
 import { createDiscoveryService } from "./discovery-service.js";
-import type { MinifluxClient, MinifluxEntry } from "./miniflux-client.js";
+import type { MinifluxClient, MinifluxEntry, MinifluxCategory } from "./miniflux-client.js";
 
 const sql002Path = fileURLToPath(
   new URL("../database/migrations/002_create_processing_jobs.sql", import.meta.url),
@@ -47,8 +47,13 @@ function schemaName(prefix: string): string {
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-function entry(id: number, url: string, feedId = 10): MinifluxEntry {
-  return { id, feedId, title: `Entry ${id}`, url };
+function entry(
+  id: number,
+  url: string,
+  feedId = 10,
+  category?: MinifluxCategory,
+): MinifluxEntry {
+  return { id, feedId, title: `Entry ${id}`, url, category: category ?? null };
 }
 
 interface FakeMinifluxCalls {
@@ -114,6 +119,21 @@ describe("DiscoveryService", () => {
       readFile(sql003Path, "utf8"),
       readFile(sql007Path, "utf8"),
     ]);
+
+    const m026 = `
+      DO $$ BEGIN
+        IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = current_schema() AND tablename = 'editions') THEN
+          ALTER TABLE editions ADD COLUMN IF NOT EXISTS partition_key TEXT NOT NULL DEFAULT 'master';
+        END IF;
+        IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = current_schema() AND tablename = 'discovery_events') THEN
+          ALTER TABLE discovery_events ADD COLUMN IF NOT EXISTS partition_key TEXT NOT NULL DEFAULT 'master';
+        END IF;
+        IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = current_schema() AND tablename = 'documents') THEN
+          ALTER TABLE documents ADD COLUMN IF NOT EXISTS partition_key TEXT NOT NULL DEFAULT 'master';
+        END IF;
+      END $$;
+    `;
+
     const client = await pool.connect();
     try {
       await client.query(`CREATE SCHEMA ${schema}`);
@@ -122,6 +142,7 @@ describe("DiscoveryService", () => {
       await client.query(m006);
       await client.query(m003);
       await client.query(m007);
+      await client.query(m026);
     } finally {
       client.release();
     }
@@ -377,5 +398,142 @@ describe("DiscoveryService", () => {
       );
       await pool.query(`DROP FUNCTION IF EXISTS ${schema}.reject_sentinel_url()`);
     }
+  });
+
+  it("partition_key: with no partitionConfig, every category routes to master", async () => {
+    const { client } = createFakeMiniflux({
+      pages: [
+        [
+          entry(1, "https://x/1", 10, { id: 2, title: "Blogs" }),
+          entry(2, "https://x/2", 11, { id: 3, title: "YouTube" }),
+          entry(3, "https://x/3", 12, { id: 4, title: "Reddit" }),
+        ],
+        [],
+      ],
+    });
+    const service = createDiscoveryService({
+      db,
+      editionRepo,
+      discoveryRepo,
+      queue,
+    });
+    const result = await service.discover({
+      editionDate: "2026-02-01",
+      miniflux: client,
+    });
+
+    expect(result.total).toBe(3);
+    expect(result.created).toBe(3);
+
+    const event1 = await discoveryRepo.getByMinifluxEntryId(1);
+    const event2 = await discoveryRepo.getByMinifluxEntryId(2);
+    const event3 = await discoveryRepo.getByMinifluxEntryId(3);
+    expect(event1).toBeDefined();
+    expect(event1!.partition_key).toBe("master");
+    expect(event2!.partition_key).toBe("master");
+    expect(event3!.partition_key).toBe("master");
+  });
+
+  it("partition_key: with partitionConfig mapping Blogs->custom_part, Blogs entries route to custom_part and others fall back to master", async () => {
+    const { client } = createFakeMiniflux({
+      pages: [
+        [
+          entry(1, "https://x/1", 10, { id: 2, title: "Blogs" }),
+          entry(2, "https://x/2", 11, { id: 3, title: "YouTube" }),
+          entry(3, "https://x/3", 12, { id: 4, title: "Reddit" }),
+        ],
+        [],
+      ],
+    });
+    const service = createDiscoveryService({
+      db,
+      editionRepo,
+      discoveryRepo,
+      queue,
+      partitionConfig: {
+        custom_part: { category: "Blogs", min_articles: 5, enabled: true },
+      },
+    });
+    const result = await service.discover({
+      editionDate: "2026-02-08",
+      miniflux: client,
+    });
+
+    expect(result.total).toBe(3);
+    expect(result.created).toBe(3);
+
+    const event1 = await discoveryRepo.getByMinifluxEntryId(1);
+    const event2 = await discoveryRepo.getByMinifluxEntryId(2);
+    const event3 = await discoveryRepo.getByMinifluxEntryId(3);
+    expect(event1!.partition_key).toBe("custom_part");
+    expect(event2!.partition_key).toBe("master");
+    expect(event3!.partition_key).toBe("master");
+  });
+
+  it("partition_key: resolver itself maps to master by default (no config)", async () => {
+    const { client } = createFakeMiniflux({
+      pages: [[entry(1, "https://x/1", 10, { id: 3, title: "YouTube" })], []],
+    });
+    const service = createDiscoveryService({
+      db,
+      editionRepo,
+      discoveryRepo,
+      queue,
+    });
+    const result = await service.discover({
+      editionDate: "2026-02-09",
+      miniflux: client,
+    });
+    expect(result.created).toBe(1);
+    const event = await discoveryRepo.getByMinifluxEntryId(1);
+    expect(event!.partition_key).toBe("master");
+  });
+
+  it("partition_key: entry with no category defaults to 'master'", async () => {
+    const { client } = createFakeMiniflux({
+      pages: [[entry(1, "https://x/1")], []],
+    });
+    const service = createDiscoveryService({ db, editionRepo, discoveryRepo, queue });
+    const result = await service.discover({
+      editionDate: "2026-02-02",
+      miniflux: client,
+    });
+
+    expect(result.total).toBe(1);
+    expect(result.created).toBe(1);
+
+    const event = await discoveryRepo.getByMinifluxEntryId(1);
+    expect(event).toBeDefined();
+    expect(event!.partition_key).toBe("master");
+  });
+
+  it("partition_key: expand_document job target carries the resolved partitionKey", async () => {
+    const { client } = createFakeMiniflux({
+      pages: [[entry(1, "https://x/1", 10, { id: 3, title: "YouTube" })], []],
+    });
+    const service = createDiscoveryService({
+      db,
+      editionRepo,
+      discoveryRepo,
+      queue,
+      partitionConfig: {
+        youtube: { category: "YouTube", min_articles: 5, enabled: true },
+      },
+    });
+    const result = await service.discover({
+      editionDate: "2026-02-03",
+      miniflux: client,
+    });
+
+    expect(result.created).toBe(1);
+    const jobs = await getJobs();
+    expect(jobs).toHaveLength(1);
+    const target = jobs[0].target as {
+      discoveryEventId: string;
+      url: string;
+      partitionKey: string;
+    };
+    expect(target.partitionKey).toBe("youtube");
+    expect(target.url).toBe("https://x/1");
   });
 });

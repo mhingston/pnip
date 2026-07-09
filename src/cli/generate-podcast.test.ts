@@ -33,6 +33,7 @@ function makeEdition(): Edition {
     failure_reason: null,
     cluster_stories_enqueued_at: null,
     metadata: null,
+    partition_key: "master",
   };
 }
 
@@ -49,6 +50,7 @@ function makeReadyResult(
     status: "ready",
     alreadyExisted: false,
     failureReason: null,
+    partitionKey: "master",
     ...overrides,
   };
 }
@@ -58,6 +60,7 @@ describe("parseGeneratePodcastFlags", () => {
     const r = parseGeneratePodcastFlags({ args: [] });
     expect(r).toEqual({
       editionDate: undefined,
+      partitionKey: undefined,
       wait: false,
       help: false,
       errors: [],
@@ -77,6 +80,14 @@ describe("parseGeneratePodcastFlags", () => {
     expect(r.wait).toBe(true);
   });
 
+  it("parses --partition", () => {
+    const r = parseGeneratePodcastFlags({
+      args: ["--partition", "youtube"],
+    });
+    expect(r.errors).toEqual([]);
+    expect(r.partitionKey).toBe("youtube");
+  });
+
   it("records -h / --help", () => {
     expect(parseGeneratePodcastFlags({ args: ["-h"] }).help).toBe(true);
     expect(parseGeneratePodcastFlags({ args: ["--help"] }).help).toBe(true);
@@ -92,6 +103,11 @@ describe("parseGeneratePodcastFlags", () => {
   it("errors on missing date value", () => {
     const r = parseGeneratePodcastFlags({ args: ["--date"] });
     expect(r.errors[0]).toMatch(/invalid date/);
+  });
+
+  it("errors on missing partition value", () => {
+    const r = parseGeneratePodcastFlags({ args: ["--partition"] });
+    expect(r.errors[0]).toMatch(/missing value/);
   });
 
   it("errors on unknown flags", () => {
@@ -116,6 +132,8 @@ describe("runGeneratePodcastCommand", () => {
     expect(result.exitCode).toBe(0);
     expect(service.generateForDate).toHaveBeenCalledWith({
       editionDate: "2026-07-07",
+      partitionKey: "master",
+      wait: undefined,
     });
     expect(
       logs.some(
@@ -136,7 +154,49 @@ describe("runGeneratePodcastCommand", () => {
     await runGeneratePodcastCommand({ service });
     expect(service.generateForDate).toHaveBeenCalledWith({
       editionDate: todayDate(),
+      partitionKey: "master",
+      wait: undefined,
     });
+  });
+
+  it("defaults partitionKey to 'master' when not provided", async () => {
+    const service = makeFakeService({
+      generateForDate: vi.fn().mockResolvedValue(makeReadyResult()),
+    });
+    await runGeneratePodcastCommand({
+      service,
+      editionDate: "2026-07-07",
+    });
+    expect(service.generateForDate).toHaveBeenCalledWith({
+      editionDate: "2026-07-07",
+      partitionKey: "master",
+      wait: undefined,
+    });
+  });
+
+  it("passes --partition flag through to the service", async () => {
+    const service = makeFakeService({
+      generateForDate: vi
+        .fn()
+        .mockResolvedValue(
+          makeReadyResult({ partitionKey: "youtube" }),
+        ),
+    });
+    const logs: string[] = [];
+    await runGeneratePodcastCommand({
+      service,
+      editionDate: "2026-07-07",
+      partitionKey: "youtube",
+      log: (m) => {
+        logs.push(m);
+      },
+    });
+    expect(service.generateForDate).toHaveBeenCalledWith({
+      editionDate: "2026-07-07",
+      partitionKey: "youtube",
+      wait: undefined,
+    });
+    expect(logs.some((l) => l.includes("partition=youtube"))).toBe(true);
   });
 
   it("returns exitCode 1 and logs the error on a thrown error", async () => {
@@ -202,11 +262,32 @@ describe("runGeneratePodcastCommand", () => {
       logs.some((l) => l.includes("audio generation failed")),
     ).toBe(true);
   });
+
+  it("returns exitCode 0 when the service returns status 'skipped'", async () => {
+    const service = makeFakeService({
+      generateForDate: vi.fn().mockResolvedValue(
+        makeReadyResult({
+          status: "skipped",
+          failureReason: null,
+        }),
+      ),
+    });
+    const logs: string[] = [];
+    const result = await runGeneratePodcastCommand({
+      service,
+      editionDate: "2026-07-07",
+      log: (m) => {
+        logs.push(m);
+      },
+    });
+    expect(result.exitCode).toBe(0);
+  });
 });
 
 describe("GENERATE_PODCAST_HELP", () => {
   it("includes the command name and the --date flag", () => {
     expect(GENERATE_PODCAST_HELP).toContain("digestive generate-podcast");
     expect(GENERATE_PODCAST_HELP).toContain("--date");
+    expect(GENERATE_PODCAST_HELP).toContain("--partition");
   });
 });

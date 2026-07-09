@@ -6,6 +6,7 @@ import type {
 export interface GenerateNotebookCommandDeps {
   service: NotebookService;
   editionDate?: string | Date;
+  partitionKey?: string;
   wait?: boolean;
   log?: (msg: string) => void;
 }
@@ -24,23 +25,28 @@ export async function runGenerateNotebookCommand(
 ): Promise<GenerateNotebookCommandResult> {
   const log = deps.log ?? ((m: string) => console.log(m));
   const editionDate = deps.editionDate ?? todayDate();
+  const partitionKey = deps.partitionKey ?? "master";
 
   try {
     const result = await deps.service.generateForDate({
       editionDate,
+      partitionKey,
       wait: deps.wait,
     });
     log(
-      `Notebook for edition ${result.edition.id} (date=${editionDate}): ` +
-        `notebookId=${result.notebookId}, url=${result.url}, ` +
+      `Notebook for edition ${result.edition.id} (date=${editionDate}, partition=${result.partitionKey}): ` +
+        `notebookId=${result.notebookId || "(skipped)"}, url=${result.url}, ` +
         `sources=${result.sourceCount}, status=${result.status}, ` +
         `${result.alreadyExisted ? "alreadyExisted=true" : "created"}, ` +
         `mode=${result.mode}`,
     );
+    if (result.skipReason) {
+      log(`skip reason: ${result.skipReason}`);
+    }
     if (result.failureReason) {
       log(`failure reason: ${result.failureReason}`);
     }
-    const exitCode = result.status === "ready" || result.status === "pending" ? 0 : 1;
+    const exitCode = result.status === "failed" ? 1 : 0;
     return { exitCode, result };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -55,6 +61,7 @@ export interface ParseGenerateNotebookFlagsInput {
 
 export interface ParseGenerateNotebookFlagsResult {
   editionDate?: string;
+  partitionKey?: string;
   wait: boolean;
   help: boolean;
   errors: string[];
@@ -68,6 +75,7 @@ export function parseGenerateNotebookFlags(
   const args = input.args.slice();
   const errors: string[] = [];
   let editionDate: string | undefined;
+  let partitionKey: string | undefined;
   let wait = false;
   let help = false;
 
@@ -83,6 +91,15 @@ export function parseGenerateNotebookFlags(
         }
         break;
       }
+      case "--partition": {
+        const v = args[++i];
+        if (!v || v.length === 0) {
+          errors.push(`--partition: missing value`);
+        } else {
+          partitionKey = v;
+        }
+        break;
+      }
       case "--wait":
         wait = true;
         break;
@@ -95,16 +112,21 @@ export function parseGenerateNotebookFlags(
     }
   }
 
-  return { editionDate, wait, help, errors };
+  return { editionDate, partitionKey, wait, help, errors };
 }
 
 export const GENERATE_NOTEBOOK_HELP = `digestive generate-notebook — create a NotebookLM notebook for the edition
 
 Usage:
-  digestive generate-notebook [--date <YYYY-MM-DD>] [--wait]
+  digestive generate-notebook [--date <YYYY-MM-DD>] [--partition <key>] [--wait]
 
 Flags:
   --date <YYYY-MM-DD>    publication date of the edition (default: today)
+  --partition <key>      partition key within the edition (default: "master").
+                         Other values come from the partition config (e.g.
+                         "youtube", "reddit", "blogs"). The master partition
+                         sees every document; each non-master partition
+                         sees only documents whose partition_key matches.
   --wait                  block until every source has finished ingesting
                           (1-10 min per source typical). Default is
                           fire-and-forget: the call returns immediately
@@ -115,12 +137,17 @@ Flags:
 
 The command:
   1. resolves the Edition by publication date
-  2. loads the curated source documents and the per-edition Markdown digest
-  3. creates a NotebookLM notebook titled "Daily Digest — <date>"
-  4. uploads each source document as a URL/file source, then uploads the
+  2. loads the curated source documents for the requested partition and
+     the per-edition Markdown digest
+  3. if the partition has fewer than the configured min_articles documents,
+     returns a "skipped" result without calling NotebookLM (the master
+     partition is unaffected)
+  4. creates a NotebookLM notebook titled "Daily Digest — <date>"
+     (or the result of config.titleTemplate when configured)
+  5. uploads each source document as a URL/file source, then uploads the
      Markdown digest as a final markdown source so NotebookLM can ground
      answers in both the curated sources and the digest narrative
-  5. (only with --wait) polls waitForSource for each source in turn;
+  6. (only with --wait) polls waitForSource for each source in turn;
      on success marks the notebook row 'ready', on error marks it 'failed'
      with the offending source id. Re-running with --wait against a
      'pending' row resumes the polling for the previously uploaded sources.

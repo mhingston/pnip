@@ -31,6 +31,7 @@ function makeEdition(): Edition {
     failure_reason: null,
     cluster_stories_enqueued_at: null,
     metadata: null,
+    partition_key: "master",
   };
 }
 
@@ -44,7 +45,9 @@ function makeReadyResult(overrides: Partial<NotebookServiceResult> = {}): Notebo
     status: "ready",
     alreadyExisted: false,
     failureReason: null,
+    skipReason: null,
     mode: "wait",
+    partitionKey: "master",
     ...overrides,
   };
 }
@@ -54,6 +57,7 @@ describe("parseGenerateNotebookFlags", () => {
     const r = parseGenerateNotebookFlags({ args: [] });
     expect(r).toEqual({
       editionDate: undefined,
+      partitionKey: undefined,
       wait: false,
       help: false,
       errors: [],
@@ -71,6 +75,14 @@ describe("parseGenerateNotebookFlags", () => {
     expect(r.wait).toBe(true);
   });
 
+  it("parses --partition", () => {
+    const r = parseGenerateNotebookFlags({
+      args: ["--partition", "youtube"],
+    });
+    expect(r.errors).toEqual([]);
+    expect(r.partitionKey).toBe("youtube");
+  });
+
   it("records -h / --help", () => {
     expect(parseGenerateNotebookFlags({ args: ["-h"] }).help).toBe(true);
     expect(parseGenerateNotebookFlags({ args: ["--help"] }).help).toBe(true);
@@ -84,6 +96,11 @@ describe("parseGenerateNotebookFlags", () => {
   it("errors on missing date value", () => {
     const r = parseGenerateNotebookFlags({ args: ["--date"] });
     expect(r.errors[0]).toMatch(/invalid date/);
+  });
+
+  it("errors on missing partition value", () => {
+    const r = parseGenerateNotebookFlags({ args: ["--partition"] });
+    expect(r.errors[0]).toMatch(/missing value/);
   });
 
   it("errors on unknown flags", () => {
@@ -108,6 +125,8 @@ describe("runGenerateNotebookCommand", () => {
     expect(result.exitCode).toBe(0);
     expect(service.generateForDate).toHaveBeenCalledWith({
       editionDate: "2026-07-07",
+      partitionKey: "master",
+      wait: undefined,
     });
     expect(logs.some((l) => l.includes("nb-row-1") && l.includes("2026-07-07"))).toBe(
       true,
@@ -123,7 +142,80 @@ describe("runGenerateNotebookCommand", () => {
     await runGenerateNotebookCommand({ service });
     expect(service.generateForDate).toHaveBeenCalledWith({
       editionDate: todayDate(),
+      partitionKey: "master",
+      wait: undefined,
     });
+  });
+
+  it("defaults partitionKey to 'master' when not provided", async () => {
+    const service = makeFakeService({
+      generateForDate: vi.fn().mockResolvedValue(makeReadyResult()),
+    });
+    await runGenerateNotebookCommand({
+      service,
+      editionDate: "2026-07-07",
+    });
+    expect(service.generateForDate).toHaveBeenCalledWith({
+      editionDate: "2026-07-07",
+      partitionKey: "master",
+      wait: undefined,
+    });
+  });
+
+  it("passes --partition flag through to the service", async () => {
+    const service = makeFakeService({
+      generateForDate: vi
+        .fn()
+        .mockResolvedValue(
+          makeReadyResult({ partitionKey: "youtube" }),
+        ),
+    });
+    const logs: string[] = [];
+    await runGenerateNotebookCommand({
+      service,
+      editionDate: "2026-07-07",
+      partitionKey: "youtube",
+      log: (m) => {
+        logs.push(m);
+      },
+    });
+    expect(service.generateForDate).toHaveBeenCalledWith({
+      editionDate: "2026-07-07",
+      partitionKey: "youtube",
+      wait: undefined,
+    });
+    expect(logs.some((l) => l.includes("partition=youtube"))).toBe(true);
+  });
+
+  it("logs the skip reason when the service returns status 'skipped'", async () => {
+    const service = makeFakeService({
+      generateForDate: vi.fn().mockResolvedValue(
+        makeReadyResult({
+          status: "skipped",
+          notebookId: "",
+          notebookExternalId: "",
+          url: "",
+          sourceCount: 2,
+          skipReason:
+            "partition 'youtube' has 2 uploadable documents, below threshold 5",
+        }),
+      ),
+    });
+    const logs: string[] = [];
+    const result = await runGenerateNotebookCommand({
+      service,
+      editionDate: "2026-07-07",
+      partitionKey: "youtube",
+      log: (m) => {
+        logs.push(m);
+      },
+    });
+    expect(result.exitCode).toBe(0);
+    expect(
+      logs.some((l) =>
+        l.includes("partition 'youtube' has 2 uploadable documents"),
+      ),
+    ).toBe(true);
   });
 
   it("returns exitCode 1 and logs the error on a thrown error", async () => {
@@ -193,5 +285,6 @@ describe("GENERATE_NOTEBOOK_HELP", () => {
   it("includes the command name and the --date flag", () => {
     expect(GENERATE_NOTEBOOK_HELP).toContain("digestive generate-notebook");
     expect(GENERATE_NOTEBOOK_HELP).toContain("--date");
+    expect(GENERATE_NOTEBOOK_HELP).toContain("--partition");
   });
 });

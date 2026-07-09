@@ -69,6 +69,20 @@ describe("ChunkRepository", () => {
     const sectionSql = await readFile(sectionMigrationPath, "utf8");
     const chunkSql = await readFile(chunkMigrationPath, "utf8");
 
+    const partitionSql = `
+      DO $$ BEGIN
+        IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = current_schema() AND tablename = 'editions') THEN
+          ALTER TABLE editions ADD COLUMN IF NOT EXISTS partition_key TEXT NOT NULL DEFAULT 'master';
+        END IF;
+        IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = current_schema() AND tablename = 'discovery_events') THEN
+          ALTER TABLE discovery_events ADD COLUMN IF NOT EXISTS partition_key TEXT NOT NULL DEFAULT 'master';
+        END IF;
+        IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = current_schema() AND tablename = 'documents') THEN
+          ALTER TABLE documents ADD COLUMN IF NOT EXISTS partition_key TEXT NOT NULL DEFAULT 'master';
+        END IF;
+      END $$;
+    `;
+
     const client = await pool.connect();
     try {
       await client.query(`CREATE SCHEMA ${schema}`);
@@ -77,6 +91,7 @@ describe("ChunkRepository", () => {
       await client.query(docSql);
       await client.query(sectionSql);
       await client.query(chunkSql);
+      await client.query(partitionSql);
     } finally {
       client.release();
     }

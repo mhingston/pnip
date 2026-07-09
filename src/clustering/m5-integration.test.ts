@@ -65,6 +65,20 @@ const migrations = [
   "017_create_story_clusters.sql",
 ];
 
+const partitionKeyDdl = `
+  DO $$ BEGIN
+    IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = current_schema() AND tablename = 'editions') THEN
+      ALTER TABLE editions ADD COLUMN IF NOT EXISTS partition_key TEXT NOT NULL DEFAULT 'master';
+    END IF;
+    IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = current_schema() AND tablename = 'discovery_events') THEN
+      ALTER TABLE discovery_events ADD COLUMN IF NOT EXISTS partition_key TEXT NOT NULL DEFAULT 'master';
+    END IF;
+    IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = current_schema() AND tablename = 'documents') THEN
+      ALTER TABLE documents ADD COLUMN IF NOT EXISTS partition_key TEXT NOT NULL DEFAULT 'master';
+    END IF;
+  END $$;
+`;
+
 function schemaName(prefix: string): string {
   return prefix + randomUUID().replace(/-/g, "");
 }
@@ -126,6 +140,7 @@ describe("M5 Story Clustering end-to-end", () => {
       for (const m of migrations) {
         await client.query(allMigrations[m]);
       }
+      await client.query(partitionKeyDdl);
     } finally {
       client.release();
     }

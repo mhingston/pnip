@@ -45,6 +45,7 @@ function makeEdition(overrides: Partial<Edition> = {}): Edition {
     failure_reason: null,
     cluster_stories_enqueued_at: null,
     metadata: null,
+    partition_key: "master",
     ...overrides,
   };
 }
@@ -80,6 +81,7 @@ function makeDoc(overrides: Partial<DocumentRow> = {}): DocumentRow {
     content_text: null,
     metadata: null,
     created_at: new Date(),
+    partition_key: "master",
     ...overrides,
   };
 }
@@ -96,6 +98,7 @@ function makeNotebookRow(overrides: Partial<NotebookRow> = {}): NotebookRow {
     provider_response: null,
     created_at: new Date(),
     completed_at: null,
+    partition_key: "master",
     ...overrides,
   };
 }
@@ -165,9 +168,12 @@ interface DepsOverrides {
   edition?: Edition | undefined;
   notebookLm?: NotebookLmClient;
   existingNotebookRow?: NotebookRow | undefined;
+  notebookRepo?: Partial<NotebookRepository>;
   markdownRow?: MarkdownDigestRow | undefined;
   documents?: DocumentRow[];
-  titleTemplate?: (d: string) => string;
+  documentsForPartition?: Record<string, DocumentRow[]>;
+  titleTemplate?: (d: string, p: string) => string;
+  config?: NotebookServiceConfig;
 }
 
 function makeDeps(overrides: DepsOverrides = {}) {
@@ -195,6 +201,30 @@ function makeDeps(overrides: DepsOverrides = {}) {
       source_url: "https://example.com/two",
       canonical_url: "https://example.com/two",
     }),
+    makeDoc({
+      id: "doc-3",
+      title: "Article Three",
+      source_url: "https://example.com/three",
+      canonical_url: "https://example.com/three",
+    }),
+    makeDoc({
+      id: "doc-4",
+      title: "Article Four",
+      source_url: "https://example.com/four",
+      canonical_url: "https://example.com/four",
+    }),
+    makeDoc({
+      id: "doc-5",
+      title: "Article Five",
+      source_url: "https://example.com/five",
+      canonical_url: "https://example.com/five",
+    }),
+    makeDoc({
+      id: "doc-6",
+      title: "Article Six",
+      source_url: "https://example.com/six",
+      canonical_url: "https://example.com/six",
+    }),
   ];
 
   const editionRepo = {
@@ -212,53 +242,88 @@ function makeDeps(overrides: DepsOverrides = {}) {
   };
   const docRepo = {
     getByEdition: vi.fn().mockResolvedValue(documents),
+    getByEditionAndPartition: vi
+      .fn()
+      .mockImplementation(
+        async (_ed: string, partitionKey: string) => {
+          if (overrides.documentsForPartition) {
+            return (
+              overrides.documentsForPartition[partitionKey] ??
+              overrides.documentsForPartition["master"] ??
+              []
+            );
+          }
+          return partitionKey === "master" ? documents : [];
+        },
+      ),
   };
-  const notebookRepo = {
-    getByEdition: vi.fn().mockImplementation(async () => overrides.existingNotebookRow),
+  const notebookById = new Map<string, NotebookRow>();
+  const notebookRepo: NotebookRepository = {
+    getByEdition: vi
+      .fn()
+      .mockImplementation(async () => overrides.existingNotebookRow),
+    getByEditionAndPartition: vi
+      .fn()
+      .mockImplementation(async () => overrides.existingNotebookRow),
     createForEdition: vi
       .fn()
       .mockImplementation(
-        async (input: Parameters<NotebookRepository["createForEdition"]>[0]) =>
-          makeNotebookRow({
+        async (input: Parameters<NotebookRepository["createForEdition"]>[0]) => {
+          const row = makeNotebookRow({
             id: "nb-row-1",
             edition_id: input.editionId,
             notebook_external_id: input.notebookExternalId,
             title: input.title,
             url: input.url,
+            partition_key: input.partitionKey ?? "master",
             source_count: input.sourceCount ?? 0,
             status: input.status ?? "pending",
             provider_response: input.providerResponse ?? null,
-          }),
+          });
+          notebookById.set(row.id, row);
+          return row;
+        },
       ),
     updateDelivery: vi
       .fn()
       .mockImplementation(
-        async (id: string, update: Parameters<NotebookRepository["updateDelivery"]>[1]) =>
-          makeNotebookRow({
+        async (
+          id: string,
+          update: Parameters<NotebookRepository["updateDelivery"]>[1],
+        ) => {
+          const previous = notebookById.get(id);
+          const row = makeNotebookRow({
             id,
             status: update.status ?? "pending",
             source_count: update.sourceCount ?? 0,
             completed_at: update.completedAt ?? null,
             provider_response: update.providerResponse ?? null,
-          }),
+            partition_key: previous?.partition_key ?? "master",
+          });
+          notebookById.set(id, row);
+          return row;
+        },
       ),
     getById: vi.fn(),
     getByExternalId: vi.fn(),
     deleteByEdition: vi.fn(),
+    deleteByEditionAndPartition: vi.fn(),
+    ...overrides.notebookRepo,
   };
   const notebookLm =
     overrides.notebookLm ?? makeFakeNotebookLmClient();
 
-  const config: NotebookServiceConfig | undefined = overrides.titleTemplate
-    ? { titleTemplate: overrides.titleTemplate }
-    : undefined;
+  const config: NotebookServiceConfig | undefined = overrides.config
+    ?? (overrides.titleTemplate
+      ? { titleTemplate: overrides.titleTemplate }
+      : undefined);
 
   const deps: NotebookServiceDeps = {
     db: {} as never,
     editionRepo: editionRepo as never,
     markdownDigestRepo: markdownDigestRepo as never,
     docRepo: docRepo as never,
-    notebookRepo: notebookRepo as never,
+    notebookRepo,
     notebookLm,
     ...(config !== undefined ? { config } : {}),
     logger: silentLogger(),
@@ -284,8 +349,10 @@ describe("generate — happy path", () => {
 
     expect(result.status).toBe("ready");
     expect(result.alreadyExisted).toBe(false);
-    expect(result.sourceCount).toBe(3);
+    expect(result.sourceCount).toBe(7);
     expect(result.notebookId).toBe("nb-row-1");
+    expect(result.partitionKey).toBe("master");
+    expect(result.skipReason).toBeNull();
 
     const order = (
       mocks.notebookLm.createNotebook as ReturnType<typeof vi.fn>
@@ -294,7 +361,7 @@ describe("generate — happy path", () => {
 
     const addSourceCalls = (mocks.notebookLm.addSource as ReturnType<typeof vi.fn>).mock
       .calls;
-    expect(addSourceCalls).toHaveLength(3);
+    expect(addSourceCalls).toHaveLength(7);
     expect(addSourceCalls[0]![0]).toMatchObject({
       notebookExternalId: "nb-ext-1",
       url: "https://example.com/one",
@@ -307,13 +374,18 @@ describe("generate — happy path", () => {
     });
     expect(addSourceCalls[2]![0]).toMatchObject({
       notebookExternalId: "nb-ext-1",
+      url: "https://example.com/three",
+      displayName: "Article Three",
+    });
+    expect(addSourceCalls[6]![0]).toMatchObject({
+      notebookExternalId: "nb-ext-1",
       markdownContent: "# Daily Digest — 2026-07-07\n\nBody.\n",
       displayName: "Daily Digest 2026-07-07",
     });
 
     const waitCalls = (mocks.notebookLm.waitForSource as ReturnType<typeof vi.fn>).mock
       .calls;
-    expect(waitCalls).toHaveLength(3);
+    expect(waitCalls).toHaveLength(7);
 
     const updateCalls = (mocks.notebookRepo.updateDelivery as ReturnType<typeof vi.fn>).mock
       .calls;
@@ -324,20 +396,42 @@ describe("generate — happy path", () => {
     expect(readyCall).toBeDefined();
     expect(readyCall![1]).toMatchObject({
       status: "ready",
-      sourceCount: 3,
+      sourceCount: 7,
     });
   });
 
-  it("passes the templated title to createNotebook when titleTemplate is configured", async () => {
+  it("passes the templated title (with default partition) to createNotebook when titleTemplate is configured", async () => {
     const { deps, mocks } = makeDeps({
-      titleTemplate: (d) => `PNIP ${d}`,
+      titleTemplate: (d, p) => `PNIP ${d} ${p}`,
     });
     const svc = createNotebookService(deps);
     await svc.generate({ editionId: "ed-1", wait: true });
     const arg = (
       mocks.notebookLm.createNotebook as ReturnType<typeof vi.fn>
     ).mock.calls[0]![0];
-    expect(arg.title).toBe("PNIP 2026-07-07");
+    expect(arg.title).toBe("PNIP 2026-07-07 master");
+  });
+
+  it("threads the partition key into a custom titleTemplate", async () => {
+    const ytDocs = Array.from({ length: 6 }, (_, i) =>
+      makeDoc({
+        id: `y-doc-${i}`,
+        partition_key: "youtube",
+        title: `YT ${i}`,
+        source_url: `https://youtube.com/v/${i}`,
+        canonical_url: `https://youtube.com/v/${i}`,
+      }),
+    );
+    const { deps, mocks } = makeDeps({
+      documentsForPartition: { master: [], youtube: ytDocs },
+      titleTemplate: (d, p) => `Daily Digest — ${d} (${p})`,
+    });
+    const svc = createNotebookService(deps);
+    await svc.generate({ editionId: "ed-1", partitionKey: "youtube" });
+    const arg = (
+      mocks.notebookLm.createNotebook as ReturnType<typeof vi.fn>
+    ).mock.calls[0]![0];
+    expect(arg.title).toBe("Daily Digest — 2026-07-07 (youtube)");
   });
 
   it("uses canonical_url when present and falls back to source_url otherwise", async () => {
@@ -356,6 +450,7 @@ describe("generate — happy path", () => {
           canonical_url: null,
         }),
       ],
+      config: { partitionMinArticles: 1 },
     });
     const svc = createNotebookService(deps);
     await svc.generate({ editionId: "ed-1", wait: true });
@@ -381,6 +476,7 @@ describe("generate — happy path", () => {
           metadata: { local_path: "/tmp/paper.pdf" } as never,
         }),
       ],
+      config: { partitionMinArticles: 1 },
     });
     const svc = createNotebookService(deps);
     await svc.generate({ editionId: "ed-1", wait: true });
@@ -405,6 +501,7 @@ describe("generate — happy path", () => {
           metadata: null,
         }),
       ],
+      config: { partitionMinArticles: 1 },
     });
     const svc = createNotebookService(deps);
     await svc.generate({ editionId: "ed-1", wait: true });
@@ -433,6 +530,7 @@ describe("generate — idempotency", () => {
     expect(result.status).toBe("ready");
     expect(result.notebookId).toBe("nb-existing");
     expect(result.sourceCount).toBe(5);
+    expect(result.partitionKey).toBe("master");
     expect(
       (mocks.notebookLm.createNotebook as ReturnType<typeof vi.fn>),
     ).not.toHaveBeenCalled();
@@ -482,7 +580,10 @@ describe("generate — validation errors", () => {
   });
 
   it("throws when there are zero curated documents", async () => {
-    const { deps, mocks } = makeDeps({ documents: [] });
+    const { deps, mocks } = makeDeps({
+      documents: [],
+      config: { partitionMinArticles: 0 },
+    });
     const svc = createNotebookService(deps);
     await expect(svc.generate({ editionId: "ed-1", wait: true })).rejects.toThrow(
       /no curated source documents/,
@@ -497,6 +598,7 @@ describe("generate — validation errors", () => {
       documents: [
         makeDoc({ id: "doc-x", source_url: "", canonical_url: null }),
       ],
+      config: { partitionMinArticles: 0 },
     });
     const svc = createNotebookService(deps);
     await expect(svc.generate({ editionId: "ed-1", wait: true })).rejects.toThrow(
@@ -572,6 +674,7 @@ describe("generate — waitForSource failure", () => {
           canonical_url: "https://example.com/two",
         }),
       ],
+      config: { partitionMinArticles: 1 },
     });
     const svc = createNotebookService(deps);
     const result = await svc.generate({ editionId: "ed-1", wait: true });
@@ -597,15 +700,18 @@ describe("generate — UNIQUE race recovery", () => {
       source_count: 7,
       completed_at: new Date(),
     });
-    let getByEditionCalls = 0;
+    let getByEditionAndPartitionCalls = 0;
     const notebookRepo = {
       getByEdition: vi.fn().mockImplementation(async () => {
-        getByEditionCalls++;
-        if (getByEditionCalls === 1) return undefined;
+        return undefined;
+      }),
+      getByEditionAndPartition: vi.fn().mockImplementation(async () => {
+        getByEditionAndPartitionCalls++;
+        if (getByEditionAndPartitionCalls === 1) return undefined;
         return readyExisting;
       }),
       createForEdition: vi.fn().mockImplementation(async () => {
-        throw new NotebookConflictError("ed-1");
+        throw new NotebookConflictError("ed-1", "master");
       }),
       updateDelivery: vi
         .fn()
@@ -625,6 +731,7 @@ describe("generate — UNIQUE race recovery", () => {
       getById: vi.fn(),
       getByExternalId: vi.fn(),
       deleteByEdition: vi.fn(),
+      deleteByEditionAndPartition: vi.fn(),
     };
     const { deps } = makeDeps({
       existingNotebookRow: undefined,
@@ -711,7 +818,7 @@ describe("generate — UNIQUE race recovery", () => {
           created = false;
           return freshRow;
         }
-        throw new NotebookConflictError("ed-1");
+        throw new NotebookConflictError("ed-1", "master");
       },
     );
     (deps.notebookRepo.updateDelivery as ReturnType<typeof vi.fn>).mockImplementation(
@@ -732,8 +839,11 @@ describe("generate — UNIQUE race recovery", () => {
     expect(result.alreadyExisted).toBe(false);
     expect(result.notebookExternalId).toBe("nb-ext-fresh");
     expect(
-      mocks.notebookRepo.deleteByEdition as ReturnType<typeof vi.fn>,
+      mocks.notebookRepo.deleteByEditionAndPartition as ReturnType<typeof vi.fn>,
     ).toHaveBeenCalledOnce();
+    expect(
+      mocks.notebookRepo.deleteByEditionAndPartition as ReturnType<typeof vi.fn>,
+    ).toHaveBeenCalledWith("ed-1", "master");
   });
 });
 
@@ -875,5 +985,342 @@ describe("generateForDate", () => {
     await expect(
       svc.generateForDate({ editionDate: "2030-01-01" }),
     ).rejects.toThrow(/no edition found/);
+  });
+
+  it("forwards partitionKey to the service", async () => {
+    const { deps, mocks } = makeDeps();
+    const svc = createNotebookService(deps);
+    await svc.generateForDate({
+      editionDate: "2026-07-07",
+      partitionKey: "youtube",
+      wait: true,
+    });
+    expect(
+      (
+        mocks.notebookRepo.getByEditionAndPartition as ReturnType<typeof vi.fn>
+      ).mock.calls[0]!,
+    ).toEqual(["ed-1", "youtube"]);
+    expect(
+      (mocks.docRepo.getByEditionAndPartition as ReturnType<typeof vi.fn>)
+        .mock.calls[0]!,
+    ).toEqual(["ed-1", "youtube"]);
+  });
+});
+
+describe("generate — partition awareness", () => {
+  it("uses getByEditionAndPartition with the supplied partition key", async () => {
+    const { deps, mocks } = makeDeps({
+      documentsForPartition: {
+        youtube: [],
+      },
+    });
+    const svc = createNotebookService(deps);
+    await svc.generate({ editionId: "ed-1", partitionKey: "youtube" });
+    expect(
+      (
+        mocks.notebookRepo.getByEditionAndPartition as ReturnType<typeof vi.fn>
+      ).mock.calls[0]!,
+    ).toEqual(["ed-1", "youtube"]);
+  });
+
+  it("passes the partition key into createForEdition", async () => {
+    const { deps, mocks } = makeDeps({
+      documentsForPartition: {
+        youtube: Array.from({ length: 8 }, (_, i) =>
+          makeDoc({
+            id: `y-doc-${i}`,
+            title: `YT ${i}`,
+            partition_key: "youtube",
+            source_url: `https://youtube.com/v/${i}`,
+            canonical_url: `https://youtube.com/v/${i}`,
+          }),
+        ),
+      },
+    });
+    const svc = createNotebookService(deps);
+    await svc.generate({
+      editionId: "ed-1",
+      partitionKey: "youtube",
+      wait: true,
+    });
+    const createCalls = (
+      mocks.notebookRepo.createForEdition as ReturnType<typeof vi.fn>
+    ).mock.calls;
+    expect(createCalls).toHaveLength(1);
+    expect(createCalls[0]![0]).toMatchObject({
+      editionId: "ed-1",
+      partitionKey: "youtube",
+    });
+    expect(
+      (mocks.docRepo.getByEditionAndPartition as ReturnType<typeof vi.fn>),
+    ).toHaveBeenCalledWith("ed-1", "youtube");
+  });
+
+  it("returns skipped when partition has fewer than minArticles documents", async () => {
+    const { deps, mocks } = makeDeps({
+      documentsForPartition: {
+        youtube: [
+          makeDoc({
+            id: "y-doc-1",
+            partition_key: "youtube",
+            title: "YT 1",
+            source_url: "https://youtube.com/v/1",
+            canonical_url: "https://youtube.com/v/1",
+          }),
+          makeDoc({
+            id: "y-doc-2",
+            partition_key: "youtube",
+            title: "YT 2",
+            source_url: "https://youtube.com/v/2",
+            canonical_url: "https://youtube.com/v/2",
+          }),
+          makeDoc({
+            id: "y-doc-3",
+            partition_key: "youtube",
+            title: "YT 3",
+            source_url: "https://youtube.com/v/3",
+            canonical_url: "https://youtube.com/v/3",
+          }),
+        ],
+      },
+    });
+    const svc = createNotebookService(deps);
+    const result = await svc.generate({
+      editionId: "ed-1",
+      partitionKey: "youtube",
+    });
+    expect(result.status).toBe("skipped");
+    expect(result.alreadyExisted).toBe(false);
+    expect(result.partitionKey).toBe("youtube");
+    expect(result.skipReason).toMatch(/below threshold 5/);
+    expect(result.skipReason).toMatch(/partition 'youtube'/);
+    expect(
+      (mocks.notebookLm.createNotebook as ReturnType<typeof vi.fn>),
+    ).not.toHaveBeenCalled();
+    expect(
+      (mocks.notebookRepo.createForEdition as ReturnType<typeof vi.fn>),
+    ).not.toHaveBeenCalled();
+  });
+
+  it("returns skipped when partition has 0 documents", async () => {
+    const { deps, mocks } = makeDeps({
+      documentsForPartition: { youtube: [], master: [] },
+    });
+    const svc = createNotebookService(deps);
+    const result = await svc.generate({
+      editionId: "ed-1",
+      partitionKey: "youtube",
+    });
+    expect(result.status).toBe("skipped");
+    expect(result.sourceCount).toBe(0);
+    expect(result.skipReason).toMatch(/0 uploadable documents/);
+    expect(
+      (mocks.notebookLm.createNotebook as ReturnType<typeof vi.fn>),
+    ).not.toHaveBeenCalled();
+  });
+
+  it("honours a custom partitionMinArticles threshold from config", async () => {
+    const { deps, mocks } = makeDeps({
+      documentsForPartition: {
+        youtube: [
+          makeDoc({
+            id: "y-doc-1",
+            partition_key: "youtube",
+            source_url: "https://youtube.com/v/1",
+            canonical_url: "https://youtube.com/v/1",
+          }),
+          makeDoc({
+            id: "y-doc-2",
+            partition_key: "youtube",
+            source_url: "https://youtube.com/v/2",
+            canonical_url: "https://youtube.com/v/2",
+          }),
+        ],
+      },
+      config: { partitionMinArticles: 2 },
+    });
+    const svc = createNotebookService(deps);
+    const result = await svc.generate({
+      editionId: "ed-1",
+      partitionKey: "youtube",
+      wait: true,
+    });
+    expect(result.status).toBe("ready");
+    expect(result.partitionKey).toBe("youtube");
+    expect(
+      (mocks.notebookLm.createNotebook as ReturnType<typeof vi.fn>),
+    ).toHaveBeenCalledOnce();
+  });
+
+  it("active: partition has at least minArticles documents, the notebook is created and uploaded", async () => {
+    const ytDocs = Array.from({ length: 10 }, (_, i) =>
+      makeDoc({
+        id: `y-doc-${i}`,
+        partition_key: "youtube",
+        title: `YT ${i}`,
+        source_url: `https://youtube.com/v/${i}`,
+        canonical_url: `https://youtube.com/v/${i}`,
+      }),
+    );
+    const { deps, mocks } = makeDeps({
+      documentsForPartition: { youtube: ytDocs, master: [] },
+    });
+    const svc = createNotebookService(deps);
+    const result = await svc.generate({
+      editionId: "ed-1",
+      partitionKey: "youtube",
+      wait: true,
+    });
+    expect(result.status).toBe("ready");
+    expect(result.alreadyExisted).toBe(false);
+    expect(result.partitionKey).toBe("youtube");
+    expect(result.sourceCount).toBe(ytDocs.length + 1);
+    expect(
+      (mocks.notebookLm.createNotebook as ReturnType<typeof vi.fn>),
+    ).toHaveBeenCalledOnce();
+    const createCalls = (
+      mocks.notebookRepo.createForEdition as ReturnType<typeof vi.fn>
+    ).mock.calls;
+    expect(createCalls).toHaveLength(1);
+    expect(createCalls[0]![0]).toMatchObject({ partitionKey: "youtube" });
+  });
+
+  it("idempotent: existing notebook in the partition is reused", async () => {
+    const existing = makeNotebookRow({
+      id: "nb-youtube-existing",
+      status: "ready",
+      partition_key: "youtube",
+      notebook_external_id: "nb-ext-youtube",
+      url: "https://notebooklm.google.com/notebook/nb-ext-youtube",
+      source_count: 12,
+      completed_at: new Date(),
+    });
+    const { deps, mocks } = makeDeps({
+      existingNotebookRow: existing,
+      documentsForPartition: {
+        youtube: Array.from({ length: 10 }, (_, i) =>
+          makeDoc({
+            id: `y-doc-${i}`,
+            partition_key: "youtube",
+            source_url: `https://youtube.com/v/${i}`,
+            canonical_url: `https://youtube.com/v/${i}`,
+          }),
+        ),
+        master: [],
+      },
+    });
+    const svc = createNotebookService(deps);
+    const result = await svc.generate({
+      editionId: "ed-1",
+      partitionKey: "youtube",
+      wait: true,
+    });
+    expect(result.status).toBe("ready");
+    expect(result.alreadyExisted).toBe(true);
+    expect(result.notebookId).toBe("nb-youtube-existing");
+    expect(result.partitionKey).toBe("youtube");
+    expect(
+      (mocks.notebookLm.createNotebook as ReturnType<typeof vi.fn>),
+    ).not.toHaveBeenCalled();
+  });
+
+  it("failed-retry only deletes the targeted partition's notebook", async () => {
+    const failedMaster = makeNotebookRow({
+      id: "nb-master-failed",
+      status: "failed",
+      partition_key: "master",
+      notebook_external_id: "nb-ext-master-failed",
+    });
+    const ytDocs = Array.from({ length: 8 }, (_, i) =>
+      makeDoc({
+        id: `y-doc-${i}`,
+        partition_key: "youtube",
+        title: `YT ${i}`,
+        source_url: `https://youtube.com/v/${i}`,
+        canonical_url: `https://youtube.com/v/${i}`,
+      }),
+    );
+    const { deps, mocks } = makeDeps({
+      documentsForPartition: { youtube: ytDocs, master: [] },
+      notebookRepo: {
+        getByEditionAndPartition: vi
+          .fn()
+          .mockImplementation(
+            async (_ed: string, partitionKey: string) =>
+              partitionKey === "master" ? failedMaster : undefined,
+          ),
+        getByEdition: vi
+          .fn()
+          .mockImplementation(async () => failedMaster),
+      },
+    });
+    const svc = createNotebookService(deps);
+    await svc.generate({
+      editionId: "ed-1",
+      partitionKey: "youtube",
+      wait: true,
+    });
+    const deleteCalls = (
+      mocks.notebookRepo.deleteByEditionAndPartition as ReturnType<typeof vi.fn>
+    ).mock.calls;
+    expect(deleteCalls).toHaveLength(0);
+    expect(
+      (mocks.notebookLm.createNotebook as ReturnType<typeof vi.fn>),
+    ).toHaveBeenCalledOnce();
+    const createCalls = (
+      mocks.notebookRepo.createForEdition as ReturnType<typeof vi.fn>
+    ).mock.calls;
+    expect(createCalls[0]![0]).toMatchObject({ partitionKey: "youtube" });
+  });
+
+  it("failed-retry of the master partition deletes the master notebook (default behaviour)", async () => {
+    const failedMaster = makeNotebookRow({
+      id: "nb-master-failed",
+      status: "failed",
+      partition_key: "master",
+      notebook_external_id: "nb-ext-master-failed",
+    });
+    const { deps, mocks } = makeDeps({
+      existingNotebookRow: failedMaster,
+    });
+    const svc = createNotebookService(deps);
+    await svc.generate({ editionId: "ed-1", wait: true });
+    expect(
+      (
+        mocks.notebookRepo
+          .deleteByEditionAndPartition as ReturnType<typeof vi.fn>
+      ).mock.calls[0]!,
+    ).toEqual(["ed-1", "master"]);
+  });
+
+  it("master partition is not subject to min_articles threshold", async () => {
+    const { deps, mocks } = makeDeps({
+      documentsForPartition: {
+        master: [
+          makeDoc({
+            id: "m-doc-1",
+            partition_key: "master",
+            title: "Solo",
+            source_url: "https://example.com/solo",
+            canonical_url: "https://example.com/solo",
+          }),
+        ],
+      },
+    });
+    const svc = createNotebookService(deps);
+    const result = await svc.generate({
+      editionId: "ed-1",
+      partitionKey: "master",
+    });
+    expect(result.status).toBe("pending");
+    expect(result.partitionKey).toBe("master");
+    expect(result.skipReason).toBeNull();
+    expect(result.sourceCount).toBe(2);
+    expect(
+      (mocks.notebookLm.createNotebook as ReturnType<typeof vi.fn>),
+    ).toHaveBeenCalledOnce();
+    expect(
+      (mocks.notebookRepo.createForEdition as ReturnType<typeof vi.fn>),
+    ).toHaveBeenCalledOnce();
   });
 });

@@ -2990,6 +2990,172 @@ This is explicitly **not** in scope and is listed in §63:
 
 ---
 
+# 66. Partition Key
+
+PNIP assigns every discovery event, document, notebook, and podcast a
+`partition_key` string. The default value is `'master'`. The partition
+key is the join key for per-category notebook publication: a configured
+non-master partition produces its own NotebookLM notebook and (if
+`with_podcast=true`) its own podcast alongside the master artifacts.
+
+This section is the canonical reference for the schema, the resolver,
+and the active-partition logic. The architectural motivation, the
+evidence from the live Miniflux corpus, and the rejected alternatives
+are recorded in
+[`docs/DESIGN-notebook-generation-pipeline.md`](DESIGN-notebook-generation-pipeline.md);
+the current section only documents what shipped.
+
+## 66.1 Schema
+
+`partition_key TEXT NOT NULL DEFAULT 'master'` is added to:
+
+* `editions` — partition of the edition row (rarely populated directly; the
+  `master` edition row carries `partition_key='master'`).
+* `discovery_events` — derived from the Miniflux entry's `category` at
+  ingestion time and persisted alongside the event.
+* `documents` — copied from the originating `discovery_events` row by the
+  expansion worker.
+* `notebooks` — one notebook per (edition_id, partition_key); the
+  previous `UNIQUE (edition_id)` constraint is replaced by
+  `UNIQUE (edition_id, partition_key)`.
+* `podcasts` — same shape as `notebooks` when the `podcasts` table
+  exists.
+
+Supporting indexes (`(edition_id, partition_key)`) on
+`discovery_events`, `documents`, `notebooks`, and `podcasts` make the
+per-partition document and artifact lookups O(log n). Migrations
+`026_add_partition_key.sql` and
+`027_add_notebook_podcast_partition.sql` apply the changes; both are
+forward-only and reversible in the sense that dropping the column
+restores the pre-feature constraint, but no such rollback has been
+needed.
+
+## 66.2 Resolver
+
+`src/discovery/partition-resolver.ts` exposes the deterministic
+function that maps a Miniflux entry to a partition key:
+
+```text
+resolvePartitionKey({ entry, config })
+  -> categoryToPartitionKey({ category, config })
+```
+
+The algorithm walks `PARTITION_CONFIG` in declaration order and
+returns the first entry whose `category` (case-insensitive title match)
+or `category_id` (numeric match) hits the entry's Miniflux category.
+Entries with `enabled: false` are skipped. If no entry matches — and
+this is the default when `PARTITION_CONFIG` is unset — the resolver
+returns `'master'`. The function is pure: given identical inputs it
+always returns the same key, and it never reads or writes the
+database.
+
+The partition key is resolved once, at ingestion time, and stored on
+the `discovery_events` row. Subsequent workers (expansion, enrichment,
+clustering, digest, notebook) propagate it to `documents` and to the
+artifact rows. Historical editions are unaffected if the operator
+later reorganises Miniflux categories: the partition of a previously
+ingested document is whatever the resolver returned at the time, not
+what it would return today.
+
+## 66.3 PARTITION_CONFIG schema
+
+`PARTITION_CONFIG` is a JSON object keyed by partition name. Each
+entry has the following optional fields:
+
+| Field          | Type    | Purpose                                                              |
+| -------------- | ------- | -------------------------------------------------------------------- |
+| `category`     | string  | Miniflux category title (case-insensitive). Mutually informative with `category_id`; at least one must be set for the entry to match anything. |
+| `category_id`  | integer | Miniflux category numeric id.                                        |
+| `min_articles` | integer | minimum document count for the partition to be active on a given day (default 5) |
+| `enabled`      | boolean | whether the entry is considered (default `true` if the entry exists) |
+| `with_podcast` | boolean | whether to also produce a NotebookLM podcast for this partition (default `false`) |
+
+Invalid values — non-numeric `min_articles`, non-boolean flags,
+non-object entries, or anything that fails to parse as JSON — fail
+configuration validation at startup with a descriptive error pointing
+at the offending field. There is no silent coercion.
+
+Example:
+
+```text
+PARTITION_CONFIG={"youtube":{"category":"YouTube","min_articles":5,"enabled":true,"with_podcast":true}}
+```
+
+## 66.4 Active-partition logic
+
+A partition is **active** for a given edition if and only if:
+
+1. It is the `master` partition (always active, always produces a
+   notebook and a podcast; no threshold), **or**
+2. It is configured in `PARTITION_CONFIG` with `enabled` not
+   `false`, **and** the edition has at least `min_articles` documents
+   whose `partition_key` matches.
+
+The list of active partitions is computed by
+`src/publication/active-partitions.ts::getActivePartitions` from the
+edition's document counts and the parsed config. The master partition
+is always returned first; configured partitions follow in the order
+they appear in `PARTITION_CONFIG`. Below-threshold partitions are
+silently dropped (the operator can see this in `digestive partitions`,
+`digestive metrics`, and the `publish-edition --dry-run` report).
+
+The publication completion gate (§49) extends to iterate over the
+active partitions: every active partition must have a ready notebook,
+and partitions with `with_podcast=true` must also have a ready
+podcast, before the edition transitions `Ready → Publishing →
+Published`. Below-threshold partitions do not block publication.
+
+## 66.5 CLI surface
+
+| Command                                                | Purpose                                                                |
+| ------------------------------------------------------ | ---------------------------------------------------------------------- |
+| `digestive partitions`                                 | read-only per-partition report: total documents, distinct days, latest edition date and count, plus a per-day breakdown for the last 7 days |
+| `digestive generate-notebook [--partition <key>]`      | generate the NotebookLM notebook for one partition (default `master`)  |
+| `digestive generate-podcast [--partition <key>]`       | generate the NotebookLM podcast for one partition (default `master`; meaningful only if `with_podcast=true`) |
+| `digestive publish-edition --dry-run`                  | print a per-partition breakdown (master plus each configured partition) showing documents, notebook readiness, and podcast readiness |
+| `digestive metrics`                                    | append a `partitions: <key>=<docs> ...` summary line                   |
+
+When `PARTITION_CONFIG` is set, the publication trigger must call
+`generate-notebook` (and `generate-podcast`, when applicable) once per
+active partition key, then call `publish-edition`. A convenient
+pattern is to enumerate the active partitions from
+`digestive partitions` or from the `publish-edition --dry-run`
+report.
+
+## 66.6 Backwards compatibility
+
+When `PARTITION_CONFIG` is unset (or set to `{}`), the resolver returns
+`'master'` for every entry, the `getActivePartitions` output is
+`[master]`, and the publication gate behaves identically to the
+pre-feature pipeline. There is no migration step for existing
+operators, no schema requirement beyond the default `'master'`
+column, and no behavioural change without opting in. The
+`notebooks`/`podcasts` UNIQUE constraint changes from
+`(edition_id)` to `(edition_id, partition_key)` are transparent
+because the master partition remains a single row per edition.
+
+## 66.7 Deferred work
+
+Two phases from the original design remain deferred and are not
+implemented in this release:
+
+* **Phase 3 — per-partition finalization schedules.** All partitions in
+  an edition finalize at the master edition's scheduled time-of-day
+  (§49). Per-partition `finalization_time` and `min_idle_minutes`
+  configuration is out of scope until the corpus grows enough to make
+  the operator-visible nuance worth the extra configuration surface.
+* **Phase 4 — 50-source cap and overflow signals.** No document is
+  currently excluded from a notebook on the basis of a per-notebook
+  cap. The corpus has hit 50+ documents on the master edition at most
+  once in the sample, and per-category partitions have never exceeded
+  50, so the cap is future-proofing rather than a current need. The
+  `notebook_excluded` signal substrate can be added without a
+  migration when it becomes load-bearing.
+
+Both phases are tracked in §11 of the design document.
+
+---
+
 # Implementation Milestones
 
 This section maps the 13 processing phases from the §5 high-level architecture

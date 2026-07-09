@@ -57,12 +57,28 @@ describe("DiscoveryRepository", () => {
 
     const editionsSql = await readSql(editionsSqlPath);
     const discoverySql = await readSql(discoverySqlPath);
+
+    const partitionSql = `
+      DO $$ BEGIN
+        IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = current_schema() AND tablename = 'editions') THEN
+          ALTER TABLE editions ADD COLUMN IF NOT EXISTS partition_key TEXT NOT NULL DEFAULT 'master';
+        END IF;
+        IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = current_schema() AND tablename = 'discovery_events') THEN
+          ALTER TABLE discovery_events ADD COLUMN IF NOT EXISTS partition_key TEXT NOT NULL DEFAULT 'master';
+        END IF;
+        IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = current_schema() AND tablename = 'documents') THEN
+          ALTER TABLE documents ADD COLUMN IF NOT EXISTS partition_key TEXT NOT NULL DEFAULT 'master';
+        END IF;
+      END $$;
+    `;
+
     const client = await pool.connect();
     try {
       await client.query(`CREATE SCHEMA ${schema}`);
       await client.query(`SET search_path TO ${schema}, public`);
       await client.query(editionsSql);
       await client.query(discoverySql);
+      await client.query(partitionSql);
     } finally {
       client.release();
     }

@@ -12,6 +12,7 @@ export interface DiscoveryEventInput {
   hash?: string;
   publishedAt?: Date | string;
   metadata?: unknown;
+  partitionKey?: string;
 }
 
 export interface DiscoveryRepository {
@@ -45,6 +46,7 @@ function toRow(input: DiscoveryEventInput) {
     hash: input.hash ?? null,
     published_at: toPublishedAt(input.publishedAt),
     metadata: toMetadata(input.metadata),
+    partition_key: input.partitionKey ?? "master",
   };
 }
 

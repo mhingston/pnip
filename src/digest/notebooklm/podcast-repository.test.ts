@@ -27,6 +27,7 @@ const migrationSqlPaths = [
   "../../database/migrations/003_create_editions.sql",
   "../../database/migrations/022_create_notebooks.sql",
   "../../database/migrations/023_create_podcasts.sql",
+  "../../database/migrations/027_add_notebook_podcast_partition.sql",
 ];
 
 function readMigrationSql(relativePath: string): Promise<string> {
@@ -159,7 +160,7 @@ describe("PodcastRepository", () => {
     expect(row.provider_response).toEqual(response);
   });
 
-  it("enforces UNIQUE(edition_id) idempotency", async () => {
+  it("enforces UNIQUE(edition_id, partition_key) idempotency on the master partition", async () => {
     const repo = createPodcastRepository(db);
     const { editionId, notebook } = await createNotebookFixture();
     await repo.createForEdition({
@@ -289,5 +290,103 @@ describe("PodcastRepository", () => {
     });
     await repo.deleteByEdition(editionId);
     expect(await repo.getByEdition(editionId)).toBeUndefined();
+  });
+
+  it("defaults partition_key to 'master' when createForEdition omits partitionKey", async () => {
+    const repo = createPodcastRepository(db);
+    const { editionId, notebook } = await createNotebookFixture();
+    const row = await repo.createForEdition({
+      editionId,
+      notebookId: notebook.id,
+      artifactExternalId: "artifact-default-partition",
+    });
+    expect(row.partition_key).toBe("master");
+  });
+
+  it("getByNotebookId returns the podcast linked to that notebook", async () => {
+    const repo = createPodcastRepository(db);
+    const { editionId, notebook } = await createNotebookFixture();
+    const created = await repo.createForEdition({
+      editionId,
+      notebookId: notebook.id,
+      artifactExternalId: "artifact-by-notebook",
+    });
+    const got = await repo.getByNotebookId(notebook.id);
+    expect(got).toBeDefined();
+    expect(got!.id).toBe(created.id);
+    expect(got!.notebook_id).toBe(notebook.id);
+  });
+
+  it("getByNotebookId returns undefined when no podcast exists for the notebook", async () => {
+    const repo = createPodcastRepository(db);
+    const got = await repo.getByNotebookId(
+      "00000000-0000-0000-0000-000000000000",
+    );
+    expect(got).toBeUndefined();
+  });
+
+  it("deleteByNotebookId removes the podcast linked to that notebook", async () => {
+    const repo = createPodcastRepository(db);
+    const { editionId, notebook } = await createNotebookFixture();
+    await repo.createForEdition({
+      editionId,
+      notebookId: notebook.id,
+      artifactExternalId: "artifact-delete-me",
+    });
+    await repo.deleteByNotebookId(notebook.id);
+    expect(await repo.getByNotebookId(notebook.id)).toBeUndefined();
+  });
+
+  it("getByEdition returns only the master partition row by default", async () => {
+    const repo = createPodcastRepository(db);
+    const { editionId, notebook } = await createNotebookFixture();
+    const masterPodcast = await repo.createForEdition({
+      editionId,
+      notebookId: notebook.id,
+      artifactExternalId: "artifact-master",
+      partitionKey: "master",
+    });
+    expect(masterPodcast.partition_key).toBe("master");
+    const got = await repo.getByEdition(editionId);
+    expect(got).toBeDefined();
+    expect(got!.id).toBe(masterPodcast.id);
+    expect(got!.partition_key).toBe("master");
+  });
+
+  it("createForEdition with partitionKey=other throws PodcastConflictError on a duplicate (other partition)", async () => {
+    const editionRepo = createEditionRepository(db);
+    const notebookRepo = createNotebookRepository(db);
+    const repo = createPodcastRepository(db);
+    const ed = await editionRepo.create("2026-07-09");
+    const nb = await notebookRepo.createForEdition({
+      editionId: ed.id,
+      notebookExternalId: "nb-per-part",
+      title: "x",
+      url: "https://notebooklm.example.com/x",
+      partitionKey: "youtube",
+    });
+    await repo.createForEdition({
+      editionId: ed.id,
+      notebookId: nb.id,
+      artifactExternalId: "artifact-y-1",
+      partitionKey: "youtube",
+    });
+    await expect(
+      repo.createForEdition({
+        editionId: ed.id,
+        notebookId: nb.id,
+        artifactExternalId: "artifact-y-2",
+        partitionKey: "youtube",
+      }),
+    ).rejects.toBeInstanceOf(PodcastConflictError);
+  });
+
+  it("PodcastConflictError includes partitionKey field and is named PodcastConflictError", async () => {
+    const err = new PodcastConflictError("ed-xyz", "reddit");
+    expect(err.name).toBe("PodcastConflictError");
+    expect(err.editionId).toBe("ed-xyz");
+    expect(err.partitionKey).toBe("reddit");
+    expect(err.message).toContain("ed-xyz");
+    expect(err.message).toContain("reddit");
   });
 });

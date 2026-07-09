@@ -23,6 +23,7 @@ import {
 const migrationSqlPaths = [
   "../../database/migrations/003_create_editions.sql",
   "../../database/migrations/022_create_notebooks.sql",
+  "../../database/migrations/027_add_notebook_podcast_partition.sql",
 ];
 
 function readMigrationSql(relativePath: string): Promise<string> {
@@ -126,7 +127,7 @@ describe("NotebookRepository", () => {
     expect(row.provider_response).toEqual(response);
   });
 
-  it("enforces UNIQUE(edition_id) idempotency", async () => {
+  it("enforces UNIQUE(edition_id, partition_key) idempotency on the master partition", async () => {
     const editionRepo = createEditionRepository(db);
     const repo = createNotebookRepository(db);
     const ed = await editionRepo.create("2026-07-08");
@@ -255,5 +256,173 @@ describe("NotebookRepository", () => {
     });
     await repo.deleteByEdition(ed.id);
     expect(await repo.getByEdition(ed.id)).toBeUndefined();
+  });
+
+  it("defaults partition_key to 'master' when createForEdition omits partitionKey", async () => {
+    const editionRepo = createEditionRepository(db);
+    const repo = createNotebookRepository(db);
+    const ed = await editionRepo.create("2026-07-14");
+    const row = await repo.createForEdition({
+      editionId: ed.id,
+      notebookExternalId: "nb-default-partition",
+      title: "x",
+      url: "https://notebooklm.example.com/x",
+    });
+    expect(row.partition_key).toBe("master");
+  });
+
+  it("persists the explicit partition_key when createForEdition supplies one", async () => {
+    const editionRepo = createEditionRepository(db);
+    const repo = createNotebookRepository(db);
+    const ed = await editionRepo.create("2026-07-15");
+    const row = await repo.createForEdition({
+      editionId: ed.id,
+      notebookExternalId: "nb-youtube",
+      title: "x",
+      url: "https://notebooklm.example.com/x",
+      partitionKey: "youtube",
+    });
+    expect(row.partition_key).toBe("youtube");
+  });
+
+  it("allow two notebooks in the same edition when their partition_keys differ", async () => {
+    const editionRepo = createEditionRepository(db);
+    const repo = createNotebookRepository(db);
+    const ed = await editionRepo.create("2026-07-16");
+    const masterRow = await repo.createForEdition({
+      editionId: ed.id,
+      notebookExternalId: "nb-master",
+      title: "Master",
+      url: "https://notebooklm.example.com/master",
+      partitionKey: "master",
+    });
+    const youtubeRow = await repo.createForEdition({
+      editionId: ed.id,
+      notebookExternalId: "nb-youtube",
+      title: "YouTube",
+      url: "https://notebooklm.example.com/youtube",
+      partitionKey: "youtube",
+    });
+    expect(masterRow.id).not.toBe(youtubeRow.id);
+    expect(masterRow.partition_key).toBe("master");
+    expect(youtubeRow.partition_key).toBe("youtube");
+  });
+
+  it("getByEditionAndPartition returns the row matching the partition", async () => {
+    const editionRepo = createEditionRepository(db);
+    const repo = createNotebookRepository(db);
+    const ed = await editionRepo.create("2026-07-17");
+    await repo.createForEdition({
+      editionId: ed.id,
+      notebookExternalId: "nb-master-2",
+      title: "Master",
+      url: "https://notebooklm.example.com/m",
+      partitionKey: "master",
+    });
+    const youtube = await repo.createForEdition({
+      editionId: ed.id,
+      notebookExternalId: "nb-youtube-2",
+      title: "YouTube",
+      url: "https://notebooklm.example.com/y",
+      partitionKey: "youtube",
+    });
+    const got = await repo.getByEditionAndPartition(ed.id, "youtube");
+    expect(got).toBeDefined();
+    expect(got!.id).toBe(youtube.id);
+    expect(got!.partition_key).toBe("youtube");
+  });
+
+  it("getByEditionAndPartition returns undefined when no notebook exists for the partition", async () => {
+    const editionRepo = createEditionRepository(db);
+    const repo = createNotebookRepository(db);
+    const ed = await editionRepo.create("2026-07-18");
+    await repo.createForEdition({
+      editionId: ed.id,
+      notebookExternalId: "nb-only-master",
+      title: "Master",
+      url: "https://notebooklm.example.com/m",
+      partitionKey: "master",
+    });
+    const got = await repo.getByEditionAndPartition(ed.id, "youtube");
+    expect(got).toBeUndefined();
+  });
+
+  it("getByEdition returns only the master partition row by default", async () => {
+    const editionRepo = createEditionRepository(db);
+    const repo = createNotebookRepository(db);
+    const ed = await editionRepo.create("2026-07-19");
+    await repo.createForEdition({
+      editionId: ed.id,
+      notebookExternalId: "nb-m-3",
+      title: "Master",
+      url: "https://notebooklm.example.com/m",
+      partitionKey: "master",
+    });
+    await repo.createForEdition({
+      editionId: ed.id,
+      notebookExternalId: "nb-y-3",
+      title: "YouTube",
+      url: "https://notebooklm.example.com/y",
+      partitionKey: "youtube",
+    });
+    const got = await repo.getByEdition(ed.id);
+    expect(got).toBeDefined();
+    expect(got!.partition_key).toBe("master");
+  });
+
+  it("deleteByEditionAndPartition removes only the targeted partition", async () => {
+    const editionRepo = createEditionRepository(db);
+    const repo = createNotebookRepository(db);
+    const ed = await editionRepo.create("2026-07-20");
+    const master = await repo.createForEdition({
+      editionId: ed.id,
+      notebookExternalId: "nb-m-4",
+      title: "Master",
+      url: "https://notebooklm.example.com/m",
+      partitionKey: "master",
+    });
+    await repo.createForEdition({
+      editionId: ed.id,
+      notebookExternalId: "nb-y-4",
+      title: "YouTube",
+      url: "https://notebooklm.example.com/y",
+      partitionKey: "youtube",
+    });
+    await repo.deleteByEditionAndPartition(ed.id, "youtube");
+    expect(await repo.getByEditionAndPartition(ed.id, "youtube")).toBeUndefined();
+    const masterAfter = await repo.getByEditionAndPartition(ed.id, "master");
+    expect(masterAfter).toBeDefined();
+    expect(masterAfter!.id).toBe(master.id);
+  });
+
+  it("createForEdition with partitionKey=other throws NotebookConflictError on a duplicate (other partition, not master)", async () => {
+    const editionRepo = createEditionRepository(db);
+    const repo = createNotebookRepository(db);
+    const ed = await editionRepo.create("2026-07-21");
+    await repo.createForEdition({
+      editionId: ed.id,
+      notebookExternalId: "nb-y-first",
+      title: "YouTube",
+      url: "https://notebooklm.example.com/y",
+      partitionKey: "youtube",
+    });
+    await expect(
+      repo.createForEdition({
+        editionId: ed.id,
+        notebookExternalId: "nb-y-second",
+        title: "YouTube 2",
+        url: "https://notebooklm.example.com/y2",
+        partitionKey: "youtube",
+      }),
+    ).rejects.toBeInstanceOf(NotebookConflictError);
+  });
+
+  it("NotebookConflictError includes partitionKey field and is named NotebookConflictError", async () => {
+    const err = new NotebookConflictError("ed-xyz", "reddit");
+    expect(err.name).toBe("NotebookConflictError");
+    expect(err.editionId).toBe("ed-xyz");
+    expect(err.partitionKey).toBe("reddit");
+    expect(err.message).toContain("ed-xyz");
+    expect(err.message).toContain("reddit");
   });
 });

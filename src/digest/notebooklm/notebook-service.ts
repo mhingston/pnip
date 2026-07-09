@@ -22,7 +22,8 @@ import { NotebookLmError } from "./notebooklm-client.js";
 export interface NotebookServiceConfig {
   sourceWaitTimeoutSec?: number;
   sourcePollIntervalMs?: number;
-  titleTemplate?: (publicationDate: string) => string;
+  titleTemplate?: (publicationDate: string, partitionKey: string) => string;
+  partitionMinArticles?: number;
 }
 
 export interface NotebookServiceDeps {
@@ -42,14 +43,17 @@ export interface NotebookServiceResult {
   notebookExternalId: string;
   url: string;
   sourceCount: number;
-  status: "ready" | "pending" | "failed";
+  status: "ready" | "pending" | "failed" | "skipped";
   alreadyExisted: boolean;
   failureReason: string | null;
+  skipReason: string | null;
   mode: "wait" | "fire-and-forget";
+  partitionKey: string;
 }
 
 export interface GenerateNotebookInput {
   editionId: string;
+  partitionKey?: string;
   wait?: boolean;
 }
 
@@ -57,6 +61,7 @@ export interface NotebookService {
   generate(input: GenerateNotebookInput): Promise<NotebookServiceResult>;
   generateForDate(input: {
     editionDate: string | Date;
+    partitionKey?: string;
     wait?: boolean;
   }): Promise<NotebookServiceResult>;
 }
@@ -73,6 +78,9 @@ export interface NotebookProviderState {
   uploadedSources?: UploadedSource[];
   error?: string;
 }
+
+const DEFAULT_PARTITION_MIN_ARTICLES = 5;
+const DEFAULT_PARTITION_KEY = "master";
 
 function formatPublicationDate(value: Date | string): string {
   if (typeof value === "string") return value.slice(0, 10);
@@ -97,10 +105,12 @@ function rowToResult(
     notebookExternalId: row.notebook_external_id,
     url: row.url,
     sourceCount: row.source_count,
-    status: row.status as "ready" | "pending" | "failed",
+    status: row.status as "ready" | "pending" | "failed" | "skipped",
     alreadyExisted: options.alreadyExisted,
     failureReason: state?.error ?? null,
+    skipReason: null,
     mode: options.mode,
+    partitionKey: row.partition_key,
   };
 }
 
@@ -160,7 +170,11 @@ async function tryCreateForEdition(
     return { row, created: true };
   } catch (err) {
     if (err instanceof NotebookConflictError) {
-      const existing = await deps.notebookRepo.getByEdition(input.editionId);
+      const partitionKey = input.partitionKey ?? DEFAULT_PARTITION_KEY;
+      const existing = await deps.notebookRepo.getByEditionAndPartition(
+        input.editionId,
+        partitionKey,
+      );
       if (existing) return { row: existing, created: false };
     }
     throw err;
@@ -181,6 +195,7 @@ export function createNotebookService(
     row: NotebookRow | null;
     createdResult: CreateNotebookResult | null;
     editionId: string;
+    partitionKey: string;
     reason: string;
   }): Promise<void> {
     if (input.row) {
@@ -198,6 +213,7 @@ export function createNotebookService(
     try {
       await deps.notebookRepo.createForEdition({
         editionId: input.editionId,
+        partitionKey: input.partitionKey,
         notebookExternalId:
           input.createdResult?.notebookExternalId ?? "unknown",
         title: input.createdResult?.title ?? "Unknown",
@@ -213,7 +229,10 @@ export function createNotebookService(
       });
     } catch (err) {
       if (err instanceof NotebookConflictError) {
-        const after = await deps.notebookRepo.getByEdition(input.editionId);
+        const after = await deps.notebookRepo.getByEditionAndPartition(
+          input.editionId,
+          input.partitionKey,
+        );
         if (after) {
           await deps.notebookRepo.updateDelivery(after.id, {
             status: "failed",
@@ -232,6 +251,7 @@ export function createNotebookService(
 
   async function createAndUpload(input: {
     editionId: string;
+    partitionKey: string;
   }): Promise<{
     row: NotebookRow;
     createNotebook: CreateNotebookResult;
@@ -247,7 +267,10 @@ export function createNotebookService(
       );
     }
 
-    const documents = await deps.docRepo.getByEdition(input.editionId);
+    const documents = await deps.docRepo.getByEditionAndPartition(
+      input.editionId,
+      input.partitionKey,
+    );
     const uploadableDocs = documents.filter(
       (d) =>
         (d.canonical_url !== null && d.canonical_url.length > 0) ||
@@ -255,7 +278,7 @@ export function createNotebookService(
     );
     if (uploadableDocs.length === 0) {
       throw new Error(
-        `edition ${input.editionId} has no curated source documents with uploadable URLs`,
+        `edition ${input.editionId} partition '${input.partitionKey}' has no curated source documents with uploadable URLs`,
       );
     }
 
@@ -263,13 +286,14 @@ export function createNotebookService(
     if (!edition) throw new Error(`edition not found: ${input.editionId}`);
     const publicationDate = formatPublicationDate(edition.publication_date);
     const title = deps.config?.titleTemplate
-      ? deps.config.titleTemplate(publicationDate)
+      ? deps.config.titleTemplate(publicationDate, input.partitionKey)
       : `Daily Digest — ${publicationDate}`;
 
     const createNotebook = await deps.notebookLm.createNotebook({ title });
 
     const inserted = await tryCreateForEdition(deps, {
       editionId: input.editionId,
+      partitionKey: input.partitionKey,
       notebookExternalId: createNotebook.notebookExternalId,
       title: createNotebook.title,
       url: createNotebook.url,
@@ -404,15 +428,21 @@ export function createNotebookService(
   async function generate(
     input: GenerateNotebookInput,
   ): Promise<NotebookServiceResult> {
+    const partitionKey = input.partitionKey ?? DEFAULT_PARTITION_KEY;
+    const minArticles =
+      deps.config?.partitionMinArticles ?? DEFAULT_PARTITION_MIN_ARTICLES;
     const edition = await resolveEdition(input.editionId);
     const wait = input.wait ?? false;
     const mode: "wait" | "fire-and-forget" = wait ? "wait" : "fire-and-forget";
 
-    const existing = await deps.notebookRepo.getByEdition(input.editionId);
+    const existing = await deps.notebookRepo.getByEditionAndPartition(
+      input.editionId,
+      partitionKey,
+    );
     if (existing && existing.status === "ready") {
       deps.logger?.info(
         "notebook already ready for edition; idempotent return",
-        { editionId: input.editionId, notebookId: existing.id },
+        { editionId: input.editionId, partitionKey, notebookId: existing.id },
       );
       return rowToResult(existing, edition, { alreadyExisted: true, mode });
     }
@@ -420,7 +450,7 @@ export function createNotebookService(
     if (existing && existing.status === "pending" && !wait) {
       deps.logger?.info(
         "notebook already pending for edition; fire-and-forget no-op",
-        { editionId: input.editionId, notebookId: existing.id },
+        { editionId: input.editionId, partitionKey, notebookId: existing.id },
       );
       return rowToResult(existing, edition, { alreadyExisted: true, mode });
     }
@@ -437,7 +467,7 @@ export function createNotebookService(
         const state = parseProviderState(existing.provider_response);
         if (!state || !state.createNotebook || !state.uploadedSources) {
           throw new Error(
-            `notebook row for edition ${input.editionId} is in 'pending' state but has no provider_response with uploaded sources; delete the row and re-run`,
+            `notebook row for edition ${input.editionId} partition '${partitionKey}' is in 'pending' state but has no provider_response with uploaded sources; delete the row and re-run`,
           );
         }
         created = {
@@ -448,10 +478,47 @@ export function createNotebookService(
         };
       } else {
         if (existing && existing.status === "failed") {
-          await deps.notebookRepo.deleteByEdition(input.editionId);
+          await deps.notebookRepo.deleteByEditionAndPartition(
+            input.editionId,
+            partitionKey,
+          );
+        }
+        const documents = await deps.docRepo.getByEditionAndPartition(
+          input.editionId,
+          partitionKey,
+        );
+        const uploadableDocs = documents.filter(
+          (d) =>
+            (d.canonical_url !== null && d.canonical_url.length > 0) ||
+            (d.source_url !== null && d.source_url.length > 0),
+        );
+        const shouldSkip =
+          partitionKey !== DEFAULT_PARTITION_KEY &&
+          uploadableDocs.length < minArticles;
+        if (shouldSkip) {
+          deps.logger?.info("notebook generation skipped", {
+            editionId: input.editionId,
+            partitionKey,
+            documentCount: uploadableDocs.length,
+            minArticles,
+          });
+          return {
+            notebookId: "",
+            edition,
+            notebookExternalId: "",
+            url: "",
+            sourceCount: uploadableDocs.length,
+            status: "skipped",
+            alreadyExisted: false,
+            failureReason: null,
+            skipReason: `partition '${partitionKey}' has ${uploadableDocs.length} uploadable documents, below threshold ${minArticles}`,
+            mode,
+            partitionKey,
+          };
         }
         created = await createAndUpload({
           editionId: input.editionId,
+          partitionKey,
         });
       }
     } catch (err) {
@@ -460,6 +527,7 @@ export function createNotebookService(
         row: existing ?? null,
         createdResult: null,
         editionId: input.editionId,
+        partitionKey,
         reason,
       });
       throw err;
@@ -468,6 +536,7 @@ export function createNotebookService(
     if (!wait) {
       deps.logger?.info("notebook sources uploaded; fire-and-forget", {
         editionId: input.editionId,
+        partitionKey,
         notebookId: created.row.id,
         sourceCount: created.uploadedSources.length,
         recovered: created.recovered,
@@ -485,6 +554,7 @@ export function createNotebookService(
 
     deps.logger?.info("notebook ready", {
       editionId: input.editionId,
+      partitionKey,
       notebookId: updated.id,
       sourceCount: updated.source_count,
       recovered: created.recovered,
@@ -497,12 +567,16 @@ export function createNotebookService(
   }
 
   return {
-    async generateForDate({ editionDate, wait }) {
+    async generateForDate({ editionDate, partitionKey, wait }) {
       const edition = await deps.editionRepo.getByDate(editionDate);
       if (!edition) {
         throw new Error(`no edition found for date ${String(editionDate)}`);
       }
-      return generate({ editionId: edition.id, wait });
+      return generate({
+        editionId: edition.id,
+        partitionKey,
+        wait,
+      });
     },
     generate,
   };

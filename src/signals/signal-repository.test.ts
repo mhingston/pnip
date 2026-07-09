@@ -32,6 +32,20 @@ const migrationSqlPaths = [
   "../database/migrations/024_create_signals.sql",
 ];
 
+const partitionKeyDdl = `
+  DO $$ BEGIN
+    IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = current_schema() AND tablename = 'editions') THEN
+      ALTER TABLE editions ADD COLUMN IF NOT EXISTS partition_key TEXT NOT NULL DEFAULT 'master';
+    END IF;
+    IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = current_schema() AND tablename = 'discovery_events') THEN
+      ALTER TABLE discovery_events ADD COLUMN IF NOT EXISTS partition_key TEXT NOT NULL DEFAULT 'master';
+    END IF;
+    IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = current_schema() AND tablename = 'documents') THEN
+      ALTER TABLE documents ADD COLUMN IF NOT EXISTS partition_key TEXT NOT NULL DEFAULT 'master';
+    END IF;
+  END $$;
+`;
+
 function readMigrationSql(relativePath: string): Promise<string> {
   const fullPath = fileURLToPath(new URL(relativePath, import.meta.url));
   return readFile(fullPath, "utf8");
@@ -60,6 +74,7 @@ describe("SignalRepository", () => {
         const sqlText = await readMigrationSql(rel);
         await client.query(sqlText);
       }
+      await client.query(partitionKeyDdl);
     } finally {
       client.release();
     }

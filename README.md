@@ -19,11 +19,12 @@ the clusterer re-rank by a hand-curated source-trust tier.
 
 ## Status
 
-Milestones **M0–M13** are complete, and all four phases of the §65
-Signal-to-Noise rollout have shipped (`1018/1018` tests pass against the
-project's Postgres test database; `tsc --noEmit` is clean). A real
-end-to-end run has been verified against live Miniflux, Resend, and
-NotebookLM.
+Milestones **M0–M13** are complete, all four phases of the §65
+Signal-to-Noise rollout have shipped, and the partition-key feature
+(notebook editions per Miniflux category) has shipped for Phases A, B,
+and C (`1165/1165` tests pass against the project's Postgres test
+database; `tsc --noEmit` is clean). A real end-to-end run has been
+verified against live Miniflux, Resend, and NotebookLM.
 
 | Milestone / Phase                       | Status   |
 | --------------------------------------- | -------- |
@@ -45,6 +46,9 @@ NotebookLM.
 | §65 Phase B — feedback CLI             | Complete |
 | §65 Phase C — bias views + opt-in re-ordering | Complete |
 | §65 Phase D — source-trust re-ranking  | Complete |
+| Partition-key Phases A, B, C — `partition_key` column, partition resolver, per-partition notebook + podcast, publication gate | Complete |
+| Partition-key Phase 4 — 50-source cap + overflow signals | Deferred |
+| Partition-key Phase 3 — per-partition finalization schedules | Deferred |
 
 The full implementation specification — architecture, data model,
 milestones, and acceptance criteria — is at [`docs/PLAN.md`](docs/PLAN.md).
@@ -180,6 +184,64 @@ whose every document is from a muted source and moves down-rated
 stories out of Top Stories. Phase D re-orders clusters by the
 `source_trust` tier when the worker loads the trust table.
 
+## Per-partition notebook editions
+
+The partition feature is a relatively new addition — the partition-key
+column on `editions`, `discovery_events`, `documents`, `notebooks`, and
+`podcasts`, the partition resolver, and the per-partition notebook
+publication pipeline all shipped together for the first time in this
+release. The configuration options described below are still evolving;
+expect additions (per-partition schedules, 50-source cap) in later
+releases.
+
+**What partitions are.** Each Miniflux entry carries a
+`partition_key` derived from its feed's Miniflux category. By default
+every entry routes to the `master` partition, which produces one
+NotebookLM notebook per day containing all of the edition's documents
+— identical to pre-feature behaviour. When the operator sets
+`PARTITION_CONFIG`, per-category partitions can be enabled; each
+enabled partition produces its own NotebookLM notebook alongside the
+master one.
+
+**Backwards compatibility.** With `PARTITION_CONFIG` unset (or set to
+an empty JSON object) every entry goes to `master`, the master
+notebook is the only one produced, and the publication gate behaves as
+it always has. There is no migration step for existing operators and no
+behavioural change without opting in.
+
+**Enabling a partition.** `PARTITION_CONFIG` is a JSON object keyed by
+partition name. Each entry takes an optional `category` (Miniflux
+category title, case-insensitive) or `category_id` (numeric ID), an
+optional `min_articles` threshold (default 5), an optional `enabled`
+flag (default `true` if the entry exists), and an optional
+`with_podcast` flag. The `master` partition is always active and never
+subject to a `min_articles` threshold — below-threshold and disabled
+non-master partitions are silently suppressed.
+
+Example: a YouTube-only notebook with a podcast, plus a Reddit-only
+notebook without one, leaving the master notebook as the always-on
+catch-all:
+
+```bash
+PARTITION_CONFIG='{"youtube":{"category":"YouTube","min_articles":5,"enabled":true,"with_podcast":true},"reddit":{"category":"Reddit","min_articles":3,"enabled":true}}'
+```
+
+**Per-partition commands and flags.**
+
+| Command                                                         | Purpose                                                                |
+| --------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| `digestive partitions`                                          | Read-only per-partition report: total documents, distinct days, latest edition date and count, plus a per-day breakdown for the last 7 days |
+| `digestive generate-notebook [--partition <key>]`               | Generate the NotebookLM notebook for one partition (default `master`)  |
+| `digestive generate-podcast [--partition <key>]`                | Generate the NotebookLM podcast for one partition (default `master`; only meaningful if `with_podcast=true`) |
+| `digestive publish-edition --dry-run`                           | Now prints a per-partition breakdown (master plus each configured partition) showing documents, notebook readiness, and podcast readiness |
+| `digestive metrics`                                             | Adds a `partitions: <key>=<docs> ...` summary line                      |
+
+When `PARTITION_CONFIG` is set, `publish-edition` gates on every
+**active** partition (master plus each non-master partition whose
+document count meets `min_articles`): each must have a ready
+notebook, and if `with_podcast=true` it must also have a ready
+podcast, before the edition transitions to Published.
+
 ## Recommended operations cadence
 
 PNIP does not ship a scheduler; recurring commands are scheduled by the
@@ -195,7 +257,13 @@ Edition publication itself is a separate trigger — a cron around the
 desired publish time calling `digestive publish-edition --date
 <YYYY-MM-DD>` after `generate-digest`, `generate-email`,
 `generate-notebook --wait`, and `generate-podcast --wait` have all
-completed.
+completed. When per-category partitions are enabled, the
+`generate-notebook` and `generate-podcast` calls need to be issued
+once per active partition (the `--partition <key>` flag selects which
+one; the default is `master`). A convenient pattern is to call them
+per partition key after `digestive partitions` has reported which
+partitions are active for the day, or to drive the loop from the
+publication report's partition breakdown.
 
 Tuning notes:
 
@@ -207,7 +275,12 @@ Tuning notes:
   cleanup; dry-run previews are cheap and useful for surfacing
   regressions in queue growth.
 - `metrics` is a read-only snapshot — safe to run from cron. Useful for
-  alerting on queue depth or tracking publication duration over time.
+  alerting on queue depth, tracking publication duration over time, or
+  watching the `partitions: ...` summary line to spot a partition that
+  has gone quiet.
+- `partitions` is also read-only and safe from cron; useful as a
+  morning check that the expected per-category notebook will actually
+  fire today.
 
 ## Environment
 
@@ -234,20 +307,21 @@ anything required is missing.
 | `FABRIC_BIN`              | optional   | path to the Fabric CLI                                     |
 | `MARKITDOWN_BIN`          | optional   | path to the MarkItDown CLI                                 |
 | `DIGEST_BIAS_ENABLED`     | optional   | `true` to apply §65 Phase C bias (muted-source drop + down-rated move); default off |
+| `PARTITION_CONFIG`        | optional   | JSON object mapping partition keys to `{category, min_articles, enabled, with_podcast}`; see *Per-partition notebook editions* above. Unset = master-only default |
 | `DOCTOR_FAILED_THRESHOLD` | optional   | integer 1+; `digestive doctor` fails the queue check when `failed > N` (default 100) |
 | `LOG_LEVEL`               | optional   | `debug` / `info` / `warn` / `error` (default `info`)       |
 
 ## Development
 
 ```bash
-npm test                 # full vitest suite (1018 tests)
+npm test                 # full vitest suite (1165 tests)
 npm run test:watch       # vitest in watch mode
 npm run typecheck        # tsc --noEmit
 ```
 
 Integration tests need `TEST_DATABASE_URL` pointing to a live Postgres
 with the `pgvector` extension available; without it, the integration
-suites auto-skip (~696 unit tests still run).
+suites auto-skip and the unit-only subset still runs.
 
 The project is plain Node + TypeScript — no bundler, no codegen. Build
 artefacts are produced on demand by `tsx` for the CLI entry point.
@@ -263,7 +337,7 @@ src/
   jobs/
     queue/              # ProcessingJobQueue — claim/complete/cancel/listFailed/requeue/getMetrics
     workers/            # generic Worker runtime + claim/execute/persist contract
-  discovery/            # Miniflux client + DiscoveryService
+  discovery/            # Miniflux client + DiscoveryService + PartitionResolver
   expansion/            # ExpansionPlugin + plugins (article, youtube, podcast, pdf, reddit)
   canonical/            # canonical document model
   chunking/             # deterministic chunk boundaries + provenance
@@ -273,15 +347,16 @@ src/
   digest/
     markdown/           # Markdown digest service + citation renderer + §65 bias application
     html/               # Markdown→HTML renderer, Resend client, email template
-    notebooklm/         # NotebookLM + Podcast services (fire-and-forget)
-  publication/          # M11 PublicationService — completion gate + state transition
+    notebooklm/         # NotebookLM + Podcast services (fire-and-forget), partition-aware
+  publication/          # M11 PublicationService — completion gate + state transition, per-partition
   signals/              # §65 signal capture: source-identity, signal-repository, bias-view, source-trust
   prompts/              # prompt_versions repository + default-prompt seeding
   provenance/           # lineage graph + citation resolution
   ai/                   # provider abstraction + vercel / openai-compatible / fake
   common/               # JSON extraction + vector codec
 docs/
-  PLAN.md               # full implementation specification (§1–§65)
+  PLAN.md               # full implementation specification (§1–§66)
+  DESIGN-notebook-generation-pipeline.md  # notebook-pipeline design + phased rollout status
 ```
 
 Every domain directory exposes a well-defined public interface;
@@ -292,8 +367,13 @@ direct SQL.
 
 - **Full specification** — [`docs/PLAN.md`](docs/PLAN.md) covers §1
   architecture, §15–§38 pipeline + data model, §39–§53 edition lifecycle
-  + publication, §54–§64 operations + delivery, and the implementation
-  milestones M0–M13 + §65 signal-to-noise.
+  + publication, §54–§64 operations + delivery, §65 signal-to-noise,
+  §66 partition key, and the implementation milestones M0–M13.
+- **Notebook pipeline design** — [`docs/DESIGN-notebook-generation-pipeline.md`](docs/DESIGN-notebook-generation-pipeline.md)
+  captures the architectural decisions behind per-partition notebooks:
+  the partition axis, the master-only default, the per-partition
+  publication gate, the deferred per-partition schedules (Phase 3) and
+  the deferred 50-source cap (Phase 4).
 - **Milestone status blocks** — each milestone in `docs/PLAN.md` has a
   `Status: ✅ Complete` block with a Delivered / Architecture notes /
   Known technical debt breakdown.
@@ -306,3 +386,11 @@ direct SQL.
   `digestive feedback` CLI. Phase C is opt-in via
   `DIGEST_BIAS_ENABLED=true`. Phase D is opt-in via
   `source_trust` rows.
+- **§66 partition key** — covered in `docs/PLAN.md` §66. The
+  `partition_key` column on `editions`, `discovery_events`,
+  `documents`, `notebooks`, and `podcasts` is the join key for the
+  per-category notebook publication path. With `PARTITION_CONFIG` unset
+  the operator sees no behavioural change; with it set, each configured
+  partition produces its own NotebookLM artifact. The `digestive
+  partitions` command and the `--partition <key>` flag on
+  `generate-notebook` / `generate-podcast` are the operator surfaces.

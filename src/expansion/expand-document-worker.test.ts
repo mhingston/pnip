@@ -86,10 +86,11 @@ describe("ExpandDocumentWorker", () => {
     };
 
     const docRepo: DocumentRepository = {
-      create: vi.fn().mockResolvedValue({ id: "doc-1", edition_id: "edition-1", source_url: "https://example.com/article" }),
+      create: vi.fn().mockResolvedValue({ id: "doc-1", edition_id: "edition-1", source_url: "https://example.com/article", partition_key: "master" }),
       getById: vi.fn(),
       getByEdition: vi.fn(),
       getByEditionAndUrl: vi.fn().mockResolvedValue(undefined),
+      getByEditionAndPartition: vi.fn(),
     };
 
     const sectionRepo: SectionRepository = {
@@ -169,6 +170,7 @@ describe("ExpandDocumentWorker", () => {
       getById: vi.fn(),
       getByEdition: vi.fn(),
       getByEditionAndUrl: vi.fn().mockResolvedValue({ id: "existing-doc" }),
+      getByEditionAndPartition: vi.fn(),
     };
 
     const sectionRepo: SectionRepository = {
@@ -247,6 +249,7 @@ describe("ExpandDocumentWorker", () => {
       getById: vi.fn(),
       getByEdition: vi.fn(),
       getByEditionAndUrl: vi.fn().mockResolvedValue(undefined),
+      getByEditionAndPartition: vi.fn(),
     };
     const sectionRepo: SectionRepository = {
       createBatch: vi.fn(),
@@ -308,6 +311,7 @@ describe("ExpandDocumentWorker", () => {
       getById: vi.fn(),
       getByEdition: vi.fn(),
       getByEditionAndUrl: vi.fn().mockResolvedValue(undefined),
+      getByEditionAndPartition: vi.fn(),
     };
     const sectionRepo: SectionRepository = {
       createBatch: vi.fn(),
@@ -340,5 +344,118 @@ describe("ExpandDocumentWorker", () => {
       ),
     ).rejects.toThrow(/boom/);
     expect(queue.enqueue).not.toHaveBeenCalled();
+  });
+
+  it("partitionKey: target with partitionKey='youtube' is forwarded to docRepo.create", async () => {
+    const plugin = fakePlugin("article", true);
+    const pluginRegistry: PluginRegistry = {
+      register: vi.fn(),
+      select: vi.fn(() => plugin),
+      list: vi.fn(() => []),
+    };
+    const docRepo: DocumentRepository = {
+      create: vi.fn().mockResolvedValue({
+        id: "doc-1",
+        edition_id: "edition-1",
+        source_url: "https://example.com/youtube",
+        partition_key: "youtube",
+      }),
+      getById: vi.fn(),
+      getByEdition: vi.fn(),
+      getByEditionAndUrl: vi.fn().mockResolvedValue(undefined),
+      getByEditionAndPartition: vi.fn(),
+    };
+    const sectionRepo: SectionRepository = {
+      createBatch: vi.fn(),
+      getByDocumentId: vi.fn(),
+      getMaxOrder: vi.fn(),
+      getByDocumentIdAndType: vi.fn(),
+    };
+    const provenanceRepo: ProvenanceRepository = {
+      recordLineage: vi.fn(),
+      recordLineageBatch: vi.fn(),
+      getSources: vi.fn(),
+      getConsumers: vi.fn(),
+      resolveCitations: vi.fn(),
+      resolveToDocuments: vi.fn(),
+    };
+
+    const worker = createExpandDocumentWorker({
+      docRepo,
+      sectionRepo,
+      pluginRegistry,
+      provenanceRepo,
+      queue: fakeQueue(),
+    });
+
+    await worker.execute(
+      makeJob({
+        target: {
+          discoveryEventId: "event-1",
+          url: "https://example.com/youtube",
+          partitionKey: "youtube",
+        },
+      }),
+      {
+        db: {} as any,
+        logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn(), child: vi.fn() } as any,
+      },
+    );
+
+    expect(docRepo.create).toHaveBeenCalledWith(
+      expect.objectContaining({ partitionKey: "youtube" }),
+    );
+  });
+
+  it("partitionKey: target without partitionKey defaults to 'master' in the created document", async () => {
+    const plugin = fakePlugin("article", true);
+    const pluginRegistry: PluginRegistry = {
+      register: vi.fn(),
+      select: vi.fn(() => plugin),
+      list: vi.fn(() => []),
+    };
+    const docRepo: DocumentRepository = {
+      create: vi.fn().mockResolvedValue({
+        id: "doc-1",
+        edition_id: "edition-1",
+        source_url: "https://example.com/article",
+        partition_key: "master",
+      }),
+      getById: vi.fn(),
+      getByEdition: vi.fn(),
+      getByEditionAndUrl: vi.fn().mockResolvedValue(undefined),
+      getByEditionAndPartition: vi.fn(),
+    };
+    const sectionRepo: SectionRepository = {
+      createBatch: vi.fn(),
+      getByDocumentId: vi.fn(),
+      getMaxOrder: vi.fn(),
+      getByDocumentIdAndType: vi.fn(),
+    };
+    const provenanceRepo: ProvenanceRepository = {
+      recordLineage: vi.fn(),
+      recordLineageBatch: vi.fn(),
+      getSources: vi.fn(),
+      getConsumers: vi.fn(),
+      resolveCitations: vi.fn(),
+      resolveToDocuments: vi.fn(),
+    };
+
+    const worker = createExpandDocumentWorker({
+      docRepo,
+      sectionRepo,
+      pluginRegistry,
+      provenanceRepo,
+      queue: fakeQueue(),
+    });
+
+    await worker.execute(makeJob(), {
+      db: {} as any,
+      logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn(), child: vi.fn() } as any,
+    });
+
+    expect(docRepo.create).toHaveBeenCalledWith(
+      expect.objectContaining({ partitionKey: undefined }),
+    );
   });
 });

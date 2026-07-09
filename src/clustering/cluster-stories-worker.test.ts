@@ -52,6 +52,7 @@ function makeDoc(overrides?: Partial<DocumentRow>): DocumentRow {
     content_text: null,
     metadata: {},
     created_at: new Date(),
+    partition_key: "master",
     ...overrides,
   };
 }
@@ -134,6 +135,7 @@ function makeDeps(overrides?: {
     getById: vi.fn().mockImplementation(async (id: string) => documents.find((d) => d.id === id)),
     getByEdition: vi.fn().mockImplementation(async () => documents),
     getByEditionAndUrl: vi.fn(),
+    getByEditionAndPartition: vi.fn(),
   };
 
   const summaryRepo: SummaryRepository = {

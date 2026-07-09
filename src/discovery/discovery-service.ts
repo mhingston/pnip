@@ -7,6 +7,8 @@ import type { ProcessingJobQueue } from "../jobs/queue/processing-job-queue.js";
 import type { EditionRepository } from "../editions/edition-repository.js";
 import type { MinifluxClient } from "./miniflux-client.js";
 import type { Logger } from "../logging/logger.js";
+import type { PartitionConfig } from "../config/index.js";
+import { resolvePartitionKey } from "./partition-resolver.js";
 
 export interface DiscoveryResult {
   editionId: string;
@@ -30,6 +32,7 @@ export function createDiscoveryService(deps: {
   editionRepo: EditionRepository;
   discoveryRepo: DiscoveryRepository;
   queue: ProcessingJobQueue;
+  partitionConfig?: PartitionConfig;
   logger?: Logger;
 }): DiscoveryService {
   return {
@@ -57,6 +60,10 @@ export function createDiscoveryService(deps: {
           total++;
           let made = false;
           try {
+            const partitionKey = resolvePartitionKey({
+              entry,
+              config: deps.partitionConfig,
+            });
             await deps.db.transaction().execute(async (trx) => {
               const dr = createDiscoveryRepository(trx);
               const { event, created: c } = await dr.getOrCreate({
@@ -68,13 +75,14 @@ export function createDiscoveryService(deps: {
                 hash: entry.hash,
                 publishedAt: entry.publishedAt,
                 metadata: { title: entry.title, feedId: entry.feedId },
+                partitionKey,
               });
               if (c) {
                 const q = createProcessingJobQueue(trx);
                 await q.enqueue({
                   jobType: "expand_document",
                   editionId: edition.id,
-                  target: { discoveryEventId: event.id, url: entry.url },
+                  target: { discoveryEventId: event.id, url: entry.url, partitionKey },
                 });
                 made = true;
               }

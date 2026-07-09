@@ -1,4 +1,4 @@
-import { loadConfig } from "../config/index.js";
+import { loadConfig, parsePartitionConfig } from "../config/index.js";
 import { createPool, closePool } from "../database/pool.js";
 import { runMigrations } from "../database/migrations.js";
 import { createKysely, closeKysely } from "../database/kysely.js";
@@ -76,6 +76,11 @@ import {
   runMetricsCommand,
 } from "./metrics.js";
 import {
+  PARTITIONS_HELP,
+  parsePartitionsFlags,
+  runPartitionsCommand,
+} from "./partitions.js";
+import {
   GENERATE_EDITION_HELP,
   parseGenerateEditionFlags,
   runGenerateEditionCommand,
@@ -140,11 +145,13 @@ async function main(): Promise<number> {
       const editionRepo = createEditionRepository(db);
       const discoveryRepo = createDiscoveryRepository(db);
       const queue = createProcessingJobQueue(db);
+      const partitionConfig = parsePartitionConfig(cfg.PARTITION_CONFIG);
       const service = createDiscoveryService({
         db,
         editionRepo,
         discoveryRepo,
         queue,
+        partitionConfig,
         logger: createLogger({ baseFields: { worker: "discovery" } }),
       });
 
@@ -472,6 +479,7 @@ async function main(): Promise<number> {
       const { exitCode } = await runGenerateNotebookCommand({
         service,
         editionDate: parsed.editionDate,
+        partitionKey: parsed.partitionKey,
         wait: parsed.wait,
         log: (m) => console.log(m),
       });
@@ -509,6 +517,7 @@ async function main(): Promise<number> {
       const { exitCode } = await runGeneratePodcastCommand({
         service,
         editionDate: parsed.editionDate,
+        partitionKey: parsed.partitionKey,
         wait: parsed.wait,
         log: (m) => console.log(m),
       });
@@ -534,6 +543,7 @@ async function main(): Promise<number> {
       const notebookRepo = createNotebookRepository(db);
       const podcastRepo = createPodcastRepository(db);
       const queue = createProcessingJobQueue(db);
+      const partitionConfig = parsePartitionConfig(cfg.PARTITION_CONFIG);
       const service = createPublicationService({
         db,
         editionRepo,
@@ -542,11 +552,14 @@ async function main(): Promise<number> {
         notebookRepo,
         podcastRepo,
         jobQueue: queue,
+        partitionConfig,
         logger,
       });
       const { exitCode } = await runPublishEditionCommand({
         service,
         editionLookup: editionRepo,
+        db,
+        partitionConfig,
         editionDate: parsed.editionDate,
         dryRun: parsed.dryRun,
         log: (m) => console.log(m),
@@ -656,6 +669,24 @@ async function main(): Promise<number> {
       return exitCode;
     }
 
+    if (command === "partitions") {
+      const parsed = parsePartitionsFlags({ args: rest });
+      if (parsed.help) {
+        console.log(PARTITIONS_HELP);
+        return 0;
+      }
+      if (parsed.errors.length > 0) {
+        for (const e of parsed.errors) console.error(e);
+        console.log(PARTITIONS_HELP);
+        return 2;
+      }
+      const { exitCode } = await runPartitionsCommand({
+        db,
+        log: (m) => console.log(m),
+      });
+      return exitCode;
+    }
+
     if (command === "feedback") {
       const signalRepo = createSignalRepository(db);
       const editionRepo = createEditionRepository(db);
@@ -708,7 +739,7 @@ async function main(): Promise<number> {
     }
 
     console.log(
-      "Usage: digestive <command>\nCommands: discover, process, maintenance, generate-digest, generate-email, generate-notebook, generate-podcast, publish-edition, generate-edition, retry, doctor, metrics, feedback, feedback-summary, source-trust",
+      "Usage: digestive <command>\nCommands: discover, process, maintenance, generate-digest, generate-email, generate-notebook, generate-podcast, publish-edition, generate-edition, retry, doctor, metrics, partitions, feedback, feedback-summary, source-trust",
     );
     return 2;
   } finally {

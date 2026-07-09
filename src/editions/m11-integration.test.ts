@@ -60,6 +60,8 @@ const migrationSqlPaths = [
   "../database/migrations/021_create_email_digests.sql",
   "../database/migrations/022_create_notebooks.sql",
   "../database/migrations/023_create_podcasts.sql",
+  "../database/migrations/026_add_partition_key.sql",
+  "../database/migrations/027_add_notebook_podcast_partition.sql",
 ];
 
 function readMigrationSql(relativePath: string): Promise<string> {

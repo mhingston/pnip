@@ -70,6 +70,8 @@ describe("migration runner", () => {
       "023_create_podcasts.sql",
       "024_create_signals.sql",
       "025_create_source_trust.sql",
+      "026_add_partition_key.sql",
+      "027_add_notebook_podcast_partition.sql",
     ]);
     expect(res.skipped).toEqual([]);
 
@@ -99,6 +101,8 @@ describe("migration runner", () => {
       "023_create_podcasts.sql",
       "024_create_signals.sql",
       "025_create_source_trust.sql",
+      "026_add_partition_key.sql",
+      "027_add_notebook_podcast_partition.sql",
     ]);
 
     const r = await pool.query("SELECT to_regclass('__smoke') AS exists");
@@ -160,6 +164,8 @@ describe("migration runner", () => {
       "023_create_podcasts.sql",
       "024_create_signals.sql",
       "025_create_source_trust.sql",
+      "026_add_partition_key.sql",
+      "027_add_notebook_podcast_partition.sql",
     ]);
 
     expect(await getAppliedMigrations(pool)).toEqual([
@@ -188,6 +194,8 @@ describe("migration runner", () => {
       "023_create_podcasts.sql",
       "024_create_signals.sql",
       "025_create_source_trust.sql",
+      "026_add_partition_key.sql",
+      "027_add_notebook_podcast_partition.sql",
     ]);
   });
 

@@ -31,9 +31,95 @@ const configSchema = z.object({
   RETRY_MAX_ATTEMPTS: z.string().optional(),
   DOCTOR_FAILED_THRESHOLD: z.coerce.number().int().positive().optional(),
   DIGEST_BIAS_ENABLED: z.enum(["true", "false"]).optional(),
+  PARTITION_CONFIG: z.string().optional(),
 });
 
 export type Config = z.infer<typeof configSchema>;
+
+export interface PartitionConfigEntry {
+  min_articles?: number;
+  enabled?: boolean;
+  with_podcast?: boolean;
+  category?: string;
+  category_id?: number;
+}
+
+export type PartitionConfig = Record<string, PartitionConfigEntry>;
+
+export function parsePartitionConfig(
+  raw: string | undefined,
+): PartitionConfig {
+  if (!raw || raw.trim() === "") return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`Invalid PARTITION_CONFIG: ${msg}`);
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error("Invalid PARTITION_CONFIG: must be a JSON object");
+  }
+  const result: PartitionConfig = {};
+  for (const [key, value] of Object.entries(parsed)) {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+      throw new Error(
+        `Invalid PARTITION_CONFIG: entry "${key}" must be an object`,
+      );
+    }
+    const entry: PartitionConfigEntry = {};
+    const v = value as Record<string, unknown>;
+    if ("min_articles" in v) {
+      const n = v.min_articles;
+      if (
+        typeof n !== "number" ||
+        !Number.isInteger(n) ||
+        n < 0 ||
+        !Number.isFinite(n)
+      ) {
+        throw new Error(
+          `Invalid PARTITION_CONFIG: ${key}.min_articles must be a non-negative integer`,
+        );
+      }
+      entry.min_articles = n;
+    }
+    if ("enabled" in v) {
+      if (typeof v.enabled !== "boolean") {
+        throw new Error(
+          `Invalid PARTITION_CONFIG: ${key}.enabled must be a boolean`,
+        );
+      }
+      entry.enabled = v.enabled;
+    }
+    if ("with_podcast" in v) {
+      if (typeof v.with_podcast !== "boolean") {
+        throw new Error(
+          `Invalid PARTITION_CONFIG: ${key}.with_podcast must be a boolean`,
+        );
+      }
+      entry.with_podcast = v.with_podcast;
+    }
+    if ("category" in v) {
+      if (typeof v.category !== "string" || v.category.length === 0) {
+        throw new Error(
+          `Invalid PARTITION_CONFIG: ${key}.category must be a non-empty string`,
+        );
+      }
+      entry.category = v.category;
+    }
+    if ("category_id" in v) {
+      const cid = v.category_id;
+      if (typeof cid !== "number" || !Number.isInteger(cid) || cid <= 0) {
+        throw new Error(
+          `Invalid PARTITION_CONFIG: ${key}.category_id must be a positive integer`,
+        );
+      }
+      entry.category_id = cid;
+    }
+    result[key] = entry;
+  }
+  return result;
+}
 
 let cached: Config | undefined;
 

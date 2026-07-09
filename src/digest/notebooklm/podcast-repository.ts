@@ -18,12 +18,14 @@ export interface PodcastRow {
   started_at: Date | null;
   completed_at: Date | null;
   created_at: Date;
+  partition_key: string;
 }
 
 export interface CreatePodcastInput {
   editionId: string;
   notebookId: string;
   artifactExternalId: string;
+  partitionKey?: string;
   title?: string | null;
   format?: string | null;
   language?: string | null;
@@ -48,20 +50,26 @@ export interface UpdatePodcastInput {
 export interface PodcastRepository {
   createForEdition(input: CreatePodcastInput): Promise<PodcastRow>;
   getByEdition(editionId: string): Promise<PodcastRow | undefined>;
+  getByNotebookId(notebookId: string): Promise<PodcastRow | undefined>;
   getById(id: string): Promise<PodcastRow | undefined>;
   getByArtifactExternalId(
     artifactExternalId: string,
   ): Promise<PodcastRow | undefined>;
   updateDelivery(id: string, update: UpdatePodcastInput): Promise<PodcastRow>;
   deleteByEdition(editionId: string): Promise<void>;
+  deleteByNotebookId(notebookId: string): Promise<void>;
 }
 
 export class PodcastConflictError extends Error {
   readonly editionId: string;
-  constructor(editionId: string) {
-    super(`podcast already exists for edition ${editionId}`);
+  readonly partitionKey: string;
+  constructor(editionId: string, partitionKey: string) {
+    super(
+      `podcast already exists for edition ${editionId} partition ${partitionKey}`,
+    );
     this.name = "PodcastConflictError";
     this.editionId = editionId;
+    this.partitionKey = partitionKey;
   }
 }
 
@@ -70,12 +78,14 @@ export function createPodcastRepository(
 ): PodcastRepository {
   return {
     async createForEdition(input) {
+      const partitionKey = input.partitionKey ?? "master";
       try {
         return await db
           .insertInto("podcasts")
           .values({
             edition_id: input.editionId,
             notebook_id: input.notebookId,
+            partition_key: partitionKey,
             artifact_external_id: input.artifactExternalId,
             url: null,
             title: input.title ?? null,
@@ -96,7 +106,7 @@ export function createPodcastRepository(
           .executeTakeFirstOrThrow();
       } catch (err) {
         if (isUniqueViolation(err)) {
-          throw new PodcastConflictError(input.editionId);
+          throw new PodcastConflictError(input.editionId, partitionKey);
         }
         throw err;
       }
@@ -107,6 +117,15 @@ export function createPodcastRepository(
         .selectFrom("podcasts")
         .selectAll()
         .where("edition_id", "=", editionId)
+        .where("partition_key", "=", "master")
+        .executeTakeFirst();
+    },
+
+    async getByNotebookId(notebookId) {
+      return db
+        .selectFrom("podcasts")
+        .selectAll()
+        .where("notebook_id", "=", notebookId)
         .executeTakeFirst();
     },
 
@@ -180,6 +199,13 @@ export function createPodcastRepository(
       await db
         .deleteFrom("podcasts")
         .where("edition_id", "=", editionId)
+        .execute();
+    },
+
+    async deleteByNotebookId(notebookId) {
+      await db
+        .deleteFrom("podcasts")
+        .where("notebook_id", "=", notebookId)
         .execute();
     },
   };

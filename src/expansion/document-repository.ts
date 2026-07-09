@@ -17,6 +17,7 @@ export interface DocumentRow {
   content_text: string | null;
   metadata: unknown;
   created_at: Date;
+  partition_key: string;
 }
 
 export interface CreateDocumentInput {
@@ -33,6 +34,7 @@ export interface CreateDocumentInput {
   contentMarkdown?: string;
   contentText?: string;
   metadata?: Record<string, unknown>;
+  partitionKey?: string;
 }
 
 export interface DocumentRepository {
@@ -40,6 +42,7 @@ export interface DocumentRepository {
   getById(id: string): Promise<DocumentRow | undefined>;
   getByEdition(editionId: string): Promise<DocumentRow[]>;
   getByEditionAndUrl(editionId: string, sourceUrl: string): Promise<DocumentRow | undefined>;
+  getByEditionAndPartition(editionId: string, partitionKey: string): Promise<DocumentRow[]>;
 }
 
 export function createDocumentRepository(db: Kysely<Database>): DocumentRepository {
@@ -61,6 +64,7 @@ export function createDocumentRepository(db: Kysely<Database>): DocumentReposito
           content_markdown: input.contentMarkdown ?? null,
           content_text: input.contentText ?? null,
           metadata: input.metadata ? JSON.stringify(input.metadata) : undefined,
+          partition_key: input.partitionKey ?? "master",
         })
         .returningAll()
         .executeTakeFirstOrThrow();
@@ -95,6 +99,17 @@ export function createDocumentRepository(db: Kysely<Database>): DocumentReposito
         .where("edition_id", "=", editionId)
         .where("source_url", "=", sourceUrl)
         .executeTakeFirst();
+    },
+
+    async getByEditionAndPartition(editionId, partitionKey) {
+      return db
+        .selectFrom("documents")
+        .selectAll()
+        .where("edition_id", "=", editionId)
+        .where("partition_key", "=", partitionKey)
+        .orderBy("created_at", "asc")
+        .orderBy("source_url", "asc")
+        .execute();
     },
   };
 }

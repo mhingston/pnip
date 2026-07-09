@@ -52,12 +52,14 @@ const TWO_RAW = {
       hash: "h",
       published_at: "2026-01-01T00:00:00Z",
       created_at: "2026-01-02T00:00:00Z",
+      category: { id: 2, title: "Blogs" },
     },
     {
       id: 11,
       feed_id: 4,
       title: "T2",
       url: "https://x/z",
+      category: { id: 3, title: "YouTube" },
     },
   ],
 };
@@ -91,6 +93,7 @@ describe("miniflux-client", () => {
         hash: "h",
         publishedAt: "2026-01-01T00:00:00Z",
         createdAt: "2026-01-02T00:00:00Z",
+        category: { id: 2, title: "Blogs" },
       });
       expect(entries[0].feedId).toBe(3);
       expect(entries[0].publishedAt).toBe("2026-01-01T00:00:00Z");
@@ -102,7 +105,43 @@ describe("miniflux-client", () => {
         hash: undefined,
         publishedAt: undefined,
         createdAt: undefined,
+        category: { id: 3, title: "YouTube" },
       });
+    });
+
+    it("entry with no category field is mapped to category: null", async () => {
+      const ONE_RAW_NO_CATEGORY = {
+        total: 1,
+        entries: [
+          {
+            id: 20,
+            feed_id: 5,
+            title: "NoCat",
+            url: "https://x/q",
+          },
+        ],
+      };
+      const { fetch } = makeFakeFetch(() => jsonResponse(ONE_RAW_NO_CATEGORY));
+      const client = createMinifluxClient({
+        baseUrl: "http://127.0.0.1:8080",
+        token: TOKEN,
+        fetchImpl: fetch,
+      });
+
+      const entries: MinifluxEntry[] = await client.listUnreadEntries();
+
+      expect(entries).toHaveLength(1);
+      expect(entries[0]).toEqual({
+        id: 20,
+        feedId: 5,
+        title: "NoCat",
+        url: "https://x/q",
+        hash: undefined,
+        publishedAt: undefined,
+        createdAt: undefined,
+        category: null,
+      });
+      expect(entries[0].category).toBeNull();
     });
 
     it("encodes limit and afterEntryId as limit / after_entry_id query params", async () => {

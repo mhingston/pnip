@@ -49,6 +49,7 @@ const migrationSqlPaths = [
   "../database/migrations/017_create_story_clusters.sql",
   "../database/migrations/018_create_document_enrichment_status.sql",
   "../database/migrations/019_add_cluster_stories_enqueued_at_to_editions.sql",
+  "../database/migrations/026_add_partition_key.sql",
 ];
 
 function readMigrationSql(relativePath: string): Promise<string> {
