@@ -47,11 +47,12 @@ verified against live Miniflux, Resend, and NotebookLM.
 | §65 Phase C — bias views + opt-in re-ordering | Complete |
 | §65 Phase D — source-trust re-ranking  | Complete |
 | Partition-key Phases A, B, C — `partition_key` column, partition resolver, per-partition notebook + podcast, publication gate | Complete |
-| Partition-key Phase 4 — 50-source cap + overflow signals | Deferred |
+| Partition-key Phase 4 — 50-source cap + per-source quality ranking + overflow signals | Complete |
 | Partition-key Phase 3 — per-partition finalization schedules | Deferred |
 
 The full implementation specification — architecture, data model,
 milestones, and acceptance criteria — is at [`docs/PLAN.md`](docs/PLAN.md).
+**1188/1188 tests pass.**
 
 ## Prerequisites
 
@@ -186,13 +187,15 @@ stories out of Top Stories. Phase D re-orders clusters by the
 
 ## Per-partition notebook editions
 
-The partition feature is a relatively new addition — the partition-key
-column on `editions`, `discovery_events`, `documents`, `notebooks`, and
-`podcasts`, the partition resolver, and the per-partition notebook
-publication pipeline all shipped together for the first time in this
-release. The configuration options described below are still evolving;
-expect additions (per-partition schedules, 50-source cap) in later
-releases.
+The partition feature shipped across several phases. The `partition_key`
+column, the resolver, the per-partition notebook + podcast pipeline, the
+publication gate, the 50-source cap, and the per-source quality ranking
+are all in. The deferred item is per-partition finalization schedules
+(Phase 3 of the design doc), which would let each partition have its
+own `finalization_time` and `min_idle_minutes` instead of inheriting
+the master's. The current model is "master time-of-day, per-partition
+notebook" — sufficient for the master-only default and the simple
+per-category case the operator is most likely to use.
 
 **What partitions are.** Each Miniflux entry carries a
 `partition_key` derived from its feed's Miniflux category. By default
@@ -201,7 +204,8 @@ NotebookLM notebook per day containing all of the edition's documents
 — identical to pre-feature behaviour. When the operator sets
 `PARTITION_CONFIG`, per-category partitions can be enabled; each
 enabled partition produces its own NotebookLM notebook alongside the
-master one.
+master one. See *How a partition's top sources are picked* below for
+the rule that decides which documents make it into each notebook.
 
 **Backwards compatibility.** With `PARTITION_CONFIG` unset (or set to
 an empty JSON object) every entry goes to `master`, the master
@@ -241,6 +245,60 @@ When `PARTITION_CONFIG` is set, `publish-edition` gates on every
 document count meets `min_articles`): each must have a ready
 notebook, and if `with_podcast=true` it must also have a ready
 podcast, before the edition transitions to Published.
+
+### How a partition's top sources are picked
+
+Each partition notebook has a hard cap on the number of sources it
+uploads. The cap is **per `(edition, partition)` pair** — the master
+partition and the youtube partition each get their own top 50 (or
+whatever the cap is set to). Within one partition, the 50 (or fewer)
+documents uploaded to NotebookLM are chosen by a deterministic four-key
+sort, applied in order:
+
+1. **Cluster importance** — `MIN(story_clusters.cluster_order)` for the
+   document's clusters. Cluster 0 is the top story and ranks first;
+   higher cluster orders rank later. Documents not in any cluster
+   rank after all clustered documents.
+2. **Per-source quality label** — `MIN(CASE label WHEN 'high' THEN 1
+   WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END)` across the
+   document's `quality_classifications` rows. A document with any
+   high-rated chunk ranks as `high`. Documents with no quality rows
+   rank last within their cluster (treated as unclassified).
+3. **Per-source quality confidence** — `AVG(quality_classifications.confidence)`.
+   Ties in label rank break on this; higher confidence wins. Ties
+   here fall through to the final key.
+4. **Document id** — `documents.id ASC`. Deterministic and stable but
+   not semantic; this is a UUID tiebreak.
+
+The cap is **50 by default**, overridable via the
+`NOTEBOOKLM_MAX_SOURCES_PER_NOTEBOOK` env var. When a partition has
+more documents than the cap, the overflow is silently dropped from
+the notebook (the master markdown digest is unaffected — it is
+generated from the full edition). One `notebook_excluded` signal is
+written per excluded document so the operator can audit what was
+dropped:
+
+```sql
+SELECT payload
+FROM signals
+WHERE edition_id = :edition
+  AND signal_kind = 'notebook_excluded'
+ORDER BY (payload->>'rank')::int;
+```
+
+Each row's payload includes:
+
+- `partition_key` — which partition the drop occurred on
+- `reason` — `source_cap` (today the only reason)
+- `cap` — the configured cap (so the operator can reproduce)
+- `total_documents` — partition size at the time of selection
+- `rank` — the 1-indexed position in the partition's full ranked list
+  (the first excluded is `rank = cap + 1`)
+
+In practice the cap is rarely hit. The corpus sample peaks at
+~58 articles in a single day distributed across categories; a single
+partition reaching 50 would be a rare burst day. The picking order
+above is what the operator can rely on when it does fire.
 
 ## Recommended operations cadence
 
@@ -308,13 +366,14 @@ anything required is missing.
 | `MARKITDOWN_BIN`          | optional   | path to the MarkItDown CLI                                 |
 | `DIGEST_BIAS_ENABLED`     | optional   | `true` to apply §65 Phase C bias (muted-source drop + down-rated move); default off |
 | `PARTITION_CONFIG`        | optional   | JSON object mapping partition keys to `{category, min_articles, enabled, with_podcast}`; see *Per-partition notebook editions* above. Unset = master-only default |
+| `NOTEBOOKLM_MAX_SOURCES_PER_NOTEBOOK` | optional | integer 1+; hard cap on sources uploaded per partition notebook. Default 50. Overflow gets `notebook_excluded` signals. See *How a partition's top sources are picked* above |
 | `DOCTOR_FAILED_THRESHOLD` | optional   | integer 1+; `digestive doctor` fails the queue check when `failed > N` (default 100) |
 | `LOG_LEVEL`               | optional   | `debug` / `info` / `warn` / `error` (default `info`)       |
 
 ## Development
 
 ```bash
-npm test                 # full vitest suite (1165 tests)
+npm test                 # full vitest suite (1188 tests)
 npm run test:watch       # vitest in watch mode
 npm run typecheck        # tsc --noEmit
 ```
@@ -372,8 +431,9 @@ direct SQL.
 - **Notebook pipeline design** — [`docs/DESIGN-notebook-generation-pipeline.md`](docs/DESIGN-notebook-generation-pipeline.md)
   captures the architectural decisions behind per-partition notebooks:
   the partition axis, the master-only default, the per-partition
-  publication gate, the deferred per-partition schedules (Phase 3) and
-  the deferred 50-source cap (Phase 4).
+  publication gate, the 50-source cap with cluster-importance + per-
+  source quality ranking, and the deferred per-partition schedules
+  (Phase 3).
 - **Milestone status blocks** — each milestone in `docs/PLAN.md` has a
   `Status: ✅ Complete` block with a Delivered / Architecture notes /
   Known technical debt breakdown.
