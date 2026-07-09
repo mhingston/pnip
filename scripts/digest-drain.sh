@@ -28,6 +28,21 @@ log() {
   printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S %Z')" "$*"
 }
 
+# Serialize concurrent invocations via flock. Cron firing every 10
+# min can race with a previous run that's still draining a large
+# queue. flock --nonblock means a second invocation exits cleanly
+# (exit 0) when the first is still running, so the operator's cron
+# log doesn't fill up with "another drain is in progress" noise.
+# The lock is held on a file descriptor and released automatically
+# when the script exits.
+LOCK_FILE="/tmp/pnip-digest-drain.lock"
+exec 200>"$LOCK_FILE"
+if ! flock --nonblock 200; then
+  log "another drain is in progress (lock=$LOCK_FILE); exiting cleanly"
+  exit 0
+fi
+trap 'flock --unlock 200 2>/dev/null || true; rm -f "$LOCK_FILE"' EXIT
+
 if [ ! -f .env ]; then
   log "ERROR: .env not found at $PROJECT_DIR/.env"
   exit 1

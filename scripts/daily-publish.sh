@@ -52,6 +52,20 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 cd "$PROJECT_DIR"
 
+# Serialize concurrent invocations. The daily publish is a ~30 min
+# sequence; if the operator runs the script manually while a cron
+# is also firing (or the previous run is still draining), we want
+# exactly one to proceed. flock --nonblock exits cleanly (exit 0)
+# so the operator's manual run is the one that wins, and the cron
+# no-ops.
+LOCK_FILE="/tmp/pnip-daily-publish.lock"
+exec 200>"$LOCK_FILE"
+if ! flock --nonblock 200; then
+  echo "[$(date '+%Y-%m-%d %H:%M:%S %Z')] another daily-publish is in progress (lock=$LOCK_FILE); exiting cleanly"
+  exit 0
+fi
+trap 'flock --unlock 200 2>/dev/null || true; rm -f "$LOCK_FILE"' EXIT
+
 DATE="${PNIP_PUBLISH_DATE:-$(date +%F)}"
 LOG_DIR="${PNIP_LOG_DIR:-$PROJECT_DIR/logs}"
 LOG_FILE="$LOG_DIR/daily-publish-${DATE}.log"
