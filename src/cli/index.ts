@@ -332,6 +332,17 @@ async function main(): Promise<number> {
       });
 
       const workerId = "cli-worker";
+
+      const STALE_LOCK_THRESHOLD_MS = 30 * 60 * 1000;
+      const recovered = await queue.recoverStaleJobs(STALE_LOCK_THRESHOLD_MS);
+      if (recovered > 0) {
+        const logger = createLogger({ baseFields: { worker: "process" } });
+        logger.info("recovered stale running jobs at start of drain", {
+          recovered,
+          thresholdMs: STALE_LOCK_THRESHOLD_MS,
+        });
+      }
+
       let processed = 0;
       while (await runtime.runOne(workerId)) {
         processed++;
