@@ -1,4 +1,4 @@
-import { Kysely } from "kysely";
+import { Kysely, sql } from "kysely";
 import type { Database } from "../database/kysely.js";
 
 export interface DocumentRow {
@@ -37,12 +37,22 @@ export interface CreateDocumentInput {
   partitionKey?: string;
 }
 
+export interface RankedDocuments {
+  kept: DocumentRow[];
+  excluded: DocumentRow[];
+}
+
 export interface DocumentRepository {
   create(input: CreateDocumentInput): Promise<DocumentRow>;
   getById(id: string): Promise<DocumentRow | undefined>;
   getByEdition(editionId: string): Promise<DocumentRow[]>;
   getByEditionAndUrl(editionId: string, sourceUrl: string): Promise<DocumentRow | undefined>;
   getByEditionAndPartition(editionId: string, partitionKey: string): Promise<DocumentRow[]>;
+  getRankedByEditionAndPartition(
+    editionId: string,
+    partitionKey: string,
+    limit: number,
+  ): Promise<RankedDocuments>;
 }
 
 export function createDocumentRepository(db: Kysely<Database>): DocumentRepository {
@@ -110,6 +120,59 @@ export function createDocumentRepository(db: Kysely<Database>): DocumentReposito
         .orderBy("created_at", "asc")
         .orderBy("source_url", "asc")
         .execute();
+    },
+
+    async getRankedByEditionAndPartition(editionId, partitionKey, limit) {
+      const bestCluster = db
+        .selectFrom("cluster_members as cm")
+        .innerJoin("story_clusters as sc", "sc.id", "cm.story_id")
+        .select([
+          "cm.document_id",
+          sql<number>`min(sc.cluster_order)`.as("best_cluster_order"),
+        ])
+        .groupBy("cm.document_id")
+        .as("bc");
+
+      const rows = await db
+        .selectFrom("documents as d")
+        .leftJoin(bestCluster, "bc.document_id", "d.id")
+        .select([
+          "d.id",
+          "d.edition_id",
+          "d.source_type",
+          "d.source_url",
+          "d.canonical_url",
+          "d.title",
+          "d.subtitle",
+          "d.authors",
+          "d.publisher",
+          "d.published_at",
+          "d.language",
+          "d.content_markdown",
+          "d.content_text",
+          "d.metadata",
+          "d.created_at",
+          "d.partition_key",
+          "bc.best_cluster_order",
+        ])
+        .where("d.edition_id", "=", editionId)
+        .where("d.partition_key", "=", partitionKey)
+        .orderBy("bc.best_cluster_order", "asc")
+        .orderBy("d.id", "asc")
+        .execute();
+
+      const docs: DocumentRow[] = rows.map((r) => {
+        const { best_cluster_order: _omit, ...row } = r;
+        return row as DocumentRow;
+      });
+
+      if (docs.length <= limit) {
+        return { kept: docs, excluded: [] };
+      }
+      return {
+        kept: docs.slice(0, limit),
+        excluded: docs.slice(limit),
+      };
     },
   };
 }

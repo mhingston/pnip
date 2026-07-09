@@ -23,6 +23,7 @@ const configSchema = z.object({
   EMAIL_RECIPIENT: z.string().optional(),
   NOTEBOOKLM_OUTPUT_DIR: z.string().optional(),
   NOTEBOOKLM_HEADLESS: z.string().optional(),
+  NOTEBOOKLM_MAX_SOURCES_PER_NOTEBOOK: z.coerce.number().int().positive().optional(),
   EDITION_SCHEDULE: z.string().optional(),
   REDDIT_REFRESH_STRATEGY: z.string().optional(),
   FABRIC_BIN: z.string().optional(),

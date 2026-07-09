@@ -18,12 +18,17 @@ import type {
   NotebookLmClient,
 } from "./notebooklm-client.js";
 import { NotebookLmError } from "./notebooklm-client.js";
+import type {
+  CreateSignalInput,
+  SignalRepository,
+} from "../../signals/signal-repository.js";
 
 export interface NotebookServiceConfig {
   sourceWaitTimeoutSec?: number;
   sourcePollIntervalMs?: number;
   titleTemplate?: (publicationDate: string, partitionKey: string) => string;
   partitionMinArticles?: number;
+  maxSourcesPerNotebook?: number;
 }
 
 export interface NotebookServiceDeps {
@@ -33,6 +38,7 @@ export interface NotebookServiceDeps {
   docRepo: DocumentRepository;
   notebookRepo: NotebookRepository;
   notebookLm: NotebookLmClient;
+  signalRepo?: SignalRepository;
   config?: NotebookServiceConfig;
   logger?: Logger;
 }
@@ -81,6 +87,10 @@ export interface NotebookProviderState {
 
 const DEFAULT_PARTITION_MIN_ARTICLES = 5;
 const DEFAULT_PARTITION_KEY = "master";
+const DEFAULT_MAX_SOURCES_PER_NOTEBOOK = 50;
+const PENDING_NOTEBOOK_PLACEHOLDER = "pending";
+const PENDING_NOTEBOOK_URL =
+  "https://notebooklm.google.com/notebook/pending";
 
 function formatPublicationDate(value: Date | string): string {
   if (typeof value === "string") return value.slice(0, 10);
@@ -161,19 +171,71 @@ function parseProviderState(raw: unknown): NotebookProviderState | null {
   };
 }
 
+async function writeNotebookExcludedSignals(
+  signalRepo: SignalRepository,
+  logger: Logger | undefined,
+  editionId: string,
+  partitionKey: string,
+  cap: number,
+  excludedDocs: {
+    id: string;
+    source_url: string;
+    canonical_url: string | null;
+  }[],
+): Promise<void> {
+  const totalDocuments = excludedDocs.length + cap;
+  const signalInputs: CreateSignalInput[] = excludedDocs.map((doc, idx) => ({
+    signal_kind: "notebook_excluded",
+    edition_id: editionId,
+    document_id: doc.id,
+    source_url: doc.canonical_url ?? doc.source_url,
+    payload: {
+      partition_key: partitionKey,
+      reason: "source_cap",
+      cap,
+      total_documents: totalDocuments,
+      rank: cap + idx + 1,
+    },
+  }));
+  try {
+    await signalRepo.createBatch(signalInputs);
+  } catch (err) {
+    logger?.warn("failed to insert notebook_excluded signals", {
+      editionId,
+      partitionKey,
+      excludedCount: excludedDocs.length,
+      error: err as Error,
+    });
+  }
+}
+
 async function tryCreateForEdition(
   deps: { notebookRepo: NotebookRepository },
-  input: Parameters<NotebookRepository["createForEdition"]>[0],
+  input: {
+    editionId: string;
+    partitionKey: string;
+    title: string;
+  },
 ): Promise<{ row: NotebookRow; created: boolean }> {
   try {
-    const row = await deps.notebookRepo.createForEdition(input);
+    const row = await deps.notebookRepo.createForEdition({
+      editionId: input.editionId,
+      partitionKey: input.partitionKey,
+      notebookExternalId: PENDING_NOTEBOOK_PLACEHOLDER,
+      title: input.title,
+      url: PENDING_NOTEBOOK_URL,
+      status: "pending",
+      sourceCount: 0,
+      providerResponse: {
+        phase: "pending",
+      } satisfies NotebookProviderState,
+    });
     return { row, created: true };
   } catch (err) {
     if (err instanceof NotebookConflictError) {
-      const partitionKey = input.partitionKey ?? DEFAULT_PARTITION_KEY;
       const existing = await deps.notebookRepo.getByEditionAndPartition(
         input.editionId,
-        partitionKey,
+        input.partitionKey,
       );
       if (existing) return { row: existing, created: false };
     }
@@ -254,7 +316,7 @@ export function createNotebookService(
     partitionKey: string;
   }): Promise<{
     row: NotebookRow;
-    createNotebook: CreateNotebookResult;
+    createNotebook: CreateNotebookResult | null;
     uploadedSources: UploadedSource[];
     recovered: boolean;
   }> {
@@ -267,10 +329,14 @@ export function createNotebookService(
       );
     }
 
-    const documents = await deps.docRepo.getByEditionAndPartition(
+    const maxSources =
+      deps.config?.maxSourcesPerNotebook ?? DEFAULT_MAX_SOURCES_PER_NOTEBOOK;
+    const ranked = await deps.docRepo.getRankedByEditionAndPartition(
       input.editionId,
       input.partitionKey,
+      maxSources,
     );
+    const documents = ranked.kept;
     const uploadableDocs = documents.filter(
       (d) =>
         (d.canonical_url !== null && d.canonical_url.length > 0) ||
@@ -289,11 +355,25 @@ export function createNotebookService(
       ? deps.config.titleTemplate(publicationDate, input.partitionKey)
       : `Daily Digest — ${publicationDate}`;
 
-    const createNotebook = await deps.notebookLm.createNotebook({ title });
-
     const inserted = await tryCreateForEdition(deps, {
       editionId: input.editionId,
       partitionKey: input.partitionKey,
+      title,
+    });
+
+    if (!inserted.created) {
+      const recoveredState = parseProviderState(inserted.row.provider_response);
+      return {
+        row: inserted.row,
+        createNotebook: recoveredState?.createNotebook ?? null,
+        uploadedSources: recoveredState?.uploadedSources ?? [],
+        recovered: true,
+      };
+    }
+
+    const createNotebook = await deps.notebookLm.createNotebook({ title });
+
+    let row = await deps.notebookRepo.updateDelivery(inserted.row.id, {
       notebookExternalId: createNotebook.notebookExternalId,
       title: createNotebook.title,
       url: createNotebook.url,
@@ -305,7 +385,6 @@ export function createNotebookService(
         uploadedSources: [],
       } satisfies NotebookProviderState,
     });
-    let row = inserted.row;
 
     const uploadedSources: UploadedSource[] = [];
     for (const doc of uploadableDocs) {
@@ -345,6 +424,17 @@ export function createNotebookService(
       displayName: `Daily Digest ${publicationDate}`,
     });
 
+    if (ranked.excluded.length > 0 && deps.signalRepo) {
+      await writeNotebookExcludedSignals(
+        deps.signalRepo,
+        deps.logger,
+        input.editionId,
+        input.partitionKey,
+        maxSources,
+        ranked.excluded,
+      );
+    }
+
     row = await deps.notebookRepo.updateDelivery(row.id, {
       sourceCount: uploadedSources.length,
       providerResponse: {
@@ -354,13 +444,26 @@ export function createNotebookService(
       } satisfies NotebookProviderState,
     });
 
-    return { row, createNotebook, uploadedSources, recovered: !inserted.created };
+    return { row, createNotebook, uploadedSources, recovered: false };
   }
 
   async function pollUntilReady(input: {
     row: NotebookRow;
     uploadedSources: UploadedSource[];
   }): Promise<NotebookRow> {
+    if (
+      input.uploadedSources.length === 0 &&
+      input.row.status === "pending"
+    ) {
+      deps.logger?.info(
+        "notebook has no uploaded sources yet; deferring poll",
+        {
+          editionId: input.row.edition_id,
+          notebookId: input.row.id,
+        },
+      );
+      return input.row;
+    }
     for (const src of input.uploadedSources) {
       const waited = await deps.notebookLm.waitForSource({
         notebookExternalId: input.row.notebook_external_id,
@@ -447,7 +550,12 @@ export function createNotebookService(
       return rowToResult(existing, edition, { alreadyExisted: true, mode });
     }
 
-    if (existing && existing.status === "pending" && !wait) {
+    if (
+      existing &&
+      existing.status === "pending" &&
+      !wait &&
+      existing.notebook_external_id !== PENDING_NOTEBOOK_PLACEHOLDER
+    ) {
       deps.logger?.info(
         "notebook already pending for edition; fire-and-forget no-op",
         { editionId: input.editionId, partitionKey, notebookId: existing.id },
@@ -455,29 +563,60 @@ export function createNotebookService(
       return rowToResult(existing, edition, { alreadyExisted: true, mode });
     }
 
+    if (
+      existing &&
+      existing.status === "pending" &&
+      existing.notebook_external_id === PENDING_NOTEBOOK_PLACEHOLDER
+    ) {
+      deps.logger?.warn(
+        "found stale placeholder notebook row; deleting and retrying from scratch",
+        {
+          editionId: input.editionId,
+          partitionKey,
+          notebookId: existing.id,
+        },
+      );
+      await deps.notebookRepo.deleteByEditionAndPartition(
+        input.editionId,
+        partitionKey,
+      );
+    }
+
+    const refreshed =
+      existing &&
+      existing.status === "pending" &&
+      existing.notebook_external_id === PENDING_NOTEBOOK_PLACEHOLDER
+        ? undefined
+        : existing;
+
     let created: {
       row: NotebookRow;
-      createNotebook: CreateNotebookResult;
+      createNotebook: CreateNotebookResult | null;
       uploadedSources: UploadedSource[];
       recovered: boolean;
     };
 
     try {
-      if (existing && existing.status === "pending" && wait) {
-        const state = parseProviderState(existing.provider_response);
+      if (
+        refreshed &&
+        refreshed.status === "pending" &&
+        wait &&
+        refreshed.notebook_external_id !== PENDING_NOTEBOOK_PLACEHOLDER
+      ) {
+        const state = parseProviderState(refreshed.provider_response);
         if (!state || !state.createNotebook || !state.uploadedSources) {
           throw new Error(
             `notebook row for edition ${input.editionId} partition '${partitionKey}' is in 'pending' state but has no provider_response with uploaded sources; delete the row and re-run`,
           );
         }
         created = {
-          row: existing,
+          row: refreshed,
           createNotebook: state.createNotebook,
           uploadedSources: state.uploadedSources,
           recovered: true,
         };
       } else {
-        if (existing && existing.status === "failed") {
+        if (refreshed && refreshed.status === "failed") {
           await deps.notebookRepo.deleteByEditionAndPartition(
             input.editionId,
             partitionKey,
@@ -524,7 +663,7 @@ export function createNotebookService(
     } catch (err) {
       const reason = failureReasonOf(err);
       await markFailed({
-        row: existing ?? null,
+        row: refreshed ?? null,
         createdResult: null,
         editionId: input.editionId,
         partitionKey,

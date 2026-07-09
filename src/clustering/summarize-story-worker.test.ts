@@ -183,6 +183,7 @@ function makeDeps(overrides?: {
     getByEdition: vi.fn(),
     getByEditionAndUrl: vi.fn(),
     getByEditionAndPartition: vi.fn(),
+    getRankedByEditionAndPartition: vi.fn(),
   };
 
   const chunkRepo: ChunkRepository = {

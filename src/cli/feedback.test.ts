@@ -164,6 +164,10 @@ function makeFakeDocRepo(opts: {
     getByEdition: vi.fn().mockResolvedValue([]),
     getByEditionAndUrl: vi.fn().mockResolvedValue(opts.byEditionAndUrl),
     getByEditionAndPartition: vi.fn().mockResolvedValue([]),
+    getRankedByEditionAndPartition: vi.fn().mockResolvedValue({
+      kept: [],
+      excluded: [],
+    }),
   };
 }
 

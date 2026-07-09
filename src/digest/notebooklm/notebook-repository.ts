@@ -31,6 +31,9 @@ export interface UpdateNotebookInput {
   sourceCount?: number;
   providerResponse?: unknown;
   completedAt?: Date | null;
+  notebookExternalId?: string;
+  title?: string;
+  url?: string;
 }
 
 export interface NotebookRepository {
@@ -135,6 +138,9 @@ export function createNotebookRepository(
         source_count?: number;
         provider_response?: unknown;
         completed_at?: Date | null;
+        notebook_external_id?: string;
+        title?: string;
+        url?: string;
       } = {};
       if (update.status !== undefined) setValues.status = update.status;
       if (update.sourceCount !== undefined) {
@@ -149,6 +155,11 @@ export function createNotebookRepository(
       if (update.completedAt !== undefined) {
         setValues.completed_at = update.completedAt;
       }
+      if (update.notebookExternalId !== undefined) {
+        setValues.notebook_external_id = update.notebookExternalId;
+      }
+      if (update.title !== undefined) setValues.title = update.title;
+      if (update.url !== undefined) setValues.url = update.url;
       const updated = await db
         .updateTable("notebooks")
         .set(setValues)

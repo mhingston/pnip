@@ -467,6 +467,7 @@ async function main(): Promise<number> {
       const markdownDigestRepo = createMarkdownDigestRepository(db);
       const notebookRepo = createNotebookRepository(db);
       const notebookLm = createNotebookLmClient({});
+      const signalRepo = createSignalRepository(db);
       const service = createNotebookService({
         db,
         editionRepo,
@@ -474,6 +475,10 @@ async function main(): Promise<number> {
         docRepo,
         notebookRepo,
         notebookLm,
+        signalRepo,
+        config: {
+          maxSourcesPerNotebook: cfg.NOTEBOOKLM_MAX_SOURCES_PER_NOTEBOOK,
+        },
         logger,
       });
       const { exitCode } = await runGenerateNotebookCommand({

@@ -132,6 +132,7 @@ describe("ChunkDocumentWorker", () => {
       getByEdition: vi.fn(),
       getByEditionAndUrl: vi.fn(),
       getByEditionAndPartition: vi.fn(),
+      getRankedByEditionAndPartition: vi.fn(),
     };
     const sectionRepo: SectionRepository = {
       createBatch: vi.fn(),
@@ -184,6 +185,7 @@ describe("ChunkDocumentWorker", () => {
       getByEdition: vi.fn(),
       getByEditionAndUrl: vi.fn(),
       getByEditionAndPartition: vi.fn(),
+      getRankedByEditionAndPartition: vi.fn(),
     };
     const sectionRepo: SectionRepository = {
       createBatch: vi.fn(),
@@ -235,6 +237,7 @@ describe("ChunkDocumentWorker", () => {
       getByEdition: vi.fn(),
       getByEditionAndUrl: vi.fn(),
       getByEditionAndPartition: vi.fn(),
+      getRankedByEditionAndPartition: vi.fn(),
     };
     const sectionRepo: SectionRepository = {
       createBatch: vi.fn(),
@@ -316,6 +319,7 @@ describe("ChunkDocumentWorker", () => {
       getByEdition: vi.fn(),
       getByEditionAndUrl: vi.fn(),
       getByEditionAndPartition: vi.fn(),
+      getRankedByEditionAndPartition: vi.fn(),
     };
     const sectionRepo: SectionRepository = {
       createBatch: vi.fn(),
@@ -370,6 +374,7 @@ describe("ChunkDocumentWorker", () => {
       getByEdition: vi.fn(),
       getByEditionAndUrl: vi.fn(),
       getByEditionAndPartition: vi.fn(),
+      getRankedByEditionAndPartition: vi.fn(),
     };
     const sectionRepo: SectionRepository = {
       createBatch: vi.fn(),

@@ -1,6 +1,6 @@
 # Design — Notebook Generation Pipeline
 
-**Status:** Phases A, B, C.1, C.2, C.3 implemented (1165 tests pass). The 50-source cap (Phase 4) and per-partition finalization schedules (Phase 3) are deferred. · **Audience:** the operator (Mark) and any future implementation PR · **Date:** 2026-07-08
+**Status:** Phases A, B, C.1, C.2, C.3, 4 implemented (1182 tests pass, typecheck clean). The per-partition finalization schedules (Phase 3) are deferred. · **Audience:** the operator (Mark) and any future implementation PR · **Date:** 2026-07-09
 
 This document captures what we learned from the live Miniflux instance, what
 shape notebook editions should take, and how PNIP should feed them. It is
@@ -662,22 +662,35 @@ minimises missed articles, but the operator's cron-schedulable
 deterministic rule is more valuable than per-partition nuance until the
 corpus grows materially. Tracked as future work.
 
-### Phase 4 — Soft cap and overflow signalling (deferred)
+### Phase 4 — Soft cap and overflow signalling (implemented)
 
 * Apply the 50-source cap to **all** notebooks, including master.
 * Write `notebook_excluded` signals for overflow documents.
-* `digestive notebook-status` reports the exclusion count.
+* Exclusion counts are visible via `digestive feedback-summary` (`signal_kind: notebook_excluded`).
 
 **Acceptance:** the master notebook is bounded at 50 sources; the
 Markdown digest remains complete; excluded documents are visible in
 `feedback-summary`.
 
-**Status:** deferred. The corpus has hit 50+ documents on the master
+**Status:** implemented (cap = 50, signals = `notebook_excluded`).
+The cap fires via `DocumentRepository.getRankedByEditionAndPartition`:
+each edition+partition document is ranked by `story_clusters.cluster_order`
+ASC (best wins, unclustered documents sort last with NULLS LAST) and
+then by `documents.id` ASC as the tiebreaker. The first 50 are
+`kept`; the rest are `excluded`. For each excluded document the
+notebook service writes one `notebook_excluded` signal with payload
+`{ partition_key, reason: "source_cap", cap: 50, total_documents,
+rank }` where `rank` is 1-indexed against the kept set (the first
+excluded doc is rank 51). The signal write is best-effort: it is
+wrapped in try/catch and a warning is logged on failure; the notebook
+artifact is never blocked by signal persistence. The cap is uniform
+across all partitions (master and non-master) at 50; the `master`
+partition's "softer" framing from the original design is now realised
+by the Markdown digest continuing to include every document while the
+notebook is bounded. The corpus has hit 50+ documents on the master
 edition at most once in the sample (58 articles on 2026-06-16, the
-Reddit-burst day) and per-category partitions have *never* exceeded 50.
-The 50-cap is therefore a future-proofing measure rather than a current
-need, and the `notebook_excluded` signal substrate can be added without
-a migration when it becomes load-bearing.
+Reddit-burst day), so the cap is future-proofing rather than a current
+need, but the substrate is in place when it becomes load-bearing.
 
 ### Phase 5 — Out-of-scope future work (deferred)
 
@@ -721,11 +734,12 @@ a migration when it becomes load-bearing.
    edition to Published.
 5. **Master notebook cap:** 50 (matches partitions) or higher
    (e.g., 100)? The corpus only hit 58 once in the sample.
-   **Resolved (deferred):** the 50-cap is not yet enforced on the
-   master notebook (Phase 4 deferred, §11). The current implementation
-   uploads all master-partition documents; the cap will land with the
-   `notebook_excluded` signal substrate when the corpus grows enough
-   for the cap to matter.
+   **Resolved:** the 50-cap is enforced uniformly on every partition
+   notebook, including master (Phase 4 implemented, §11). The cap is
+   the same value for all partitions; master is required to produce a
+   notebook whenever it has any documents, and the cap drops
+   overflow to `notebook_excluded` signals while the Markdown digest
+   keeps the full content.
 6. **Bulk-import handling:** rely on operator to mark-read in
    Miniflux first, or add a "skip entries older than N days" guard
    in `discover`?

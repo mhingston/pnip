@@ -91,6 +91,7 @@ describe("ExpandDocumentWorker", () => {
       getByEdition: vi.fn(),
       getByEditionAndUrl: vi.fn().mockResolvedValue(undefined),
       getByEditionAndPartition: vi.fn(),
+      getRankedByEditionAndPartition: vi.fn(),
     };
 
     const sectionRepo: SectionRepository = {
@@ -171,6 +172,7 @@ describe("ExpandDocumentWorker", () => {
       getByEdition: vi.fn(),
       getByEditionAndUrl: vi.fn().mockResolvedValue({ id: "existing-doc" }),
       getByEditionAndPartition: vi.fn(),
+      getRankedByEditionAndPartition: vi.fn(),
     };
 
     const sectionRepo: SectionRepository = {
@@ -250,6 +252,7 @@ describe("ExpandDocumentWorker", () => {
       getByEdition: vi.fn(),
       getByEditionAndUrl: vi.fn().mockResolvedValue(undefined),
       getByEditionAndPartition: vi.fn(),
+      getRankedByEditionAndPartition: vi.fn(),
     };
     const sectionRepo: SectionRepository = {
       createBatch: vi.fn(),
@@ -312,6 +315,7 @@ describe("ExpandDocumentWorker", () => {
       getByEdition: vi.fn(),
       getByEditionAndUrl: vi.fn().mockResolvedValue(undefined),
       getByEditionAndPartition: vi.fn(),
+      getRankedByEditionAndPartition: vi.fn(),
     };
     const sectionRepo: SectionRepository = {
       createBatch: vi.fn(),
@@ -364,6 +368,7 @@ describe("ExpandDocumentWorker", () => {
       getByEdition: vi.fn(),
       getByEditionAndUrl: vi.fn().mockResolvedValue(undefined),
       getByEditionAndPartition: vi.fn(),
+      getRankedByEditionAndPartition: vi.fn(),
     };
     const sectionRepo: SectionRepository = {
       createBatch: vi.fn(),
@@ -425,6 +430,7 @@ describe("ExpandDocumentWorker", () => {
       getByEdition: vi.fn(),
       getByEditionAndUrl: vi.fn().mockResolvedValue(undefined),
       getByEditionAndPartition: vi.fn(),
+      getRankedByEditionAndPartition: vi.fn(),
     };
     const sectionRepo: SectionRepository = {
       createBatch: vi.fn(),

@@ -136,6 +136,7 @@ function makeDeps(overrides?: {
     getByEdition: vi.fn().mockImplementation(async () => documents),
     getByEditionAndUrl: vi.fn(),
     getByEditionAndPartition: vi.fn(),
+    getRankedByEditionAndPartition: vi.fn(),
   };
 
   const summaryRepo: SummaryRepository = {

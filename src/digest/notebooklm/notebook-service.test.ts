@@ -256,6 +256,32 @@ function makeDeps(overrides: DepsOverrides = {}) {
           return partitionKey === "master" ? documents : [];
         },
       ),
+    getRankedByEditionAndPartition: vi
+      .fn()
+      .mockImplementation(
+        async (
+          _ed: string,
+          partitionKey: string,
+          limit: number,
+        ): Promise<{ kept: DocumentRow[]; excluded: DocumentRow[] }> => {
+          let pool: DocumentRow[] = [];
+          if (overrides.documentsForPartition) {
+            pool =
+              overrides.documentsForPartition[partitionKey] ??
+              overrides.documentsForPartition["master"] ??
+              [];
+          } else if (partitionKey === "master") {
+            pool = documents;
+          }
+          if (pool.length <= limit) {
+            return { kept: pool, excluded: [] };
+          }
+          return {
+            kept: pool.slice(0, limit),
+            excluded: pool.slice(limit),
+          };
+        },
+      ),
   };
   const notebookById = new Map<string, NotebookRow>();
   const notebookRepo: NotebookRepository = {
@@ -847,6 +873,335 @@ describe("generate — UNIQUE race recovery", () => {
   });
 });
 
+describe("generate — DB-row-first race serialization", () => {
+  it("loser of the concurrent insert race does not call createNotebook or addSource", async () => {
+    const winnerRow = makeNotebookRow({
+      id: "nb-winner",
+      status: "pending",
+      notebook_external_id: "nb-ext-winner",
+      url: "https://notebooklm.google.com/notebook/nb-ext-winner",
+      provider_response: {
+        phase: "pending",
+        createNotebook: {
+          notebookExternalId: "nb-ext-winner",
+          title: "Daily Digest",
+          url: "https://notebooklm.google.com/notebook/nb-ext-winner",
+          createdAt: null,
+        },
+        uploadedSources: [
+          { sourceExternalId: "src-w1", docId: null, displayName: "src w1" },
+        ],
+      },
+    });
+    let getByEditionAndPartitionCalls = 0;
+    const { deps, mocks } = makeDeps({
+      existingNotebookRow: undefined,
+      notebookRepo: {
+        getByEditionAndPartition: vi.fn().mockImplementation(async () => {
+          getByEditionAndPartitionCalls++;
+          if (getByEditionAndPartitionCalls === 1) return undefined;
+          return winnerRow;
+        }),
+        createForEdition: vi.fn().mockImplementation(async () => {
+          throw new NotebookConflictError("ed-1", "master");
+        }),
+      },
+    });
+    const svc = createNotebookService(deps);
+    const result = await svc.generate({ editionId: "ed-1" });
+
+    expect(result.alreadyExisted).toBe(true);
+    expect(result.notebookId).toBe("nb-winner");
+    expect(
+      mocks.notebookLm.createNotebook as ReturnType<typeof vi.fn>,
+    ).not.toHaveBeenCalled();
+    expect(
+      mocks.notebookLm.addSource as ReturnType<typeof vi.fn>,
+    ).not.toHaveBeenCalled();
+    expect(
+      mocks.notebookRepo.createForEdition as ReturnType<typeof vi.fn>,
+    ).toHaveBeenCalledTimes(1);
+  });
+
+  it("createNotebook failure after DB insert leaves a row with status='failed' and placeholder external_id", async () => {
+    const placeholderRow = makeNotebookRow({
+      id: "nb-placeholder",
+      status: "pending",
+      notebook_external_id: "pending",
+      url: "https://notebooklm.google.com/notebook/pending",
+    });
+    const notebookLm = makeFakeNotebookLmClient({
+      createThrows: new NotebookLmError({
+        message: "notebooklm create failed",
+        command: "notebooklm create X --json",
+        exitCode: 1,
+        stderr: "create failed",
+        stdout: null,
+        durationMs: 10,
+        timedOut: false,
+      }),
+    });
+    let createCount = 0;
+    const { deps, mocks } = makeDeps({
+      notebookLm,
+      notebookRepo: {
+        getByEditionAndPartition: vi
+          .fn()
+          .mockImplementation(async () => placeholderRow),
+        createForEdition: vi.fn().mockImplementation(async () => {
+          createCount++;
+          if (createCount === 1) return placeholderRow;
+          throw new NotebookConflictError("ed-1", "master");
+        }),
+      },
+    });
+    const svc = createNotebookService(deps);
+    await expect(
+      svc.generate({ editionId: "ed-1", wait: true }),
+    ).rejects.toThrow(/notebooklm create failed/);
+
+    const createCalls = (
+      mocks.notebookRepo.createForEdition as ReturnType<typeof vi.fn>
+    ).mock.calls;
+    expect(createCalls).toHaveLength(2);
+    expect(createCalls[0]![0]).toMatchObject({
+      editionId: "ed-1",
+      partitionKey: "master",
+      notebookExternalId: "pending",
+      url: "https://notebooklm.google.com/notebook/pending",
+      status: "pending",
+      sourceCount: 0,
+    });
+
+    const updateCalls = (
+      mocks.notebookRepo.updateDelivery as ReturnType<typeof vi.fn>
+    ).mock.calls;
+    const failedUpdate = updateCalls.find(
+      ([, u]) => (u as { status?: string }).status === "failed",
+    );
+    expect(failedUpdate).toBeDefined();
+
+    expect(
+      mocks.notebookLm.addSource as ReturnType<typeof vi.fn>,
+    ).not.toHaveBeenCalled();
+  });
+
+  it("addSource failure after NotebookLM creation leaves status='failed' and real external_id, with earlier uploads visible", async () => {
+    const realRow = makeNotebookRow({
+      id: "nb-real",
+      status: "pending",
+      notebook_external_id: "nb-ext-1",
+      url: "https://notebooklm.google.com/notebook/nb-ext-1",
+    });
+    const notebookLm = makeFakeNotebookLmClient({
+      addSourceOverride: (() => {
+        let callIndex = 0;
+        return (_input: unknown): AddSourceResult => {
+          callIndex++;
+          if (callIndex === 3) {
+            throw new NotebookLmError({
+              message: "add source failed on 3rd",
+              command: "notebooklm source add X -n Y --json",
+              exitCode: 1,
+              stderr: "boom",
+              stdout: null,
+              durationMs: 10,
+              timedOut: false,
+            });
+          }
+          return {
+            sourceExternalId: `src-${callIndex}`,
+            title: null,
+            kind: null,
+            url: null,
+            status: "processing",
+          };
+        };
+      })(),
+    });
+    let getCalls = 0;
+    let createCount = 0;
+    const { deps, mocks } = makeDeps({
+      notebookLm,
+      notebookRepo: {
+        getByEditionAndPartition: vi.fn().mockImplementation(async () => {
+          getCalls++;
+          if (getCalls === 1) return undefined;
+          return realRow;
+        }),
+        createForEdition: vi.fn().mockImplementation(async () => {
+          createCount++;
+          if (createCount === 1) return realRow;
+          throw new NotebookConflictError("ed-1", "master");
+        }),
+      },
+    });
+    const svc = createNotebookService(deps);
+    await expect(
+      svc.generate({ editionId: "ed-1", wait: true }),
+    ).rejects.toThrow(/add source failed on 3rd/);
+
+    const updateCalls = (
+      mocks.notebookRepo.updateDelivery as ReturnType<typeof vi.fn>
+    ).mock.calls;
+    const failedUpdate = updateCalls.find(
+      ([, u]) => (u as { status?: string }).status === "failed",
+    );
+    expect(failedUpdate).toBeDefined();
+
+    const addSourceCalls = (
+      mocks.notebookLm.addSource as ReturnType<typeof vi.fn>
+    ).mock.calls;
+    expect(addSourceCalls).toHaveLength(3);
+    for (const call of addSourceCalls) {
+      expect(call[0]).toMatchObject({
+        notebookExternalId: "nb-ext-1",
+      });
+    }
+  });
+
+  it("recovers an existing pending row with placeholder external_id by deleting and retrying", async () => {
+    const placeholderExisting = makeNotebookRow({
+      id: "nb-placeholder-stale",
+      status: "pending",
+      notebook_external_id: "pending",
+      url: "https://notebooklm.google.com/notebook/pending",
+      provider_response: { phase: "pending" },
+    });
+    const freshRow = makeNotebookRow({
+      id: "nb-fresh",
+      status: "pending",
+      notebook_external_id: "nb-ext-fresh",
+      url: "https://notebooklm.google.com/notebook/nb-ext-fresh",
+    });
+    const notebookLm = makeFakeNotebookLmClient({
+      createResult: {
+        notebookExternalId: "nb-ext-fresh",
+        title: "Daily Digest",
+        url: "https://notebooklm.google.com/notebook/nb-ext-fresh",
+        createdAt: null,
+      },
+    });
+    const { deps, mocks } = makeDeps({
+      existingNotebookRow: placeholderExisting,
+      notebookLm,
+    });
+    (deps.notebookRepo.getByEditionAndPartition as ReturnType<typeof vi.fn>).mockImplementation(
+      async () => placeholderExisting,
+    );
+    (deps.notebookRepo.createForEdition as ReturnType<typeof vi.fn>).mockResolvedValue(
+      freshRow,
+    );
+    (deps.notebookRepo.updateDelivery as ReturnType<typeof vi.fn>).mockImplementation(
+      async (
+        id: string,
+        update: Parameters<NotebookRepository["updateDelivery"]>[1],
+      ) =>
+        makeNotebookRow({
+          id,
+          notebook_external_id: update.notebookExternalId ?? freshRow.notebook_external_id,
+          title: update.title ?? freshRow.title,
+          url: update.url ?? freshRow.url,
+          status: update.status ?? "pending",
+          source_count: update.sourceCount ?? 0,
+          completed_at: update.completedAt ?? null,
+          provider_response: update.providerResponse ?? null,
+        }),
+    );
+    const svc = createNotebookService(deps);
+    const result = await svc.generate({ editionId: "ed-1" });
+
+    expect(
+      mocks.notebookRepo.deleteByEditionAndPartition as ReturnType<typeof vi.fn>,
+    ).toHaveBeenCalledWith("ed-1", "master");
+    expect(result.notebookId).toBe("nb-fresh");
+    expect(result.notebookExternalId).toBe("nb-ext-fresh");
+    expect(result.alreadyExisted).toBe(false);
+    expect(
+      mocks.notebookLm.createNotebook as ReturnType<typeof vi.fn>,
+    ).toHaveBeenCalledOnce();
+  });
+
+  it("reuses an existing pending row that has a real external_id and uploadedSources", async () => {
+    const realExisting = makeNotebookRow({
+      id: "nb-real-existing",
+      status: "pending",
+      notebook_external_id: "nb-ext-real",
+      url: "https://notebooklm.google.com/notebook/nb-ext-real",
+      source_count: 2,
+      provider_response: {
+        phase: "pending",
+        createNotebook: {
+          notebookExternalId: "nb-ext-real",
+          title: "Daily Digest",
+          url: "https://notebooklm.google.com/notebook/nb-ext-real",
+          createdAt: null,
+        },
+        uploadedSources: [
+          { sourceExternalId: "src-1", docId: null, displayName: "src 1" },
+          { sourceExternalId: "src-2", docId: null, displayName: "src 2" },
+        ],
+      },
+    });
+    const { deps, mocks } = makeDeps({ existingNotebookRow: realExisting });
+    const svc = createNotebookService(deps);
+    const result = await svc.generate({ editionId: "ed-1" });
+
+    expect(result.alreadyExisted).toBe(true);
+    expect(result.notebookId).toBe("nb-real-existing");
+    expect(result.notebookExternalId).toBe("nb-ext-real");
+    expect(result.sourceCount).toBe(2);
+    expect(
+      mocks.notebookLm.createNotebook as ReturnType<typeof vi.fn>,
+    ).not.toHaveBeenCalled();
+    expect(
+      mocks.notebookLm.addSource as ReturnType<typeof vi.fn>,
+    ).not.toHaveBeenCalled();
+  });
+
+  it("race-loser with wait=true does not mark a placeholder/empty-source row as ready", async () => {
+    const emptySourcesRow = makeNotebookRow({
+      id: "nb-empty-sources",
+      status: "pending",
+      notebook_external_id: "nb-ext-real",
+      url: "https://notebooklm.google.com/notebook/nb-ext-real",
+      source_count: 0,
+      provider_response: {
+        phase: "pending",
+        createNotebook: {
+          notebookExternalId: "nb-ext-real",
+          title: "Daily Digest",
+          url: "https://notebooklm.google.com/notebook/nb-ext-real",
+          createdAt: null,
+        },
+        uploadedSources: [],
+      },
+    });
+    const { deps, mocks } = makeDeps({ existingNotebookRow: emptySourcesRow });
+    const svc = createNotebookService(deps);
+    const result = await svc.generate({ editionId: "ed-1", wait: true });
+
+    expect(
+      mocks.notebookLm.createNotebook as ReturnType<typeof vi.fn>,
+    ).not.toHaveBeenCalled();
+    expect(
+      mocks.notebookLm.addSource as ReturnType<typeof vi.fn>,
+    ).not.toHaveBeenCalled();
+    const updateCalls = (
+      mocks.notebookRepo.updateDelivery as ReturnType<typeof vi.fn>
+    ).mock.calls;
+    const readyCall = updateCalls.find(
+      ([, u]) => (u as { status?: string }).status === "ready",
+    );
+    expect(readyCall).toBeUndefined();
+
+    expect(result.status).toBe("pending");
+    expect(result.sourceCount).toBe(0);
+    expect(result.notebookId).toBe("nb-empty-sources");
+    expect(result.notebookExternalId).toBe("nb-ext-real");
+  });
+});
+
 describe("generate — fire-and-forget (default)", () => {
   it("returns immediately with status=pending, mode=fire-and-forget, no waitForSource calls", async () => {
     const { deps, mocks } = makeDeps();
@@ -948,7 +1303,14 @@ describe("generate — fire-and-forget (default)", () => {
       mocks.notebookRepo.updateDelivery as ReturnType<typeof vi.fn>
     ).mock.calls;
     const persistCall = updateCalls.find(
-      ([, u]) => (u as { providerResponse?: { phase?: string } }).providerResponse?.phase === "pending",
+      ([, u]) => {
+        const pr = (u as { providerResponse?: { phase?: string; uploadedSources?: unknown[] } }).providerResponse;
+        return (
+          pr?.phase === "pending" &&
+          Array.isArray(pr.uploadedSources) &&
+          pr.uploadedSources.length > 0
+        );
+      },
     );
     expect(persistCall).toBeDefined();
     const providerState = (
@@ -1321,6 +1683,154 @@ describe("generate — partition awareness", () => {
     ).toHaveBeenCalledOnce();
     expect(
       (mocks.notebookRepo.createForEdition as ReturnType<typeof vi.fn>),
+    ).toHaveBeenCalledOnce();
+  });
+});
+
+describe("generate — 50-source cap and notebook_excluded signals", () => {
+  function makeManyDocs(n: number, prefix = "d"): DocumentRow[] {
+    return Array.from({ length: n }, (_, i) =>
+      makeDoc({
+        id: `${prefix}-${i}`,
+        title: `Doc ${i}`,
+        source_url: `https://example.com/${prefix}/${i}`,
+        canonical_url: `https://example.com/${prefix}/${i}`,
+      }),
+    );
+  }
+
+  function makeFakeSignalRepo(): {
+    createBatch: ReturnType<typeof vi.fn>;
+  } {
+    return {
+      createBatch: vi.fn().mockResolvedValue([]),
+    };
+  }
+
+  it("uploads only the cap (50) and writes notebook_excluded signals for the overflow", async () => {
+    const docs = makeManyDocs(60);
+    const signalRepo = makeFakeSignalRepo();
+    const { deps, mocks } = makeDeps({
+      documentsForPartition: { master: docs },
+    });
+    deps.signalRepo = signalRepo as never;
+    const svc = createNotebookService(deps);
+    const result = await svc.generate({ editionId: "ed-1", wait: true });
+
+    expect(result.status).toBe("ready");
+    expect(result.sourceCount).toBe(51);
+
+    const addSourceCalls = (mocks.notebookLm.addSource as ReturnType<typeof vi.fn>).mock
+      .calls;
+    expect(addSourceCalls).toHaveLength(51);
+
+    expect(signalRepo.createBatch).toHaveBeenCalledTimes(1);
+    const rows = signalRepo.createBatch.mock.calls[0]![0] as Array<{
+      signal_kind: string;
+      edition_id: string;
+      document_id: string;
+      source_url: string;
+      payload: {
+        partition_key: string;
+        reason: string;
+        cap: number;
+        total_documents: number;
+        rank: number;
+      };
+    }>;
+    expect(rows).toHaveLength(10);
+    expect(rows[0]!.signal_kind).toBe("notebook_excluded");
+    expect(rows[0]!.edition_id).toBe("ed-1");
+    expect(rows[0]!.document_id).toBe("d-50");
+    expect(rows[0]!.payload.partition_key).toBe("master");
+    expect(rows[0]!.payload.reason).toBe("source_cap");
+    expect(rows[0]!.payload.cap).toBe(50);
+    expect(rows[0]!.payload.total_documents).toBe(60);
+    expect(rows[0]!.payload.rank).toBe(51);
+    expect(rows[9]!.document_id).toBe("d-59");
+    expect(rows[9]!.payload.rank).toBe(60);
+  });
+
+  it("writes no signals when there is no overflow", async () => {
+    const docs = makeManyDocs(30);
+    const signalRepo = makeFakeSignalRepo();
+    const { deps, mocks } = makeDeps({
+      documentsForPartition: { master: docs },
+    });
+    deps.signalRepo = signalRepo as never;
+    const svc = createNotebookService(deps);
+    const result = await svc.generate({ editionId: "ed-1", wait: true });
+
+    expect(result.status).toBe("ready");
+    expect(result.sourceCount).toBe(31);
+    expect(signalRepo.createBatch).not.toHaveBeenCalled();
+
+    const addSourceCalls = (mocks.notebookLm.addSource as ReturnType<typeof vi.fn>).mock
+      .calls;
+    expect(addSourceCalls).toHaveLength(31);
+  });
+
+  it("honours a custom maxSourcesPerNotebook cap from config", async () => {
+    const docs = makeManyDocs(20);
+    const signalRepo = makeFakeSignalRepo();
+    const { deps, mocks } = makeDeps({
+      documentsForPartition: { master: docs },
+      config: { maxSourcesPerNotebook: 10, partitionMinArticles: 1 },
+    });
+    deps.signalRepo = signalRepo as never;
+    const svc = createNotebookService(deps);
+    const result = await svc.generate({ editionId: "ed-1", wait: true });
+
+    expect(result.status).toBe("ready");
+    expect(result.sourceCount).toBe(11);
+
+    const addSourceCalls = (mocks.notebookLm.addSource as ReturnType<typeof vi.fn>).mock
+      .calls;
+    expect(addSourceCalls).toHaveLength(11);
+
+    expect(signalRepo.createBatch).toHaveBeenCalledTimes(1);
+    const rows = signalRepo.createBatch.mock.calls[0]![0] as Array<{
+      payload: { cap: number; total_documents: number; rank: number };
+    }>;
+    expect(rows).toHaveLength(10);
+    expect(rows[0]!.payload.cap).toBe(10);
+    expect(rows[0]!.payload.total_documents).toBe(20);
+    expect(rows[0]!.payload.rank).toBe(11);
+    expect(rows[9]!.payload.rank).toBe(20);
+  });
+
+  it("does not crash and writes no signals when signalRepo is undefined", async () => {
+    const docs = makeManyDocs(60);
+    const { deps, mocks } = makeDeps({
+      documentsForPartition: { master: docs },
+    });
+    const svc = createNotebookService(deps);
+    const result = await svc.generate({ editionId: "ed-1", wait: true });
+
+    expect(result.status).toBe("ready");
+    expect(result.sourceCount).toBe(51);
+
+    const addSourceCalls = (mocks.notebookLm.addSource as ReturnType<typeof vi.fn>).mock
+      .calls;
+    expect(addSourceCalls).toHaveLength(51);
+  });
+
+  it("skips the signal write but still creates the notebook when the signal write fails", async () => {
+    const docs = makeManyDocs(60);
+    const signalRepo = makeFakeSignalRepo();
+    signalRepo.createBatch.mockRejectedValue(new Error("signals table missing"));
+    const { deps, mocks } = makeDeps({
+      documentsForPartition: { master: docs },
+    });
+    deps.signalRepo = signalRepo as never;
+    const svc = createNotebookService(deps);
+    const result = await svc.generate({ editionId: "ed-1", wait: true });
+
+    expect(result.status).toBe("ready");
+    expect(result.sourceCount).toBe(51);
+    expect(signalRepo.createBatch).toHaveBeenCalledTimes(1);
+    expect(
+      (mocks.notebookLm.createNotebook as ReturnType<typeof vi.fn>),
     ).toHaveBeenCalledOnce();
   });
 });
