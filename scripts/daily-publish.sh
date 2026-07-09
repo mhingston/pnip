@@ -43,6 +43,11 @@
 
 set -euo pipefail
 
+# Cron runs with a minimal PATH (typically /usr/bin:/bin). Set a sane
+# PATH so `node`, `npm`, and the project's node_modules/.bin tools
+# are all resolvable.
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 cd "$PROJECT_DIR"

@@ -13,6 +13,13 @@
 
 set -euo pipefail
 
+# Cron runs with a minimal PATH (typically /usr/bin:/bin). Set a sane
+# PATH so `node`, `npm`, and the project's node_modules/.bin tools
+# are all resolvable. The PNIP project's tsx lives at
+# node_modules/.bin/tsx and is invoked by `npm run`, so we don't
+# need to add it to PATH here.
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 cd "$PROJECT_DIR"

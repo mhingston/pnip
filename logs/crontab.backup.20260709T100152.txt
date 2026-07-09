@@ -1,0 +1,22 @@
+# --- BEGIN # pnip-managed ---
+# PNIP cron entries. Edits to this block are safe; the install
+# script rewrites it on every run. Run
+#   scripts/cron-install.sh remove
+# to delete the block entirely.
+#
+# Local time: crontab fires entries on the system clock's local
+# time, which is the operator's local time. The daily publish
+# sequence uses the local date as the edition date.
+
+# Drain Miniflux -> editions. Idempotent. Tight interval.
+*/10 * * * * /opt/pnip/scripts/digest-drain.sh >> /opt/pnip/logs/digest-drain.log 2>&1
+
+# Cheap queue-health preview. The full maintenance --apply runs daily
+# after publication (separate cron in the README).
+0 */6 * * * cd /opt/pnip && /opt/pnip/node_modules/.bin/tsx /opt/pnip/src/cli/index.ts maintenance >> /opt/pnip/logs/maintenance.log 2>&1
+
+# Daily publication. The script itself sequences the steps; cron just
+# fires the trigger at the operator's local publication time.
+0 6 * * * /opt/pnip/scripts/daily-publish.sh >> /opt/pnip/logs/daily-publish.log 2>&1
+
+# --- END # pnip-managed ---
