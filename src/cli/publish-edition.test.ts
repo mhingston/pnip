@@ -653,6 +653,8 @@ describe("buildPartitionBreakdown", () => {
       completion: makeReadyCompletionReport(),
     });
     const reddit = breakdown.find((b) => b.partitionKey === "reddit");
+    const master = breakdown.find((b) => b.partitionKey === "master");
+    expect(master?.documentCount).toBe(20);
     expect(reddit).toBeDefined();
     expect(reddit?.active).toBe(false);
     expect(reddit?.documentCount).toBe(1);
@@ -680,6 +682,8 @@ describe("buildPartitionBreakdown", () => {
       completion,
     });
     const yt = breakdown.find((b) => b.partitionKey === "youtube");
+    const master = breakdown.find((b) => b.partitionKey === "master");
+    expect(master?.documentCount).toBe(26);
     expect(yt?.active).toBe(true);
     expect(yt?.notebookReady).toBe(true);
     expect(yt?.podcastRequired).toBe(false);

@@ -353,7 +353,9 @@ export function createNotebookService(
     const publicationDate = formatPublicationDate(edition.publication_date);
     const title = deps.config?.titleTemplate
       ? deps.config.titleTemplate(publicationDate, input.partitionKey)
-      : `Daily Digest — ${publicationDate}`;
+      : input.partitionKey === "master"
+        ? `Daily Digest — ${publicationDate}`
+        : `Daily Digest — ${publicationDate} — ${formatPartitionTitle(input.partitionKey)}`;
 
     const inserted = await tryCreateForEdition(deps, {
       editionId: input.editionId,
@@ -633,12 +635,12 @@ export function createNotebookService(
         );
         const shouldSkip =
           partitionKey !== DEFAULT_PARTITION_KEY &&
-          uploadableDocs.length < minArticles;
+          documents.length < minArticles;
         if (shouldSkip) {
           deps.logger?.info("notebook generation skipped", {
             editionId: input.editionId,
             partitionKey,
-            documentCount: uploadableDocs.length,
+            documentCount: documents.length,
             minArticles,
           });
           return {
@@ -646,11 +648,11 @@ export function createNotebookService(
             edition,
             notebookExternalId: "",
             url: "",
-            sourceCount: uploadableDocs.length,
+            sourceCount: documents.length,
             status: "skipped",
             alreadyExisted: false,
             failureReason: null,
-            skipReason: `partition '${partitionKey}' has ${uploadableDocs.length} uploadable documents, below threshold ${minArticles}`,
+            skipReason: `partition '${partitionKey}' has ${documents.length} documents, below threshold ${minArticles}`,
             mode,
             partitionKey,
           };
@@ -719,4 +721,11 @@ export function createNotebookService(
     },
     generate,
   };
+}
+
+function formatPartitionTitle(partitionKey: string): string {
+  if (partitionKey.toLowerCase() === "youtube") return "YouTube";
+  return partitionKey
+    .replace(/[-_]+/g, " ")
+    .replace(/\b\w/g, (character) => character.toUpperCase());
 }

@@ -112,11 +112,14 @@ export function createDocumentRepository(db: Kysely<Database>): DocumentReposito
     },
 
     async getByEditionAndPartition(editionId, partitionKey) {
-      return db
+      const query = db
         .selectFrom("documents")
         .selectAll()
         .where("edition_id", "=", editionId)
-        .where("partition_key", "=", partitionKey)
+        .$if(partitionKey !== "master", (qb) =>
+          qb.where("partition_key", "=", partitionKey),
+        );
+      return query
         .orderBy("created_at", "asc")
         .orderBy("source_url", "asc")
         .execute();
@@ -174,7 +177,9 @@ export function createDocumentRepository(db: Kysely<Database>): DocumentReposito
           "dq.avg_confidence",
         ])
         .where("d.edition_id", "=", editionId)
-        .where("d.partition_key", "=", partitionKey)
+        .$if(partitionKey !== "master", (qb) =>
+          qb.where("d.partition_key", "=", partitionKey),
+        )
         .orderBy("bc.best_cluster_order", "asc")
         .orderBy("dq.label_rank", "asc")
         .orderBy("dq.avg_confidence", "desc")

@@ -245,7 +245,7 @@ describe("renderMarkdown", () => {
     expect(md).toContain("## Sources");
   });
 
-  it("renders Top Stories, category buckets, Videos and Reddit sections when present", () => {
+  it("renders a layered briefing with a flat More Stories section", () => {
     const stories: StorySnapshot[] = [
       // First 5 go into Top Stories (one per category); the rest are bucketed.
       ...makeNStories(2, "Technology", "ai"),
@@ -267,9 +267,11 @@ describe("renderMarkdown", () => {
     });
 
     expect(md).toContain("## Top Stories");
-    expect(md).toContain("## Technology");
-    expect(md).toContain("## Videos");
-    expect(md).toContain("## Reddit Discussions");
+    expect(md).toContain("## Today in brief");
+    expect(md).toContain("## More Stories");
+    expect(md).not.toMatch(/^## Technology$/m);
+    expect(md).not.toMatch(/^## Videos$/m);
+    expect(md).not.toMatch(/^## Reddit Discussions$/m);
     expect(md).not.toContain("## Closing Summary");
     expect(md).toContain("## Sources");
   });
@@ -307,7 +309,7 @@ describe("renderMarkdown", () => {
     expect(mdA).toBe(mdB);
   });
 
-  it("renders citation tokens as [N] inside Claims", () => {
+  it("renders citation tokens as [N] inside reader-friendly Key details", () => {
     const stories = makeNStories(1, "Technology", "ai");
     const idx = buildCitationIndex(stories.flatMap((s) => s.claims.map((c) => ({ chunkId: c.chunkId, claimText: c.text }))));
     const md = svc.renderMarkdown({
@@ -316,7 +318,157 @@ describe("renderMarkdown", () => {
       stories,
       citationIndex: idx,
     });
+    expect(md).toContain("_Key details:_");
+    expect(md).not.toContain("_Claims:_");
     expect(md).toMatch(/\[\d+\]/);
+  });
+
+  it("preserves generated summaries for stories beyond the top five", () => {
+    const stories = makeNStories(6, "Technology", "ai");
+    stories[5]!.summaryText = "A distinctive sixth-story summary that must remain visible.";
+    const idx = buildCitationIndex(stories.flatMap((s) => s.claims.map((c) => ({ chunkId: c.chunkId, claimText: c.text }))));
+
+    const md = svc.renderMarkdown({
+      edition: makeEdition(),
+      assembly: { edition: makeEdition(), stories: [], ...DUMMY_ASSEMBLY },
+      stories,
+      citationIndex: idx,
+    });
+
+    expect(md).toContain("## More Stories");
+    expect(md).toContain("A distinctive sixth-story summary that must remain visible.");
+  });
+
+  it("preserves a story summary and source even when it has no key details", () => {
+    const story = makeStoryAt("summary-only", 0, "Technology", "ai");
+    story.summaryText = "A useful summary backed by the story's source.";
+    story.claims = [];
+
+    const md = svc.renderMarkdown({
+      edition: makeEdition(),
+      assembly: { edition: makeEdition(), stories: [], ...DUMMY_ASSEMBLY },
+      stories: [story],
+      citationIndex: buildCitationIndex([]),
+    });
+
+    expect(md).toContain("A useful summary backed by the story's source.");
+    expect(md).toContain("https://example.com/summary-only");
+  });
+
+  it("derives Today in brief deterministically from existing story summaries", () => {
+    const stories = makeNStories(2, "Technology", "ai");
+    stories[0]!.summaryText = "First development happened. Extra context follows.";
+    stories[1]!.summaryText = "Second development happened! More detail follows.";
+    const idx = buildCitationIndex(stories.flatMap((s) => s.claims.map((c) => ({ chunkId: c.chunkId, claimText: c.text }))));
+
+    const md = svc.renderMarkdown({
+      edition: makeEdition(),
+      assembly: { edition: makeEdition(), stories: [], ...DUMMY_ASSEMBLY },
+      stories,
+      citationIndex: idx,
+    });
+
+    const overview = md.slice(md.indexOf("## Today in brief"), md.indexOf("## Top Stories"));
+    expect(overview).toContain("First development happened.");
+    expect(overview).toContain("Second development happened!");
+    expect(overview).not.toContain("Extra context follows.");
+    expect(overview).not.toContain("More detail follows.");
+    expect(overview).toMatch(/First development happened\. \[\d+\]/);
+    expect(overview).toMatch(/Second development happened! \[\d+\]/);
+  });
+
+  it("groups explainable cross-day repeats without dropping their summary or source", () => {
+    const stories = makeNStories(2, "Technology", "ai");
+    stories[1]!.summaryText = "Fresh details in continuing coverage remain fully readable.";
+    const idx = buildCitationIndex(stories.flatMap((s) => s.claims.map((c) => ({ chunkId: c.chunkId, claimText: c.text }))));
+
+    const md = svc.renderMarkdown({
+      edition: makeEdition(),
+      assembly: { edition: makeEdition(), stories: [], ...DUMMY_ASSEMBLY },
+      stories,
+      previousStories: [{ label: "Yesterday's agent report", urls: ["https://example2.com/x"] }],
+      citationIndex: idx,
+    });
+
+    expect(md).toContain("## Continuing coverage");
+    expect(md).toContain("repeated 1 story");
+    expect(md).toContain("Stories also covered in the previous edition.");
+    expect(md).not.toContain("Updates to stories");
+    expect(md).toContain("Continues yesterday's coverage: Yesterday's agent report (same source).");
+    expect(md).toContain("Fresh details in continuing coverage remain fully readable.");
+    expect(md).toContain("https://example2.com/x");
+  });
+
+  it("describes an all-continuing edition without claiming that it has no stories", () => {
+    const stories = makeNStories(1, "Technology", "ai");
+    const md = svc.renderMarkdown({
+      edition: makeEdition(),
+      assembly: { edition: makeEdition(), stories: [], ...DUMMY_ASSEMBLY },
+      stories,
+      previousStories: [{ label: "Yesterday's coverage", urls: ["https://example1.com/x"] }],
+      citationIndex: buildCitationIndex(stories.flatMap((s) => s.claims.map((c) => ({ chunkId: c.chunkId, claimText: c.text })))),
+    });
+
+    expect(md).toContain("_No new lead stories; continuing coverage follows._");
+    expect(md).not.toContain("No stories selected for this edition");
+    expect(md).not.toContain("No top stories selected for this edition");
+  });
+
+  it("uses an optional reading target to calibrate prominence without dropping stories or sources", () => {
+    const stories = makeNStories(6, "Technology", "ai");
+    const calibrated = createMarkdownDigestService({
+      ...baseDeps(),
+      presentation: { targetReadingMinutes: 4 },
+    });
+    const md = calibrated.renderMarkdown({
+      edition: makeEdition(),
+      assembly: { edition: makeEdition(), stories: [], ...DUMMY_ASSEMBLY, totalDocuments: 6 },
+      stories,
+      citationIndex: buildCitationIndex(stories.flatMap((s) => s.claims.map((c) => ({ chunkId: c.chunkId, claimText: c.text })))),
+    });
+    const top = md.slice(md.indexOf("## Top Stories"), md.indexOf("## More Stories"));
+    expect(top.match(/^### /gm)).toHaveLength(2);
+    for (const story of stories) {
+      expect(md).toContain(story.summaryText);
+      expect(md).toContain(story.documents[0]!.sourceUrl);
+    }
+  });
+
+  it("keeps the newspaper-style five-story default when no reading target is configured", () => {
+    const stories = makeNStories(6, "Technology", "ai");
+    const md = svc.renderMarkdown({
+      edition: makeEdition(),
+      assembly: { edition: makeEdition(), stories: [], ...DUMMY_ASSEMBLY },
+      stories,
+      citationIndex: buildCitationIndex(stories.flatMap((s) => s.claims.map((c) => ({ chunkId: c.chunkId, claimText: c.text })))),
+    });
+    const top = md.slice(md.indexOf("## Top Stories"), md.indexOf("## More Stories"));
+    expect(top.match(/^### /gm)).toHaveLength(5);
+  });
+
+  it("frames a quiet edition only when an explicit significance or novelty assessment exists", () => {
+    const story = makeNStories(1, "Technology", "ai");
+    const ordinary = svc.renderMarkdown({ edition: makeEdition(), assembly: { edition: makeEdition(), stories: [], ...DUMMY_ASSEMBLY }, stories: story, citationIndex: buildCitationIndex([]) });
+    expect(ordinary).not.toContain("Quiet edition");
+
+    const quiet = createMarkdownDigestService({ ...baseDeps(), presentation: { quietEditionReason: "low_novelty" } });
+    const framed = quiet.renderMarkdown({ edition: makeEdition(), assembly: { edition: makeEdition(), stories: [], ...DUMMY_ASSEMBLY }, stories: story, citationIndex: buildCitationIndex([]) });
+    expect(framed).toContain("Quiet edition");
+    expect(framed).toContain("limited novelty");
+    expect(framed).not.toContain("no input");
+    expect(framed).not.toContain("no stories");
+  });
+
+  it("adds a compact coverage receipt containing only supported metrics", () => {
+    const stories = makeNStories(2, "Technology", "ai");
+    const md = svc.renderMarkdown({
+      edition: makeEdition(),
+      assembly: { edition: makeEdition(), stories: [], ...DUMMY_ASSEMBLY, totalDocuments: 2, fullyEnrichedDocuments: 2 },
+      stories,
+      citationIndex: buildCitationIndex([]),
+    });
+    expect(md).toContain("_Coverage: reviewed 2 sources; included 2 sources across 2 stories._");
+    expect(md).not.toMatch(/repeated|suppressed|excluded|failures/i);
   });
 });
 
@@ -589,7 +741,7 @@ describe("generate", () => {
     expect(result.digestId).toBe("md-3");
   });
 
-  it("writes claimed_in_top signals for the top stories", async () => {
+  it("signals rendered novel leads, excluding a first-ranked repeated story", async () => {
     const stories = makeNStories(3, "Technology", "ai");
     const assembledStories = stories.map((s) => makeAssembled(s));
     const signalRepo = {
@@ -695,6 +847,9 @@ describe("generate", () => {
       topicRepo: {} as never,
       digestRepo: digestRepo as never,
       signalRepo: signalRepo as never,
+      loadPreviousStories: async () => [
+        { label: "Yesterday's coverage", urls: ["https://example1.com/x"] },
+      ],
       logger: silentLogger(),
     });
 
@@ -702,15 +857,15 @@ describe("generate", () => {
 
     expect(signalRepo.createBatch).toHaveBeenCalledTimes(1);
     const rows = signalRepo.createBatch.mock.calls[0][0] as CreateSignalInput[];
-    expect(rows).toHaveLength(3);
+    expect(rows).toHaveLength(2);
     for (const row of rows) {
       expect(row.signal_kind).toBe("claimed_in_top");
       expect(row.edition_id).toBe("ed-1");
       expect(row.source_identity).toBeNull();
       expect(row.source_url).toBeNull();
     }
-    expect(rows.map((r) => r.story_id)).toEqual(["s1", "s2", "s3"]);
-    expect(rows.map((r) => (r.payload as { top_position: number }).top_position)).toEqual([1, 2, 3]);
+    expect(rows.map((r) => r.story_id)).toEqual(["s2", "s3"]);
+    expect(rows.map((r) => (r.payload as { top_position: number }).top_position)).toEqual([1, 2]);
   });
 
   it("continues normally when signal insert fails", async () => {
@@ -1014,11 +1169,25 @@ describe("bias phase C", () => {
     const content = digestRepo.createForEdition.mock.calls[0]![0]!.content;
     expect(content).toContain("### Politics: election story kept-a");
     expect(content).toContain("### Politics: election story kept-b");
+    expect(content).toContain("suppressed 1 story");
     expect(content).not.toContain("muted-1");
     expect(content).not.toContain("mutedsite.com/x");
   });
 
-  it("moves a down-rated story out of Top Stories into a category bucket", async () => {
+  it("omits suppression from coverage when bias removes no stories", async () => {
+    const stories = makeNStories(2, "Technology", "ai");
+    const { svc, digestRepo } = buildGenerateHarness({
+      stories,
+      biasEnabled: true,
+      biasView: emptyBiasView(),
+    });
+    vi.mocked(getBiasView).mockResolvedValue(emptyBiasView());
+    await svc.generate({ editionId: "ed-1" });
+    const content = digestRepo.createForEdition.mock.calls[0]![0]!.content;
+    expect(content).not.toMatch(/suppressed \d+ stor/);
+  });
+
+  it("moves a down-rated story out of Top Stories into More Stories", async () => {
     const stories: StorySnapshot[] = [];
     for (let i = 1; i <= 6; i++) {
       stories.push(
@@ -1050,16 +1219,16 @@ describe("bias phase C", () => {
     await svc.generate({ editionId: "ed-1" });
     const content = digestRepo.createForEdition.mock.calls[0]![0]!.content;
     const topIdx = content.indexOf("## Top Stories");
-    const techIdx = content.indexOf("## Technology\n");
+    const moreIdx = content.indexOf("## More Stories\n");
     expect(topIdx).toBeGreaterThan(-1);
-    expect(techIdx).toBeGreaterThan(topIdx);
-    const topSection = content.slice(topIdx, techIdx);
+    expect(moreIdx).toBeGreaterThan(topIdx);
+    const topSection = content.slice(topIdx, moreIdx);
     expect(topSection).not.toContain("### Technology: ai story downrated-1");
     expect(topSection).not.toContain("bias1.com/x");
     expect(topSection).toContain("### Technology: ai story downrated-2");
     expect(topSection).toContain("### Technology: ai story downrated-6");
-    const techSection = content.slice(techIdx);
-    expect(techSection).toContain("### Technology: ai story downrated-1");
+    const moreSection = content.slice(moreIdx);
+    expect(moreSection).toContain("### Technology: ai story downrated-1");
     expect(content).toContain("bias1.com/x");
   });
 });

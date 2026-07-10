@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { createEmailDigestService } from "./email-digest-service.js";
+import { createEmailDigestService, loadArtifactLinks } from "./email-digest-service.js";
 import type {
   ResendClient,
   ResendEmailResult,
@@ -96,6 +96,7 @@ interface DepsOverrides {
   markdownRow?: MarkdownDigestRow;
   existingEmailRow?: EmailDigestRow | undefined;
   toAddresses?: string[];
+  artifactLinks?: Array<{ kind: "notebook" | "podcast"; partitionKey: string; label: string; url: string }>;
 }
 
 function makeDeps(overrides: DepsOverrides = {}) {
@@ -154,6 +155,7 @@ function makeDeps(overrides: DepsOverrides = {}) {
         toAddresses: overrides.toAddresses ?? ["to@example.com"],
       },
       logger: silentLogger(),
+      artifactLinksProvider: vi.fn().mockResolvedValue(overrides.artifactLinks ?? []),
     },
     mocks: { editionRepo, markdownDigestRepo, emailDigestRepo, resend },
   };
@@ -315,5 +317,50 @@ describe("preview", () => {
     expect(p.text).toContain("Daily Digest");
     expect(mocks.resend.sendEmail).not.toHaveBeenCalled();
     expect(mocks.emailDigestRepo.createForEdition).not.toHaveBeenCalled();
+  });
+
+  it("includes ready artifact links resolved for the edition", async () => {
+    const { deps } = makeDeps({ artifactLinks: [
+      { kind: "notebook", partitionKey: "master", label: "Master notebook", url: "https://n.example/master" },
+      { kind: "podcast", partitionKey: "master", label: "Audio briefing", url: "https://p.example/master" },
+    ] });
+    const p = await createEmailDigestService(deps).preview({ editionId: "ed-1" });
+    expect(p.html).toContain("Master notebook");
+    expect(p.html).toContain("Audio briefing");
+  });
+});
+
+describe("loadArtifactLinks", () => {
+  it("uses the production query path and presents master artifacts first", async () => {
+    const rows = {
+      notebooks: [
+        { partition_key: "youtube", url: "https://n.example/youtube" },
+        { partition_key: "master", url: "https://n.example/master" },
+      ],
+      podcasts: [
+        { partition_key: "youtube", url: "https://p.example/youtube" },
+        { partition_key: "master", url: "https://p.example/master" },
+      ],
+    };
+    const selectFrom = vi.fn((table: "notebooks" | "podcasts") => {
+      const query = {
+        select: vi.fn(() => query),
+        where: vi.fn(() => query),
+        orderBy: vi.fn(() => query),
+        execute: vi.fn().mockResolvedValue(rows[table]),
+      };
+      return query;
+    });
+
+    const links = await loadArtifactLinks({ selectFrom } as never, "ed-1");
+
+    expect(selectFrom).toHaveBeenCalledWith("notebooks");
+    expect(selectFrom).toHaveBeenCalledWith("podcasts");
+    expect(links.map((link) => `${link.partitionKey}:${link.kind}`)).toEqual([
+      "master:notebook",
+      "master:podcast",
+      "youtube:notebook",
+      "youtube:podcast",
+    ]);
   });
 });

@@ -2,6 +2,8 @@ import { loadConfig, parsePartitionConfig } from "../config/index.js";
 import { createPool } from "../database/pool.js";
 import { runMigrations } from "../database/migrations.js";
 import { createKysely, closeKysely } from "../database/kysely.js";
+import type { Database } from "../database/kysely.js";
+import type { Kysely } from "kysely";
 import { createMinifluxClient } from "../discovery/miniflux-client.js";
 import { createEditionRepository } from "../editions/edition-repository.js";
 import { createEnrichmentTrackerRepository } from "../editions/enrichment-tracker-repository.js";
@@ -80,6 +82,8 @@ import {
   parsePartitionsFlags,
   runPartitionsCommand,
 } from "./partitions.js";
+import { parseActivePartitionsDate, runActivePartitionsCommand } from "./active-partitions.js";
+import { getActivePartitions } from "../publication/active-partitions.js";
 import {
   GENERATE_EDITION_HELP,
   parseGenerateEditionFlags,
@@ -124,7 +128,7 @@ async function main(): Promise<number> {
   const cfg = loadConfig();
 
   const pool = createPool(cfg.DATABASE_URL);
-  let db;
+  let db: Kysely<Database> | undefined;
   try {
     await runMigrations(pool);
     db = createKysely(pool);
@@ -404,6 +408,10 @@ async function main(): Promise<number> {
         topicRepo,
         digestRepo,
         signalRepo: createSignalRepository(db),
+        presentation: {
+          targetReadingMinutes: cfg.DIGEST_TARGET_READING_MINUTES,
+          quietEditionReason: cfg.DIGEST_QUIET_EDITION_REASON,
+        },
         logger,
       });
       const { exitCode } = await runGenerateDigestCommand({
@@ -489,6 +497,9 @@ async function main(): Promise<number> {
         signalRepo,
         config: {
           maxSourcesPerNotebook: cfg.NOTEBOOKLM_MAX_SOURCES_PER_NOTEBOOK,
+          partitionMinArticles:
+            parsePartitionConfig(cfg.PARTITION_CONFIG)[parsed.partitionKey ?? "master"]
+              ?.min_articles,
         },
         logger,
       });
@@ -699,6 +710,25 @@ async function main(): Promise<number> {
       const { exitCode } = await runPartitionsCommand({
         db,
         log: (m) => console.log(m),
+      });
+      return exitCode;
+    }
+
+    if (command === "active-partitions") {
+      const editionDate = parseActivePartitionsDate(rest);
+      if (!editionDate) {
+        console.error("Usage: digestive active-partitions --date <YYYY-MM-DD>");
+        return 2;
+      }
+      const editionRepo = createEditionRepository(db);
+      const partitionConfig = parsePartitionConfig(cfg.PARTITION_CONFIG);
+      const { exitCode } = await runActivePartitionsCommand({
+        editionDate,
+        partitionConfig,
+        resolveEditionId: async (date) => (await editionRepo.getByDate(date))?.id,
+        resolveActivePartitions: (editionId, config) =>
+          getActivePartitions({ db: db!, editionId, config }),
+        log: (line) => console.log(line),
       });
       return exitCode;
     }

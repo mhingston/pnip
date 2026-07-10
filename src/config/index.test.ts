@@ -102,4 +102,19 @@ describe("config", () => {
     process.env.DIGEST_BIAS_ENABLED = "1";
     expect(() => loadConfig({ force: true })).toThrow(/DIGEST_BIAS_ENABLED/);
   });
+
+  it("parses optional digest presentation calibration", () => {
+    process.env.DATABASE_URL = "postgres://localhost/db";
+    process.env.DIGEST_TARGET_READING_MINUTES = "8";
+    process.env.DIGEST_QUIET_EDITION_REASON = "low_significance";
+    const config = loadConfig();
+    expect(config.DIGEST_TARGET_READING_MINUTES).toBe(8);
+    expect(config.DIGEST_QUIET_EDITION_REASON).toBe("low_significance");
+  });
+
+  it("rejects unsupported quiet-edition claims", () => {
+    process.env.DATABASE_URL = "postgres://localhost/db";
+    process.env.DIGEST_QUIET_EDITION_REASON = "few_sources";
+    expect(() => loadConfig()).toThrow(/DIGEST_QUIET_EDITION_REASON/);
+  });
 });

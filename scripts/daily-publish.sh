@@ -17,13 +17,13 @@
 #
 # Sequence:
 #   1. digestive generate-digest --date <date>     (master)
-#   2. digestive generate-email  --date <date>     (master)
-#   3. for each active partition (master + configured):
+#   2. for each active partition (master + configured):
 #        kick off generate-notebook --partition <key> in fire-and-forget
 #        kick off generate-podcast  --partition <key> in fire-and-forget (master and with_podcast partitions)
-#   4. for each active partition:
+#   3. for each active partition:
 #        wait on the notebook via --wait
 #        wait on the podcast  via --wait (master and with_podcast partitions)
+#   4. digestive generate-email --date <date> (with artifact links)
 #   5. digestive publish-edition --date <date> --dry-run
 #   6. digestive publish-edition --date <date>
 #
@@ -127,10 +127,10 @@ if [ -z "${DATABASE_URL:-}" ]; then
   exit 1
 fi
 
-# Resolve the active partitions. Master is always included. Configured
-# partitions are appended when enabled in PARTITION_CONFIG.
+# Resolve active partitions from the same database-backed rule used by the
+# publication gate. This applies enabled + min_articles consistently.
 log "daily-publish starting (date=$DATE local)"
-PARTITION_LINES="$(PARTITION_CONFIG="${PARTITION_CONFIG:-}" node scripts/parse-partitions.mjs)"
+PARTITION_LINES="$(npm run --silent digestive -- active-partitions --date "$DATE")"
 log "active partitions:"
 while IFS= read -r line; do
   log "  - $line"
@@ -140,11 +140,7 @@ done <<< "$PARTITION_LINES"
 run "generate-digest" \
   npm run digestive -- generate-digest --date "$DATE"
 
-# 2. Email (master)
-run "generate-email" \
-  npm run digestive -- generate-email --date "$DATE"
-
-# 3. Kick off per-partition notebook + podcast (fire-and-forget) so the
+# 2. Kick off per-partition notebook + podcast (fire-and-forget) so the
 # upload work happens in parallel with the master notebook. Each
 # generate-* call is idempotent: if a row already exists in the
 # requested state, it is returned as-is and no second upload is made.
@@ -165,7 +161,7 @@ while IFS= read -r line; do
   fi
 done <<< "$PARTITION_LINES"
 
-# 4. Wait for each partition's notebook (and podcast, where applicable)
+# 3. Wait for each partition's notebook (and podcast, where applicable)
 # to be ready. --wait blocks on the NotebookLM API; this is the
 # wall-clock heavy step (~10-20 min per source typical). The wait
 # phase is fatal: a real failure here stops the script.
@@ -182,6 +178,12 @@ while IFS= read -r line; do
       npm run digestive -- generate-podcast --date "$DATE" --partition "$partition" --wait
   fi
 done <<< "$PARTITION_LINES"
+
+# 4. Email is rendered only after artifact waits complete so its Explore
+# section can link to every ready notebook and podcast. The command remains
+# idempotent: an already-sent edition is not delivered twice.
+run "generate-email" \
+  npm run digestive -- generate-email --date "$DATE"
 
 # 5. Evaluate the building -> ready transition. The edition is in
 # 'building' state once all 5 enrichers are done for every document

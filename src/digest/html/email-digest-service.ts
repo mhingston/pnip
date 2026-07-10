@@ -9,6 +9,7 @@ import type {
 } from "../markdown/markdown-digest-repository.js";
 import { renderHtml, renderPlainText } from "./markdown-renderer.js";
 import { buildEmailTemplate } from "./email-template.js";
+import type { ArtifactLink } from "./email-template.js";
 import {
   type EmailDigestRepository,
   type EmailDigestRow,
@@ -72,6 +73,8 @@ export interface EmailDigestServiceDeps {
   resend: ResendClient;
   config: EmailDigestConfig;
   logger?: Logger;
+  /** Override artifact lookup in tests or alternate persistence layers. */
+  artifactLinksProvider?: (editionId: string) => Promise<ArtifactLink[]>;
 }
 
 interface SendOutcome {
@@ -109,11 +112,15 @@ export function createEmailDigestService(
     const publicationDate = formatPublicationDate(edition.publication_date);
     const htmlBody = renderHtml(markdown.content);
     const plainMarkdown = renderPlainText(markdown.content);
+    const artifactLinks = deps.artifactLinksProvider
+      ? await deps.artifactLinksProvider(edition.id)
+      : await loadArtifactLinks(deps.db, edition.id);
     const template = buildEmailTemplate({
       publicationDate,
       title: `Daily Digest — ${publicationDate}`,
       renderedHtmlBody: htmlBody,
       editionId: edition.id,
+      artifactLinks,
     });
     return {
       subject: template.subject,
@@ -333,6 +340,51 @@ export function createEmailDigestService(
       });
     },
   };
+}
+
+export async function loadArtifactLinks(
+  db: Kysely<Database>,
+  editionId: string,
+): Promise<ArtifactLink[]> {
+  const notebooks = await db
+    .selectFrom("notebooks")
+    .select(["partition_key", "url"])
+    .where("edition_id", "=", editionId)
+    .where("status", "=", "ready")
+    .orderBy("partition_key", "asc")
+    .execute();
+  const podcasts = await db
+    .selectFrom("podcasts")
+    .select(["partition_key", "url"])
+    .where("edition_id", "=", editionId)
+    .where("status", "=", "ready")
+    .where("url", "is not", null)
+    .orderBy("partition_key", "asc")
+    .execute();
+
+  return [
+    ...notebooks.filter((row) => row.url.length > 0).map((row) => ({
+      kind: "notebook" as const,
+      partitionKey: row.partition_key,
+      label: row.partition_key === "master" ? "Master notebook" : `${formatPartition(row.partition_key)} notebook`,
+      url: row.url,
+    })),
+    ...podcasts.filter((row): row is typeof row & { url: string } => Boolean(row.url)).map((row) => ({
+      kind: "podcast" as const,
+      partitionKey: row.partition_key,
+      label: row.partition_key === "master" ? "Audio briefing" : `${formatPartition(row.partition_key)} audio briefing`,
+      url: row.url,
+    })),
+  ].sort((a, b) => {
+    const aMaster = a.partitionKey === "master" ? 0 : 1;
+    const bMaster = b.partitionKey === "master" ? 0 : 1;
+    return aMaster - bMaster || a.partitionKey.localeCompare(b.partitionKey) || a.kind.localeCompare(b.kind);
+  });
+}
+
+function formatPartition(partitionKey: string): string {
+  if (partitionKey.toLowerCase() === "youtube") return "YouTube";
+  return partitionKey.replace(/[-_]+/g, " ").replace(/\b\w/g, (character) => character.toUpperCase());
 }
 
 function trimError(input: string): string {

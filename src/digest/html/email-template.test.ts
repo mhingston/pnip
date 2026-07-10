@@ -46,7 +46,7 @@ describe("buildEmailTemplate", () => {
       ...baseInput,
       notebookUrl: "https://notebooklm.example/n/abc",
     });
-    expect(t.html).toContain("Talk &amp; Listen");
+    expect(t.html).toContain("Explore this edition");
     expect(t.html).toContain("https://notebooklm.example/n/abc");
     expect(t.text).toContain("https://notebooklm.example/n/abc");
   });
@@ -62,9 +62,35 @@ describe("buildEmailTemplate", () => {
     expect(t.html.match(/<li>/g)?.length).toBeGreaterThanOrEqual(2);
   });
 
+  it("renders a typed list of master and partition artifacts with descriptive labels", () => {
+    const t = buildEmailTemplate({
+      ...baseInput,
+      artifactLinks: [
+        { kind: "notebook", partitionKey: "master", label: "Master notebook", url: "https://notebooks.example/master" },
+        { kind: "notebook", partitionKey: "youtube", label: "Videos notebook", url: "https://notebooks.example/videos" },
+        { kind: "podcast", partitionKey: "master", label: "Audio briefing", url: "https://audio.example/master" },
+      ],
+    });
+    expect(t.html).toContain("Explore this edition");
+    expect(t.html).toContain("Master notebook");
+    expect(t.html).toContain("Videos notebook");
+    expect(t.html).toContain("Audio briefing");
+    expect(t.text).toContain("Videos notebook: https://notebooks.example/videos");
+  });
+
+  it("deduplicates compatibility URLs when they are also supplied as artifact links", () => {
+    const url = "https://notebooks.example/master";
+    const t = buildEmailTemplate({
+      ...baseInput,
+      notebookUrl: url,
+      artifactLinks: [{ kind: "notebook", partitionKey: "master", label: "Master notebook", url }],
+    });
+    expect(t.html.match(new RegExp(url, "g"))).toHaveLength(1);
+  });
+
   it("omits the Talk & Listen section when no links are provided", () => {
     const t = buildEmailTemplate(baseInput);
-    expect(t.html).not.toContain("Talk &amp; Listen");
+    expect(t.html).not.toContain("Explore this edition");
   });
 
   it("escapes notebook URL so HTML injection via the URL is impossible", () => {

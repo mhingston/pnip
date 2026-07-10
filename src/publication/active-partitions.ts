@@ -33,7 +33,12 @@ export async function getActivePartitions(input: {
     counts.set(r.partition_key, Number(r.n));
   }
 
-  const masterCount = counts.get(PARTITION_MASTER) ?? 0;
+  // Master is the complete edition. Stored partition keys describe optional
+  // output slices; they do not remove a document from the master view.
+  const masterCount = Array.from(counts.values()).reduce(
+    (total, count) => total + count,
+    0,
+  );
 
   const result: ActivePartition[] = [
     {

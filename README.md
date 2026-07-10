@@ -365,6 +365,8 @@ anything required is missing.
 | `FABRIC_BIN`              | optional   | path to the Fabric CLI                                     |
 | `MARKITDOWN_BIN`          | optional   | path to the MarkItDown CLI                                 |
 | `DIGEST_BIAS_ENABLED`     | optional   | `true` to apply §65 Phase C bias (muted-source drop + down-rated move); default off |
+| `DIGEST_TARGET_READING_MINUTES` | optional | positive integer that calibrates Top Stories prominence; never removes canonical stories or sources. Unset keeps the five-story newspaper default |
+| `DIGEST_QUIET_EDITION_REASON` | optional | explicit editorial evidence: `low_significance` or `low_novelty`. Unset emits no quiet-day claim |
 | `PARTITION_CONFIG`        | optional   | JSON object mapping partition keys to `{category, min_articles, enabled, with_podcast}`; see *Per-partition notebook editions* above. Unset = master-only default |
 | `NOTEBOOKLM_MAX_SOURCES_PER_NOTEBOOK` | optional | integer 1+; hard cap on sources uploaded per partition notebook. Default 50. Overflow gets `notebook_excluded` signals. See *How a partition's top sources are picked* above |
 | `DOCTOR_FAILED_THRESHOLD` | optional   | integer 1+; `digestive doctor` fails the queue check when `failed > N` (default 100) |

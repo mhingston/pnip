@@ -147,6 +147,24 @@ describe("DocumentRepository", () => {
     expect(doc.language).toBe("en");
   });
 
+  it("treats master as the complete edition when selecting documents", async () => {
+    const master = await repo.create({
+      editionId,
+      sourceType: "article",
+      sourceUrl: "https://example.com/master-source",
+    });
+    const youtube = await repo.create({
+      editionId,
+      sourceType: "youtube",
+      sourceUrl: "https://youtube.com/watch?v=all-edition",
+      partitionKey: "youtube",
+    });
+
+    const result = await repo.getByEditionAndPartition(editionId, "master");
+
+    expect(result.map((d) => d.id)).toEqual([master.id, youtube.id]);
+  });
+
   it("getById returns undefined for missing document", async () => {
     expect(await repo.getById("00000000-0000-0000-0000-000000000000")).toBeUndefined();
   });
@@ -582,6 +600,26 @@ describe("DocumentRepository.getRankedByEditionAndPartition", () => {
     expect(result.kept.every((d) => d.partition_key === "youtube")).toBe(true);
     expect(result.kept.length).toBe(3);
     void masterIds;
+  });
+
+  it("ranks master across every document in the edition", async () => {
+    const masterIds = await seedDocs(2, "all-master");
+    const youtube = await repo.create({
+      editionId,
+      sourceType: "youtube",
+      sourceUrl: "https://youtube.com/watch?v=ranked-master",
+      partitionKey: "youtube",
+    });
+
+    const result = await repo.getRankedByEditionAndPartition(
+      editionId,
+      "master",
+      50,
+    );
+
+    expect(new Set(result.kept.map((d) => d.id))).toEqual(
+      new Set([...masterIds, youtube.id]),
+    );
   });
 
   it("within a cluster, higher-confidence docs come before lower-confidence docs at the same label", async () => {

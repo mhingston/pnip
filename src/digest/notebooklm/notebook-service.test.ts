@@ -460,6 +460,23 @@ describe("generate — happy path", () => {
     expect(arg.title).toBe("Daily Digest — 2026-07-07 (youtube)");
   });
 
+  it("includes a human-readable partition in the default title", async () => {
+    const ytDocs = Array.from({ length: 6 }, (_, i) =>
+      makeDoc({
+        id: `y-default-${i}`,
+        partition_key: "youtube",
+        title: `YT ${i}`,
+        source_url: `https://youtube.com/v/${i}`,
+        canonical_url: `https://youtube.com/v/${i}`,
+      }),
+    );
+    const { deps, mocks } = makeDeps({ documentsForPartition: { master: [], youtube: ytDocs } });
+    const svc = createNotebookService(deps);
+    await svc.generate({ editionId: "ed-1", partitionKey: "youtube" });
+    expect((mocks.notebookLm.createNotebook as ReturnType<typeof vi.fn>).mock.calls[0]![0].title)
+      .toBe("Daily Digest — 2026-07-07 — YouTube");
+  });
+
   it("uses canonical_url when present and falls back to source_url otherwise", async () => {
     const { deps, mocks } = makeDeps({
       documents: [
@@ -1475,10 +1492,28 @@ describe("generate — partition awareness", () => {
     });
     expect(result.status).toBe("skipped");
     expect(result.sourceCount).toBe(0);
-    expect(result.skipReason).toMatch(/0 uploadable documents/);
+    expect(result.skipReason).toMatch(/0 documents/);
     expect(
       (mocks.notebookLm.createNotebook as ReturnType<typeof vi.fn>),
     ).not.toHaveBeenCalled();
+  });
+
+  it("uses total document count for the same activation rule as publication", async () => {
+    const docs = Array.from({ length: 5 }, (_, i) =>
+      makeDoc({
+        id: `activation-${i}`,
+        partition_key: "youtube",
+        source_url: i === 0 ? "" : `https://youtube.com/v/${i}`,
+        canonical_url: null,
+      }),
+    );
+    const { deps, mocks } = makeDeps({ documentsForPartition: { youtube: docs } });
+    const result = await createNotebookService(deps).generate({
+      editionId: "ed-1",
+      partitionKey: "youtube",
+    });
+    expect(result.status).not.toBe("skipped");
+    expect(mocks.notebookLm.createNotebook).toHaveBeenCalledOnce();
   });
 
   it("honours a custom partitionMinArticles threshold from config", async () => {

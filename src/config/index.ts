@@ -32,6 +32,10 @@ const configSchema = z.object({
   RETRY_MAX_ATTEMPTS: z.string().optional(),
   DOCTOR_FAILED_THRESHOLD: z.coerce.number().int().positive().optional(),
   DIGEST_BIAS_ENABLED: z.enum(["true", "false"]).optional(),
+  DIGEST_TARGET_READING_MINUTES: z.coerce.number().int().positive().optional(),
+  DIGEST_QUIET_EDITION_REASON: z
+    .enum(["low_significance", "low_novelty"])
+    .optional(),
   PARTITION_CONFIG: z.string().optional(),
 });
 

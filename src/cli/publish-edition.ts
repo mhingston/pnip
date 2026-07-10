@@ -64,11 +64,15 @@ export async function buildPartitionBreakdown(input: {
   for (const r of rows) {
     counts.set(r.partition_key, Number(r.n));
   }
+  const masterCount = Array.from(counts.values()).reduce(
+    (total, count) => total + count,
+    0,
+  );
 
   const breakdown: PartitionBreakdownEntry[] = [
     {
       partitionKey: PARTITION_MASTER,
-      documentCount: counts.get(PARTITION_MASTER) ?? 0,
+      documentCount: masterCount,
       active: true,
       minArticles: 0,
       enabled: true,

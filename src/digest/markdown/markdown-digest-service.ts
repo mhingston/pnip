@@ -23,6 +23,11 @@ import {
   citationTokenFor,
   type CitationIndex,
 } from "./citation-index.js";
+import {
+  classifyStoryContinuity,
+  type ContinuityStoryIdentity,
+  type StoryContinuity,
+} from "./story-continuity.js";
 
 export const DIGEST_TOP_STORIES_LIMIT = 5;
 
@@ -124,6 +129,8 @@ export interface MarkdownDigestService {
     edition: Edition;
     assembly: EditionAssembly;
     stories: StorySnapshot[];
+    previousStories?: ContinuityStoryIdentity[];
+    suppressedStoryCount?: number;
     citationIndex: CitationIndex;
   }): string;
   collectStories(editionId: string): Promise<StorySnapshot[]>;
@@ -141,7 +148,16 @@ export interface MarkdownDigestServiceDeps {
   digestRepo: MarkdownDigestRepository;
   signalRepo: SignalRepository;
   biasEnabled?: boolean;
+  presentation?: DigestPresentationConfig;
+  loadPreviousStories?: (edition: Edition) => Promise<ContinuityStoryIdentity[]>;
   logger?: Logger;
+}
+
+export interface DigestPresentationConfig {
+  /** Calibrates story prominence only; never removes stories or sources. */
+  targetReadingMinutes?: number;
+  /** Must come from an explicit upstream editorial assessment. */
+  quietEditionReason?: "low_significance" | "low_novelty";
 }
 
 /**
@@ -180,9 +196,21 @@ async function writeClaimedInTopSignals(
   deps: Pick<MarkdownDigestServiceDeps, "signalRepo" | "logger">,
   editionId: string,
   stories: StorySnapshot[],
+  previousStories: ContinuityStoryIdentity[],
+  presentation?: DigestPresentationConfig,
 ): Promise<void> {
-  const validStories = stories.filter((s) => s.claims.length > 0);
-  const topStories = validStories.slice(0, DIGEST_TOP_STORIES_LIMIT);
+  const topStoriesLimit = presentation?.targetReadingMinutes === undefined
+    ? DIGEST_TOP_STORIES_LIMIT
+    : Math.max(1, Math.round(presentation.targetReadingMinutes / 2));
+  const topStories = stories
+    .filter((story) => classifyStoryContinuity(
+      {
+        label: story.storyLabel,
+        urls: story.documents.map((doc) => doc.canonicalUrl ?? doc.sourceUrl),
+      },
+      previousStories,
+    ).kind === "new")
+    .slice(0, topStoriesLimit);
   if (topStories.length === 0) return;
   const signalInputs: CreateSignalInput[] = topStories.map((s, index) => ({
     signal_kind: "claimed_in_top",
@@ -292,6 +320,48 @@ function storyHaystack(story: StorySnapshot): string {
     .toLowerCase();
 }
 
+async function loadPreviousEditionStories(
+  db: Kysely<Database>,
+  edition: Edition,
+): Promise<ContinuityStoryIdentity[]> {
+  if (typeof (db as unknown as { selectFrom?: unknown }).selectFrom !== "function") {
+    return [];
+  }
+  const previousEdition = await db
+    .selectFrom("editions")
+    .select("id")
+    .where("publication_date", "<", edition.publication_date)
+    .where("partition_key", "=", "master")
+    .orderBy("publication_date", "desc")
+    .executeTakeFirst();
+  if (!previousEdition) return [];
+
+  const rows = await db
+    .selectFrom("story_clusters as sc")
+    .innerJoin("cluster_members as cm", "cm.story_id", "sc.id")
+    .innerJoin("documents as d", "d.id", "cm.document_id")
+    .select([
+      "sc.id as story_id",
+      "sc.label as story_label",
+      "d.source_url as source_url",
+      "d.canonical_url as canonical_url",
+    ])
+    .where("sc.edition_id", "=", previousEdition.id)
+    .orderBy("sc.cluster_order", "asc")
+    .execute();
+
+  const byStory = new Map<string, ContinuityStoryIdentity>();
+  for (const row of rows) {
+    const identity = byStory.get(row.story_id) ?? {
+      label: row.story_label,
+      urls: [],
+    };
+    identity.urls.push(row.canonical_url ?? row.source_url);
+    byStory.set(row.story_id, identity);
+  }
+  return [...byStory.values()];
+}
+
 export function createMarkdownDigestService(
   deps: MarkdownDigestServiceDeps,
 ): MarkdownDigestService {
@@ -310,7 +380,16 @@ export function createMarkdownDigestService(
         });
         try {
           const existingStories = await this.collectStories(input.editionId);
-          await writeClaimedInTopSignals(deps, input.editionId, existingStories);
+          const previousStories = deps.loadPreviousStories
+            ? await deps.loadPreviousStories(edition)
+            : await loadPreviousEditionStories(deps.db, edition);
+          await writeClaimedInTopSignals(
+            deps,
+            input.editionId,
+            existingStories,
+            previousStories,
+            deps.presentation,
+          );
         } catch (err) {
           deps.logger?.warn("failed to write claimed_in_top signals for existing digest", {
             editionId: input.editionId,
@@ -357,10 +436,18 @@ export function createMarkdownDigestService(
       );
       const citationIndex = buildCitationIndex(allCitations);
 
+      const previousStories = deps.loadPreviousStories
+        ? await deps.loadPreviousStories(edition)
+        : await loadPreviousEditionStories(deps.db, edition);
       const markdown = this.renderMarkdown({
         edition,
         assembly,
         stories: effectiveStories,
+        previousStories,
+        suppressedStoryCount:
+          deps.biasEnabled && stories.length > effectiveStories.length
+            ? stories.length - effectiveStories.length
+            : undefined,
         citationIndex,
       });
 
@@ -389,7 +476,13 @@ export function createMarkdownDigestService(
               "markdown digest race resolved; returning existing row",
               { editionId: input.editionId, digestId: after.id },
             );
-            await writeClaimedInTopSignals(deps, input.editionId, effectiveStories);
+            await writeClaimedInTopSignals(
+              deps,
+              input.editionId,
+              effectiveStories,
+              previousStories,
+              deps.presentation,
+            );
             return {
               digestId: after.id,
               edition,
@@ -411,7 +504,13 @@ export function createMarkdownDigestService(
         citationCount: citationIndex.entries.length,
       });
 
-      await writeClaimedInTopSignals(deps, input.editionId, effectiveStories);
+      await writeClaimedInTopSignals(
+        deps,
+        input.editionId,
+        effectiveStories,
+        previousStories,
+        deps.presentation,
+      );
 
       return {
         digestId: row.id,
@@ -496,22 +595,37 @@ export function createMarkdownDigestService(
       return "Interesting Reads";
     },
 
-    renderMarkdown({ edition, assembly, stories, citationIndex }) {
+    renderMarkdown({
+      edition,
+      assembly,
+      stories,
+      previousStories = [],
+      suppressedStoryCount,
+      citationIndex,
+    }) {
       const publicationDate = formatPublicationDate(edition.publication_date);
 
-      const validStories = stories.filter((s) => s.claims.length > 0);
-      const topStories = validStories.slice(0, DIGEST_TOP_STORIES_LIMIT);
-      const remainingStories = validStories.slice(DIGEST_TOP_STORIES_LIMIT);
-
-      const buckets = new Map<DigestCategory, StorySnapshot[]>();
-      for (const cat of DIGEST_CATEGORY_ORDER) buckets.set(cat, []);
-      for (const s of remainingStories) {
-        const cat = this.categorizeStory(s);
-        buckets.get(cat)!.push(s);
-      }
+      const renderedStories = stories;
+      const withContinuity = renderedStories.map((story) => ({
+        story,
+        continuity: classifyStoryContinuity(
+          {
+            label: story.storyLabel,
+            urls: story.documents.map((doc) => doc.canonicalUrl ?? doc.sourceUrl),
+          },
+          previousStories,
+        ),
+      }));
+      const newStories = withContinuity.filter((item) => item.continuity.kind === "new");
+      const continuingStories = withContinuity.filter((item) => item.continuity.kind === "continuing");
+      const topStoriesLimit = deps.presentation?.targetReadingMinutes === undefined
+        ? DIGEST_TOP_STORIES_LIMIT
+        : Math.max(1, Math.round(deps.presentation.targetReadingMinutes / 2));
+      const topStories = newStories.slice(0, topStoriesLimit);
+      const remainingStories = newStories.slice(topStoriesLimit);
 
       const allDocs = new Map<string, DocumentSnapshot>();
-      for (const s of validStories) {
+      for (const s of renderedStories) {
         for (const d of s.documents) {
           if (!allDocs.has(d.id)) allDocs.set(d.id, d);
         }
@@ -521,50 +635,77 @@ export function createMarkdownDigestService(
       );
 
       const lines: string[] = [];
+      if (deps.presentation?.quietEditionReason) {
+        const reason = deps.presentation.quietEditionReason === "low_novelty"
+          ? "Today’s reporting has limited novelty, so this edition emphasizes context over urgency."
+          : "Today’s reporting contains fewer high-significance developments, so this edition emphasizes useful context.";
+        lines.push(`_Quiet edition: ${reason}_`);
+        lines.push("");
+      }
+      const repeatedReceipt = continuingStories.length > 0
+        ? `; repeated ${continuingStories.length} ${continuingStories.length === 1 ? "story" : "stories"}`
+        : "";
+      const suppressedReceipt = suppressedStoryCount !== undefined && suppressedStoryCount > 0
+        ? `; suppressed ${suppressedStoryCount} ${suppressedStoryCount === 1 ? "story" : "stories"}`
+        : "";
+      lines.push(
+        `_Coverage: reviewed ${assembly.totalDocuments} sources; included ${sortedDocs.length} sources across ${renderedStories.length} stories${repeatedReceipt}${suppressedReceipt}._`,
+      );
+      lines.push("");
+      lines.push("## Today in brief");
+      lines.push("");
+      const briefStories = topStories.length > 0
+        ? topStories
+        : continuingStories.slice(0, topStoriesLimit);
+      if (briefStories.length === 0) {
+        lines.push("_No stories selected for this edition._");
+      } else {
+        for (const { story } of briefStories) {
+          const overviewCitation = firstStoryCitation(story, citationIndex);
+          lines.push(
+            bullet(
+              `**${escapeMarkdown(story.storyLabel)}:** ${escapeMarkdown(firstSentence(story.summaryText))}${overviewCitation ? ` ${overviewCitation}` : ""}`,
+            ),
+          );
+        }
+      }
+      lines.push("");
+
       lines.push("## Top Stories");
       lines.push("");
       if (topStories.length === 0) {
-        lines.push("_No top stories selected for this edition._");
+        lines.push(
+          continuingStories.length > 0
+            ? "_No new lead stories; continuing coverage follows._"
+            : "_No top stories selected for this edition._",
+        );
       } else {
-        for (const s of topStories) {
-          for (const line of renderStorySection(s, citationIndex)) {
+        for (const { story } of topStories) {
+          for (const line of renderStorySection(story, citationIndex)) {
             lines.push(line);
           }
         }
       }
       lines.push("");
 
-      for (const cat of DIGEST_CATEGORY_ORDER.slice(0, -2)) {
-        const items = buckets.get(cat) ?? [];
-        if (items.length === 0) continue;
-        lines.push(`## ${cat}`);
+      if (remainingStories.length > 0) {
+        lines.push("## More Stories");
         lines.push("");
-        for (const s of items) {
-          for (const line of renderStorySection(s, citationIndex, true)) {
+        for (const { story } of remainingStories) {
+          for (const line of renderStorySection(story, citationIndex)) {
             lines.push(line);
           }
         }
         lines.push("");
       }
 
-      const videoItems = buckets.get("Videos") ?? [];
-      if (videoItems.length > 0) {
-        lines.push("## Videos");
+      if (continuingStories.length > 0) {
+        lines.push("## Continuing coverage");
         lines.push("");
-        for (const s of videoItems) {
-          for (const line of renderStorySection(s, citationIndex, true)) {
-            lines.push(line);
-          }
-        }
+        lines.push("_Stories also covered in the previous edition._");
         lines.push("");
-      }
-
-      const redditItems = buckets.get("Reddit Discussions") ?? [];
-      if (redditItems.length > 0) {
-        lines.push("## Reddit Discussions");
-        lines.push("");
-        for (const s of redditItems) {
-          for (const line of renderStorySection(s, citationIndex, true)) {
+        for (const { story, continuity } of continuingStories) {
+          for (const line of renderStorySection(story, citationIndex, continuity)) {
             lines.push(line);
           }
         }
@@ -579,7 +720,7 @@ export function createMarkdownDigestService(
         for (const d of sortedDocs) {
           const url = d.canonicalUrl ?? d.sourceUrl;
           const primary = citationIndex.byDocument.get(d.id);
-          const tokens = collectCitationsForDocument(d.id, citationIndex, validStories);
+          const tokens = collectCitationsForDocument(d.id, citationIndex, renderedStories);
           const primaryPrefix = primary !== undefined ? `[${primary}] ` : "";
           const citeSuffix =
             tokens.length > 0 ? ` _cited ${tokens.join(" ")}_` : "";
@@ -598,17 +739,22 @@ export function createMarkdownDigestService(
 function renderStorySection(
   story: StorySnapshot,
   index: CitationIndex,
-  compact = false,
+  continuity?: StoryContinuity,
 ): string[] {
   const out: string[] = [];
   out.push(`### ${escapeMarkdown(story.storyLabel)}`);
   out.push("");
-  if (!compact) {
-    out.push(escapeMarkdown(story.summaryText));
+  if (continuity?.kind === "continuing") {
+    const reason = continuity.reason === "shared_source" ? "same source" : "same specific story label";
+    out.push(
+      `_Continues yesterday's coverage: ${escapeMarkdown(continuity.previousStoryLabel)} (${reason})._`,
+    );
     out.push("");
   }
+  out.push(escapeMarkdown(story.summaryText));
+  out.push("");
   if (story.claims.length > 0) {
-    out.push("_Claims:_");
+    out.push("_Key details:_");
     for (const claim of story.claims) {
       let token: string;
       try {
@@ -621,6 +767,23 @@ function renderStorySection(
     out.push("");
   }
   return out;
+}
+
+function firstSentence(summary: string): string {
+  const normalized = summary.trim().replace(/\s+/g, " ");
+  if (normalized.length === 0) return "Summary unavailable.";
+  return normalized.match(/^.*?[.!?](?=\s|$)/)?.[0] ?? normalized;
+}
+
+function firstStoryCitation(story: StorySnapshot, index: CitationIndex): string | undefined {
+  for (const claim of story.claims) {
+    try {
+      return citationTokenFor(index, claim.chunkId);
+    } catch {
+      // Ignore claims omitted from the final citation index.
+    }
+  }
+  return undefined;
 }
 
 function collectCitationsForDocument(

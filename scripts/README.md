@@ -31,13 +31,14 @@ master podcast) plus, for any configured partition that meets its
 Sequence:
 
 1. `digestive generate-digest --date <local-today>` (master)
-2. `digestive generate-email --date <local-today>` (master)
-3. Fire-and-forget `generate-notebook` and (where `with_podcast: true`)
+2. Resolve active partitions with the database-backed `enabled` +
+   `min_articles` rule, then fire-and-forget `generate-notebook` and (where `with_podcast: true`)
    `generate-podcast` for every active partition.
-4. `--wait` on every active partition's notebook and (where applicable)
+3. `--wait` on every active partition's notebook and (where applicable)
    podcast. This is the wall-clock heavy step (~10–20 min per source).
-5. `digestive publish-edition --date <local-today> --dry-run` (gate check)
-6. `digestive publish-edition --date <local-today>` (real publish)
+4. `digestive generate-email --date <local-today>` after artifact URLs are ready.
+5. Evaluate edition readiness and run `publish-edition --dry-run` (gate check).
+6. `digestive publish-edition --date <local-today>` (real publish).
 
 Environment overrides:
 - `PNIP_PUBLISH_DATE=YYYY-MM-DD` — publish a specific date instead of today
@@ -94,15 +95,6 @@ Loads the project `.env` via `dotenv` and prints `export KEY=VALUE` lines
 that bash can `eval`. Used by the cron scripts to source env vars
 without the risk of bash mishandling values that contain angle brackets
 or other shell-meaningful characters (notably `EMAIL_FROM`).
-
-### `parse-partitions.mjs`
-
-Reads `PARTITION_CONFIG` from the environment and prints one line per
-partition the publication sequence should generate a notebook for. The
-format is `<partition_key>` or `<partition_key>:with_podcast` when the
-operator has enabled the per-partition podcast. Master is always emitted
-and always gets a podcast. Used by `daily-publish.sh` to iterate
-partitions without `jq` or any other JSON parser.
 
 ## One-shot drivers
 

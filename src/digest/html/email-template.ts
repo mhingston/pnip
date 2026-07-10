@@ -18,7 +18,15 @@ export interface EmailTemplateInput {
   renderedHtmlBody: string;
   notebookUrl?: string | null;
   podcastUrl?: string | null;
+  artifactLinks?: ArtifactLink[];
   editionId: string;
+}
+
+export interface ArtifactLink {
+  kind: "notebook" | "podcast";
+  partitionKey: string;
+  label: string;
+  url: string;
 }
 
 export interface EmailTemplate {
@@ -31,22 +39,24 @@ export function buildEmailTemplate(input: EmailTemplateInput): EmailTemplate {
   const subject = `Daily Digest — ${input.publicationDate}`;
   const notebookLink = input.notebookUrl ?? null;
   const podcastLink = input.podcastUrl ?? null;
-  const supplementaryLinks: string[] = [];
+  const artifacts: ArtifactLink[] = [...(input.artifactLinks ?? [])];
   if (notebookLink) {
-    supplementaryLinks.push(
-      `<li><a href="${escapeAttr(notebookLink)}" rel="noopener noreferrer">Discuss this Edition in NotebookLM</a></li>`,
-    );
+    artifacts.push({ kind: "notebook", partitionKey: "master", label: "Discuss this Edition in NotebookLM", url: notebookLink });
   }
   if (podcastLink) {
-    supplementaryLinks.push(
-      `<li><a href="${escapeAttr(podcastLink)}" rel="noopener noreferrer">Listen to today&rsquo;s audio digest</a></li>`,
-    );
+    artifacts.push({ kind: "podcast", partitionKey: "master", label: "Listen to today's audio digest", url: podcastLink });
   }
+  const uniqueArtifacts = artifacts.filter((artifact, index) =>
+    artifacts.findIndex((candidate) => candidate.url === artifact.url) === index,
+  );
+  const supplementaryLinks = uniqueArtifacts.map((artifact) =>
+    `<li><a href="${escapeAttr(artifact.url)}" rel="noopener noreferrer">${escapeHtml(artifact.label)}</a></li>`,
+  );
 
   const supplementarySection =
     supplementaryLinks.length > 0
       ? `<section>
-  <h2>Talk &amp; Listen</h2>
+  <h2>Explore this edition</h2>
   <ul>
     ${supplementaryLinks.join("\n    ")}
   </ul>
@@ -95,8 +105,7 @@ ${supplementarySection}
       .replace(/\s+\n/g, "\n")
       .trim(),
     "",
-    notebookLink ? `Discuss this Edition in NotebookLM: ${notebookLink}` : null,
-    podcastLink ? `Listen to today's audio digest: ${podcastLink}` : null,
+    ...uniqueArtifacts.map((artifact) => `${artifact.label}: ${artifact.url}`),
   ]
     .filter((line) => line !== null)
     .join("\n")

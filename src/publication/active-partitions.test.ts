@@ -132,13 +132,13 @@ describe("getActivePartitions", () => {
     ]);
   });
 
-  it("master documentCount reflects actual documents in that partition", async () => {
+  it("master documentCount reflects every document in the edition", async () => {
     const editionId = await insertEdition();
     await insertDocuments(editionId, PARTITION_MASTER, 19);
     await insertDocuments(editionId, "youtube", 7);
     const result = await getActivePartitions({ db, editionId, config: {} });
     expect(result).toEqual([
-      { partitionKey: PARTITION_MASTER, documentCount: 19, withPodcast: false },
+      { partitionKey: PARTITION_MASTER, documentCount: 26, withPodcast: false },
     ]);
   });
 
@@ -165,7 +165,7 @@ describe("getActivePartitions", () => {
       config: { youtube: { min_articles: 5, enabled: true } },
     });
     expect(result).toEqual([
-      { partitionKey: PARTITION_MASTER, documentCount: 10, withPodcast: false },
+      { partitionKey: PARTITION_MASTER, documentCount: 14, withPodcast: false },
     ]);
   });
 
@@ -179,7 +179,7 @@ describe("getActivePartitions", () => {
       config: { youtube: { min_articles: 5, enabled: true } },
     });
     expect(result).toEqual([
-      { partitionKey: PARTITION_MASTER, documentCount: 10, withPodcast: false },
+      { partitionKey: PARTITION_MASTER, documentCount: 15, withPodcast: false },
       { partitionKey: "youtube", documentCount: 5, withPodcast: false },
     ]);
   });
@@ -194,7 +194,7 @@ describe("getActivePartitions", () => {
       config: { youtube: { min_articles: 5, enabled: true } },
     });
     expect(result).toEqual([
-      { partitionKey: PARTITION_MASTER, documentCount: 12, withPodcast: false },
+      { partitionKey: PARTITION_MASTER, documentCount: 19, withPodcast: false },
       { partitionKey: "youtube", documentCount: 7, withPodcast: false },
     ]);
   });
@@ -211,7 +211,7 @@ describe("getActivePartitions", () => {
       },
     });
     expect(result).toEqual([
-      { partitionKey: PARTITION_MASTER, documentCount: 10, withPodcast: false },
+      { partitionKey: PARTITION_MASTER, documentCount: 17, withPodcast: false },
       { partitionKey: "youtube", documentCount: 7, withPodcast: true },
     ]);
   });
@@ -228,7 +228,7 @@ describe("getActivePartitions", () => {
       },
     });
     expect(result).toEqual([
-      { partitionKey: PARTITION_MASTER, documentCount: 10, withPodcast: false },
+      { partitionKey: PARTITION_MASTER, documentCount: 17, withPodcast: false },
     ]);
   });
 
@@ -243,7 +243,7 @@ describe("getActivePartitions", () => {
       config: { youtube: { enabled: true }, blogs: { enabled: true } },
     });
     expect(result).toEqual([
-      { partitionKey: PARTITION_MASTER, documentCount: 10, withPodcast: false },
+      { partitionKey: PARTITION_MASTER, documentCount: 19, withPodcast: false },
       { partitionKey: "youtube", documentCount: 5, withPodcast: false },
     ]);
   });
@@ -265,7 +265,7 @@ describe("getActivePartitions", () => {
       },
     });
     expect(result).toEqual([
-      { partitionKey: PARTITION_MASTER, documentCount: 19, withPodcast: false },
+      { partitionKey: PARTITION_MASTER, documentCount: 32, withPodcast: false },
       { partitionKey: "youtube", documentCount: 7, withPodcast: true },
       { partitionKey: "blogs", documentCount: 5, withPodcast: false },
     ]);
@@ -281,7 +281,7 @@ describe("getActivePartitions", () => {
       config: { youtube: { min_articles: 5, enabled: true } },
     });
     expect(result).toEqual([
-      { partitionKey: PARTITION_MASTER, documentCount: 10, withPodcast: false },
+      { partitionKey: PARTITION_MASTER, documentCount: 18, withPodcast: false },
     ]);
   });
 
