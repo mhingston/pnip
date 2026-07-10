@@ -48,6 +48,9 @@ const sql007Path = fileURLToPath(
 const sql028Path = fileURLToPath(
   new URL("../database/migrations/028_create_miniflux_ingestion_state.sql", import.meta.url),
 );
+const sql029Path = fileURLToPath(
+  new URL("../database/migrations/029_add_miniflux_read_reset_at.sql", import.meta.url),
+);
 
 function schemaName(prefix: string): string {
   return prefix + randomUUID().replace(/-/g, "");
@@ -67,14 +70,21 @@ function entry(
 interface FakeMinifluxCalls {
   listUnread: Array<{ limit?: number; afterEntryId?: number; status?: string }>;
   listEntries: Array<{ limit?: number; afterEntryId?: number; status?: string }>;
+  markAllFeedsRead: number;
   markEntryRead: number[];
 }
 
 function createFakeMiniflux(opts: {
   pages: MinifluxEntry[][];
   markReadThrowsIds?: number[];
+  markAllFeedsReadThrows?: boolean;
 }): { client: MinifluxClient; calls: FakeMinifluxCalls } {
-  const calls: FakeMinifluxCalls = { listUnread: [], listEntries: [], markEntryRead: [] };
+  const calls: FakeMinifluxCalls = {
+    listUnread: [],
+    listEntries: [],
+    markAllFeedsRead: 0,
+    markEntryRead: [],
+  };
   let pageIndex = 0;
   async function markEntryRead(id: number): Promise<void> {
     calls.markEntryRead.push(id);
@@ -105,6 +115,10 @@ function createFakeMiniflux(opts: {
     ): Promise<MinifluxEntry[]> {
       return this.listEntries!({ ...listOpts, status: "unread" });
     },
+    async markAllFeedsRead(): Promise<void> {
+      calls.markAllFeedsRead++;
+      if (opts.markAllFeedsReadThrows) throw new Error("fake mark-all-read failure");
+    },
     markEntryRead,
     async markEntriesRead(ids: number[]): Promise<void> {
       for (const id of ids) await markEntryRead(id);
@@ -133,12 +147,13 @@ describe("DiscoveryService", () => {
     pool = createPool(url);
     kyselyPool = createPool(url);
 
-    const [m002, m006, m003, m007, m028] = await Promise.all([
+    const [m002, m006, m003, m007, m028, m029] = await Promise.all([
       readFile(sql002Path, "utf8"),
       readFile(sql006Path, "utf8"),
       readFile(sql003Path, "utf8"),
       readFile(sql007Path, "utf8"),
       readFile(sql028Path, "utf8"),
+      readFile(sql029Path, "utf8"),
     ]);
 
     const m026 = `
@@ -165,6 +180,7 @@ describe("DiscoveryService", () => {
       await client.query(m007);
       await client.query(m026);
       await client.query(m028);
+      await client.query(m029);
     } finally {
       client.release();
     }
@@ -240,6 +256,7 @@ describe("DiscoveryService", () => {
       expect(typeof target.url).toBe("string");
     }
     expect(calls.markEntryRead).toEqual([]);
+    expect(calls.markAllFeedsRead).toBe(1);
     expect(calls.listEntries[0]?.status).toBe("all");
   });
 
@@ -275,9 +292,10 @@ describe("DiscoveryService", () => {
     const target = jobs[0].target as { discoveryEventId: string; url: string };
     expect(target.url).toBe("https://x/2");
     expect(calls.markEntryRead).toEqual([]);
+    expect(calls.markAllFeedsRead).toBe(1);
   });
 
-  it("does not call Miniflux mark-read and continues ingesting entries", async () => {
+  it("marks feeds read once while continuing to ingest entries", async () => {
     const { client, calls } = createFakeMiniflux({
       pages: [[entry(1, "https://x/1"), entry(2, "https://x/2")], []],
       markReadThrowsIds: [1],
@@ -296,6 +314,7 @@ describe("DiscoveryService", () => {
     expect(await discoveryRepo.countByEdition(result.editionId)).toBe(2);
     expect(await countJobs()).toBe(2);
     expect(calls.markEntryRead).toEqual([]);
+    expect(calls.markAllFeedsRead).toBe(1);
   });
 
   it("pagination: advances afterEntryId and terminates on a short page", async () => {
@@ -319,6 +338,7 @@ describe("DiscoveryService", () => {
     expect(result.duplicates).toBe(0);
     expect(result.failed).toBe(0);
     expect(calls.markEntryRead).toEqual([]);
+    expect(calls.markAllFeedsRead).toBe(1);
     expect(calls.listUnread.map((c) => c.limit)).toEqual([2, 2]);
     expect(calls.listUnread.map((c) => c.afterEntryId)).toEqual([undefined, 2]);
   });
@@ -346,6 +366,8 @@ describe("DiscoveryService", () => {
     const event = await discoveryRepo.getByMinifluxEntryId(1);
     expect(event).toBeDefined();
     expect(target.discoveryEventId).toBe(event!.id);
+    const edition = await editionRepo.getById(result.editionId);
+    expect(edition?.miniflux_read_reset_at).toBeInstanceOf(Date);
   });
 
   it("empty unread: total=0, edition created, markEntryRead not called", async () => {
@@ -366,7 +388,61 @@ describe("DiscoveryService", () => {
     expect(edition).toBeDefined();
     expect(result.editionId).toBe(edition!.id);
     expect(calls.markEntryRead).toEqual([]);
+    expect(calls.markAllFeedsRead).toBe(1);
     expect(await countJobs()).toBe(0);
+  });
+
+  it("marks the Miniflux boundary once per edition and retries a failed reset", async () => {
+    const first = createFakeMiniflux({
+      pages: [[entry(1, "https://x/1")], []],
+      markAllFeedsReadThrows: true,
+    });
+    const service = createDiscoveryService({ db, editionRepo, discoveryRepo, queue });
+
+    const firstResult = await service.discover({
+      editionDate: "2026-01-10",
+      miniflux: first.client,
+    });
+    expect(first.calls.markAllFeedsRead).toBe(1);
+    expect((await editionRepo.getById(firstResult.editionId))?.miniflux_read_reset_at).toBeNull();
+
+    const second = createFakeMiniflux({ pages: [[]] });
+    const secondResult = await service.discover({
+      editionDate: "2026-01-10",
+      miniflux: second.client,
+    });
+    expect(secondResult.editionId).toBe(firstResult.editionId);
+    expect(second.calls.markAllFeedsRead).toBe(1);
+    expect((await editionRepo.getById(firstResult.editionId))?.miniflux_read_reset_at).toBeInstanceOf(Date);
+
+    const third = createFakeMiniflux({ pages: [[]] });
+    await service.discover({ editionDate: "2026-01-10", miniflux: third.client });
+    expect(third.calls.markAllFeedsRead).toBe(0);
+  });
+
+  it("routes entries after a published edition into the next open edition", async () => {
+    const published = await editionRepo.create("2026-01-11");
+    await editionRepo.transition(published.id, "ready");
+    await editionRepo.transition(published.id, "publishing");
+    await editionRepo.transition(published.id, "published");
+
+    const { client, calls } = createFakeMiniflux({
+      pages: [[entry(99, "https://x/99")], []],
+    });
+    const service = createDiscoveryService({ db, editionRepo, discoveryRepo, queue });
+    const result = await service.discover({
+      editionDate: "2026-01-11",
+      miniflux: client,
+    });
+
+    const next = await editionRepo.getByDate("2026-01-12");
+    expect(next).toBeDefined();
+    expect(result.editionId).toBe(next!.id);
+    expect(result.editionId).not.toBe(published.id);
+    expect(await discoveryRepo.getByMinifluxEntryId(99)).toMatchObject({
+      edition_id: next!.id,
+    });
+    expect(calls.markAllFeedsRead).toBe(1);
   });
 
   it("§52 isolation: enqueue failure rolls back the event (atomic tx) and the run continues", async () => {
@@ -412,6 +488,7 @@ describe("DiscoveryService", () => {
       const target = jobs[0].target as { url: string };
       expect(target.url).toBe("https://x/2");
       expect(calls.markEntryRead).toEqual([]);
+      expect(calls.markAllFeedsRead).toBe(1);
 
       const sentinelEvent = await discoveryRepo.getByMinifluxEntryId(1);
       expect(sentinelEvent).toBeUndefined();

@@ -13,7 +13,7 @@
 #
 # The default schedule:
 #   */10 * * * *   digest-drain          (drain Miniflux -> editions)
-#   0 */6 * * *    maintenance dry-run   (queue health preview)
+#   0 */6 * * *    maintenance apply    (queue + 30-day retention cleanup)
 #   0 6 * * *      daily-publish         (publication at 06:00 local)
 #
 # To customise the publication time:
@@ -90,9 +90,9 @@ PATH=/root/.local/bin:/home/mark/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/
 # Drain Miniflux -> editions. Idempotent. Tight interval.
 $SCHEDULE_DRAIN $DRAIN_SCRIPT >> $PROJECT_DIR/logs/digest-drain.log 2>&1
 
-# Cheap queue-health preview. The full maintenance --apply runs daily
-# after publication (separate cron in the README).
-$SCHEDULE_MAINTENANCE cd $PROJECT_DIR && $PROJECT_DIR/node_modules/.bin/tsx $PROJECT_DIR/src/cli/index.ts maintenance >> $PROJECT_DIR/logs/maintenance.log 2>&1
+# Queue cleanup and 30-day data retention. The command is idempotent and
+# bounded by the CLI's --limit safety cap.
+$SCHEDULE_MAINTENANCE cd $PROJECT_DIR && $PROJECT_DIR/node_modules/.bin/tsx $PROJECT_DIR/src/cli/index.ts maintenance --apply --retention-after 30d >> $PROJECT_DIR/logs/maintenance.log 2>&1
 
 # Daily publication. The script itself sequences the steps; cron just
 # fires the trigger at the operator's local publication time.

@@ -45,7 +45,7 @@ The CLI is the orchestration boundary. Domain services communicate through repos
 
 ## Ingestion and idempotency
 
-PNIP calls the Miniflux entries endpoint with read and unread status filters, ordered by ascending ID. It does not call the Miniflux write endpoint, so the operator's read/unread state remains private to Miniflux.
+PNIP calls the Miniflux entries endpoint with read and unread status filters, ordered by ascending ID. Ingestion is independent of read state. At the first successful discovery poll for an open edition, PNIP calls Miniflux's per-feed mark-all-as-read endpoint once and records `editions.miniflux_read_reset_at`; a failed reset is retried on a later poll. This resets the reader's unread badge without changing PNIP's ingestion cursor.
 
 The miniflux_ingestion_state table stores a singleton checkpoint:
 
@@ -74,7 +74,7 @@ building → ready → publishing → published
                      └──────→ failed
 ~~~
 
-Discovery assigns entries to the edition date supplied to the command (normally today). The entry publication timestamp is stored for provenance but does not move an entry into another date's edition.
+Discovery starts with the edition date supplied to the command (normally today). If that date's edition is ready, publishing, or published, discovery walks forward to the next open date and creates or reuses a mutable edition there. The entry publication timestamp is stored for provenance but does not otherwise move an entry between editions.
 
 The readiness gate requires every edition document to complete the five enrichment types and every story to have a story summary. generate-edition evaluates that gate and transitions Building to Ready.
 
@@ -141,7 +141,9 @@ DIGEST_BIAS_ENABLED is opt-in. It removes a story only when all of its documents
 
 ## Queue, retries, and maintenance
 
-Jobs have pending, running, completed, failed, and archived states. Worker claims are lease-based, and stale running jobs can be recovered. Retry requeues failed jobs; maintenance archives old completed/failed jobs and purges old archived jobs. The edition and content tables are retained as the permanent archive.
+Jobs have pending, running, completed, failed, and archived states. Worker claims are lease-based, and stale running jobs can be recovered. Retry requeues failed jobs; maintenance archives old completed/failed jobs and purges old archived jobs.
+
+Maintenance runs a 30-day retention transaction when invoked with `--apply`: it removes old edition-linked source data, sections/chunks, enrichment rows, embeddings, artifact rows, discovery events, lineage, and old jobs. Queue archive/purge defaults also retain archived jobs for 30 days. The edition delete cascades through the relational content graph; lineage is explicitly cleaned because it is intentionally schema-less. External NotebookLM assets and already-downloaded podcast files are outside PostgreSQL retention. The cron installer schedules this apply pass every six hours with a row limit safety cap.
 
 The cron helpers are operational conveniences, not part of the scheduler runtime:
 
@@ -151,7 +153,7 @@ The cron helpers are operational conveniences, not part of the scheduler runtime
 
 ## Deliberate boundaries
 
-- Miniflux remains the user's reading application; PNIP does not synchronize read state.
+- Miniflux remains the user's reading application; PNIP only performs the once-per-edition unread reset and never uses read state as an ingestion filter.
 - PostgreSQL is the source of truth after discovery.
 - Markdown is the canonical digest; email is a presentation of it.
 - NotebookLM is a source-grounded convenience artifact, not the archive.

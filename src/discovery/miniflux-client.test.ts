@@ -262,6 +262,56 @@ describe("miniflux-client", () => {
     });
   });
 
+  describe("markAllFeedsRead", () => {
+    it("lists feeds and marks each feed read through the feed endpoint", async () => {
+      const { fetch, calls } = makeFakeFetch((call) => {
+        const path = new URL(call.url).pathname;
+        if (path === "/v1/feeds") {
+          return jsonResponse([
+            { id: 3, title: "Blogs" },
+            { id: 4, title: "YouTube" },
+          ]);
+        }
+        return jsonResponse({}, 200);
+      });
+      const client = createMinifluxClient({
+        baseUrl: "http://127.0.0.1:8080",
+        token: TOKEN,
+        fetchImpl: fetch,
+      });
+
+      await client.markAllFeedsRead();
+
+      expect(calls.map((call) => new URL(call.url).pathname)).toEqual([
+        "/v1/feeds",
+        "/v1/feeds/3/mark-all-as-read",
+        "/v1/feeds/4/mark-all-as-read",
+      ]);
+      for (const call of calls) {
+        expect(header(call.init?.headers, "X-Auth-Token")).toBe(TOKEN);
+      }
+      expect(calls[0].init?.method).toBe("GET");
+      expect(calls[1].init?.method).toBe("PUT");
+      expect(calls[2].init?.method).toBe("PUT");
+    });
+
+    it("does not issue feed writes when Miniflux has no feeds", async () => {
+      const { fetch, calls } = makeFakeFetch((call) => {
+        if (new URL(call.url).pathname === "/v1/feeds") return jsonResponse([]);
+        return jsonResponse({}, 200);
+      });
+      const client = createMinifluxClient({
+        baseUrl: "http://127.0.0.1:8080",
+        token: TOKEN,
+        fetchImpl: fetch,
+      });
+
+      await client.markAllFeedsRead();
+
+      expect(calls).toHaveLength(1);
+    });
+  });
+
   describe("error handling", () => {
     it("listUnreadEntries throws MinifluxApiError on 401 with status/statusText/body/url/method", async () => {
       const { fetch, calls } = makeFakeFetch(

@@ -77,7 +77,7 @@ Default schedule:
 | Cron expression     | Script                  | Purpose                                  |
 | ------------------- | ----------------------- | ---------------------------------------- |
 | `*/10 * * * *`      | `digest-drain.sh`       | Drain Miniflux → editions                |
-| `0 */6 * * *`       | (inline)                | Cheap maintenance dry-run                 |
+| `0 */6 * * *`       | (inline)                | Queue cleanup + 30-day retention purge   |
 | `0 6 * * *`         | `daily-publish.sh`      | Daily publication at 06:00 local         |
 
 All entries use the system clock's local time. The `daily-publish.sh`

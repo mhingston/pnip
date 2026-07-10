@@ -6,6 +6,7 @@ import type { MinifluxClient } from "../discovery/miniflux-client.js";
 function fakeMiniflux(): MinifluxClient {
   return {
     listUnreadEntries: vi.fn(),
+    markAllFeedsRead: vi.fn(),
     markEntryRead: vi.fn(),
     markEntriesRead: vi.fn(),
     health: vi.fn(),

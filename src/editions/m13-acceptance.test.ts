@@ -130,6 +130,7 @@ const migrationSqlPaths = [
   "../database/migrations/026_add_partition_key.sql",
   "../database/migrations/027_add_notebook_podcast_partition.sql",
   "../database/migrations/028_create_miniflux_ingestion_state.sql",
+  "../database/migrations/029_add_miniflux_read_reset_at.sql",
 ];
 
 function readMigrationSql(relativePath: string): Promise<string> {
@@ -194,13 +195,14 @@ function makeFakeResend(opts: {
 
 interface FakeMinifluxCalls {
   listUnread: Array<{ limit?: number; afterEntryId?: number }>;
+  markAllFeedsRead: number;
   markEntryRead: number[];
 }
 
 function makeFakeMiniflux(opts: {
   pages: MinifluxEntry[][];
 }): { client: MinifluxClient; calls: FakeMinifluxCalls } {
-  const calls: FakeMinifluxCalls = { listUnread: [], markEntryRead: [] };
+  const calls: FakeMinifluxCalls = { listUnread: [], markAllFeedsRead: 0, markEntryRead: [] };
   let pageIndex = 0;
   const client: MinifluxClient = {
     async listUnreadEntries(
@@ -213,6 +215,9 @@ function makeFakeMiniflux(opts: {
       const page = opts.pages[pageIndex] ?? [];
       pageIndex += 1;
       return page;
+    },
+    async markAllFeedsRead(): Promise<void> {
+      calls.markAllFeedsRead++;
     },
     async markEntryRead(id: number): Promise<void> {
       calls.markEntryRead.push(id);
@@ -580,6 +585,7 @@ async function runDiscoveryStep(
   expect(result.total).toBe(2);
   expect(result.created).toBe(2);
   expect(calls.markEntryRead).toEqual([]);
+  expect(calls.markAllFeedsRead).toBe(1);
   state.editionId = result.editionId;
   for (const id of [100, 200]) {
     const ev = await env.discoveryRepo.getByMinifluxEntryId(id);

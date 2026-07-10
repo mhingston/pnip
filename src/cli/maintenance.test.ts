@@ -65,6 +65,12 @@ describe("parseMaintenanceFlags", () => {
     });
   });
 
+  it("parses --retention-after", () => {
+    const r = parseMaintenanceFlags({ args: ["--retention-after", "30d"] });
+    expect(r.errors).toEqual([]);
+    expect(r.options.retentionAfterMs).toBe(30 * 86_400_000);
+  });
+
   it("records -h / --help as a help request without other errors", () => {
     expect(parseMaintenanceFlags({ args: ["-h"] }).help).toBe(true);
     expect(parseMaintenanceFlags({ args: ["--help"] }).help).toBe(true);
@@ -82,6 +88,8 @@ describe("parseMaintenanceFlags", () => {
     expect(r2.errors[0]).toMatch(/invalid positive integer/);
     const r3 = parseMaintenanceFlags({ args: ["--purge-after", "5x"] });
     expect(r3.errors[0]).toMatch(/invalid duration/);
+    const r4 = parseMaintenanceFlags({ args: ["--retention-after", "abc"] });
+    expect(r4.errors[0]).toMatch(/invalid duration/);
   });
 
   it("errors when a flag value is missing", () => {
@@ -183,6 +191,7 @@ describe("runMaintenance", () => {
     expect(MAINTENANCE_HELP).toContain("--apply");
     expect(MAINTENANCE_HELP).toContain("--archive-after");
     expect(MAINTENANCE_HELP).toContain("--purge-after");
+    expect(MAINTENANCE_HELP).toContain("--retention-after");
     expect(MAINTENANCE_HELP).toContain("cron");
   });
 });

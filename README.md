@@ -11,7 +11,9 @@ It is a self-hosted TypeScript/Node application backed by PostgreSQL. Processing
 
 ## Current behavior
 
-Discovery does not change Miniflux read state. PNIP requests both read and unread entries, advances a local ingestion checkpoint, and deduplicates by Miniflux entry ID. You can read Miniflux normally without affecting the digest.
+Discovery requests both read and unread entries, advances a local ingestion checkpoint, and deduplicates by Miniflux entry ID. When a new daily edition boundary is first opened, PNIP marks all Miniflux feeds read once; this only resets the reader's unread badge. Manual reading remains available, and entries continue to be ingested regardless of their read state.
+
+If discovery is asked to use an edition that is already ready, publishing, or published, it routes entries to the next open daily edition so an immutable digest is never changed by late arrivals.
 
 The Markdown digest currently:
 
@@ -80,7 +82,7 @@ The recommended automated workflow is:
 scripts/cron-install.sh install
 ~~~
 
-This installs a Miniflux/processing drain every 10 minutes, a six-hour maintenance preview, and a daily publication trigger. Use scripts/daily-publish.sh directly when you need a one-shot publication sequence. Set PNIP_PUBLISH_DATE to publish a specific edition and PNIP_DRY_RUN=1 to stop after the publication gate check.
+This installs a Miniflux/processing drain every 10 minutes, a six-hour maintenance apply (including the 30-day retention purge), and a daily publication trigger. Use scripts/daily-publish.sh directly when you need a one-shot publication sequence. Set PNIP_PUBLISH_DATE to publish a specific edition and PNIP_DRY_RUN=1 to stop after the publication gate check.
 
 ## CLI reference
 
@@ -90,7 +92,7 @@ All commands support -h and --help. Dates default to today.
 
 | Command | Purpose |
 | --- | --- |
-| digestive discover | Ingest new read or unread Miniflux entries without changing their read state |
+| digestive discover | Ingest new read or unread Miniflux entries; reset Miniflux feed read state once per new edition boundary |
 | digestive process | Drain the processing queue until it is empty |
 | digestive generate-digest | Render the canonical Markdown digest |
 | digestive generate-edition | Evaluate the Building → Ready enrichment gate |
@@ -107,10 +109,10 @@ All commands support -h and --help. Dates default to today.
 | digestive metrics | Read-only queue, throughput, latency, edition, and partition metrics |
 | digestive partitions | Read-only document counts and recent per-partition activity |
 | digestive retry | List/requeue failed jobs; use --dry-run first |
-| digestive maintenance | Preview queue cleanup by default; --apply archives and purges old processing jobs |
+| digestive maintenance | Preview by default; `--apply` cleans the queue and purges edition-linked data older than 30 days |
 | digestive active-partitions --date YYYY-MM-DD | Print partitions active for an edition |
 
-Retry filters include edition ID, worker/job type, age, and limit. Maintenance supports archive-after, purge-after, and limit durations using s, m, h, or d suffixes.
+Retry filters include edition ID, worker/job type, age, and limit. Maintenance supports archive-after, purge-after, retention-after, and limit durations using s, m, h, or d suffixes. The installed cron invokes `maintenance --apply --retention-after 30d`; edition-linked source data, chunks, enrichment rows, embeddings, artifact rows, discovery events, lineage, and old jobs are removed after 30 days, while archived queue rows use the same 30-day purge age. External NotebookLM assets and already-downloaded podcast files are outside PostgreSQL retention.
 
 ### Feedback and source trust
 
@@ -200,6 +202,7 @@ src/editions        Edition lifecycle, readiness, and assembly
 src/digest          Markdown, email, NotebookLM, and podcast outputs
 src/publication     Publication gate and state transitions
 src/signals         Feedback, source identity, bias, and source trust
+src/retention       30-day edition/content and queue cleanup
 scripts             Cron and daily-publication helpers
 ARCHITECTURE.md     Current design decisions and invariants
 ~~~

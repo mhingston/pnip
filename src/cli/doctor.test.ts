@@ -96,6 +96,7 @@ function makeFakeQueue(opts: {
 function makeFakeMiniflux(result: { ok: boolean; status: number; body?: string }): MinifluxClient {
   return {
     listUnreadEntries: vi.fn(),
+    markAllFeedsRead: vi.fn(),
     markEntryRead: vi.fn(),
     markEntriesRead: vi.fn(),
     health: vi.fn().mockResolvedValue(result),

@@ -17,6 +17,7 @@ export interface Edition {
   cluster_stories_enqueued_at: Date | null;
   metadata: unknown | null;
   partition_key: string;
+  miniflux_read_reset_at?: Date | null;
 }
 
 export interface ProcessingJob {
@@ -107,6 +108,7 @@ export interface Database {
     cluster_stories_enqueued_at: Date | null;
     metadata: unknown | null;
     partition_key: Generated<string>;
+    miniflux_read_reset_at: Date | null;
   };
   prompt_versions: {
     id: Generated<string>;

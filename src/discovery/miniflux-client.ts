@@ -1,5 +1,7 @@
 export type MinifluxCategory = { id: number; title: string };
 
+export type MinifluxFeed = { id: number; title: string };
+
 export interface MinifluxEntry {
   id: number;
   feedId: number;
@@ -29,6 +31,8 @@ export interface MinifluxClient {
   listEntries?(opts?: ListMinifluxEntriesOptions): Promise<MinifluxEntry[]>;
   /** @deprecated Use listEntries({ status: "unread" }) for unread-only callers. */
   listUnreadEntries(opts?: Omit<ListMinifluxEntriesOptions, "status">): Promise<MinifluxEntry[]>;
+  /** Mark every entry in every subscribed feed as read. */
+  markAllFeedsRead(): Promise<void>;
   markEntryRead(entryId: number): Promise<void>;
   markEntriesRead(entryIds: number[]): Promise<void>;
   health(): Promise<{ ok: boolean; status: number; body?: string }>;
@@ -61,6 +65,11 @@ interface RawMinifluxEntry {
   published_at?: string;
   created_at?: string;
   category?: MinifluxCategory | null;
+}
+
+interface RawMinifluxFeed {
+  id: number;
+  title: string;
 }
 
 interface RawEntriesResponse {
@@ -126,6 +135,29 @@ export function createMinifluxClient(opts: {
 
     async listUnreadEntries(listOpts?: Omit<ListMinifluxEntriesOptions, "status">): Promise<MinifluxEntry[]> {
       return this.listEntries!({ ...listOpts, status: "unread" });
+    },
+
+    async markAllFeedsRead(): Promise<void> {
+      const feedsUrl = `${base}/v1/feeds`;
+      const feedsRes = await doFetch(feedsUrl, {
+        method: "GET",
+        headers: { "X-Auth-Token": token, Accept: "application/json" },
+      });
+      await ensureOk(feedsRes, feedsUrl, "GET");
+      const feeds = (await feedsRes.json()) as RawMinifluxFeed[];
+
+      // Miniflux exposes the operation per feed. Keep this sequential so a
+      // large feed list does not turn the daily boundary into a burst of
+      // concurrent writes. The operation is idempotent, so a partial failure
+      // is safe to retry on the next discovery poll.
+      for (const feed of feeds) {
+        const url = `${base}/v1/feeds/${feed.id}/mark-all-as-read`;
+        const res = await doFetch(url, {
+          method: "PUT",
+          headers: { "X-Auth-Token": token, Accept: "application/json" },
+        });
+        await ensureOk(res, url, "PUT");
+      }
     },
 
     async markEntryRead(entryId: number): Promise<void> {

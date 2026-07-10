@@ -1,4 +1,11 @@
 import type { ProcessingJobQueue } from "../jobs/queue/processing-job-queue.js";
+import type { Kysely } from "kysely";
+import type { Database } from "../database/kysely.js";
+import {
+  previewRetention,
+  purgeExpiredData,
+  type RetentionCounts,
+} from "../retention/retention-service.js";
 
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
@@ -6,13 +13,15 @@ const DAY_MS = 24 * HOUR_MS;
 export interface MaintenanceOptions {
   archiveAfterMs: number;
   purgeAfterMs: number;
+  retentionAfterMs: number;
   limit: number;
   apply: boolean;
 }
 
 export const DEFAULT_MAINTENANCE_OPTIONS: MaintenanceOptions = {
   archiveAfterMs: 24 * HOUR_MS,
-  purgeAfterMs: 7 * DAY_MS,
+  purgeAfterMs: 30 * DAY_MS,
+  retentionAfterMs: 30 * DAY_MS,
   limit: 10_000,
   apply: false,
 };
@@ -27,6 +36,7 @@ export interface MaintenanceResult {
   archived: number;
   purged: number;
   byStatus: Record<string, number>;
+  retention: RetentionCounts;
 }
 
 export type Log = (msg: string) => void;
@@ -35,6 +45,7 @@ const silent: Log = () => {};
 
 export interface RunMaintenanceInput {
   queue: ProcessingJobQueue;
+  db?: Kysely<Database>;
   options: Partial<MaintenanceOptions>;
   log?: Log;
 }
@@ -44,7 +55,7 @@ export interface RunMaintenanceInput {
  *
  * Two-phase operation:
  *   1. preview (default; apply=false): report what WOULD happen without writing.
- *   2. apply  (apply=true):            run archiveJobs then purgeArchivedJobs.
+ *   2. apply  (apply=true):            run queue cleanup and retention purge.
  *
  * The preview phase runs countByStatus() + a dry-run archive/purge estimate via
  * the same age filters, so the operator sees the headline numbers before any rows
@@ -52,7 +63,8 @@ export interface RunMaintenanceInput {
  *
  * Defaults (overridable via options):
  *   - archiveAfterMs: 24h   - flip completed/failed jobs to status=archived
- *   - purgeAfterMs:   7d    - DELETE archived jobs older than this
+ *   - purgeAfterMs:   30d   - DELETE archived jobs older than this
+ *   - retentionAfterMs: 30d - delete edition-linked data after this age
  *   - limit:          10000 - hard cap on rows per phase (safety belt)
  */
 export async function runMaintenance(
@@ -108,7 +120,33 @@ export async function runMaintenance(
     );
   }
 
-  return { archived, purged, byStatus: after };
+  let retention: RetentionCounts = { editions: 0, jobs: 0, lineage: 0 };
+  if (input.db) {
+    retention = opts.apply
+      ? await purgeExpiredData(input.db, {
+          olderThanMs: opts.retentionAfterMs,
+          limit: opts.limit,
+        })
+      : await previewRetention(input.db, {
+          olderThanMs: opts.retentionAfterMs,
+          limit: opts.limit,
+        });
+    if (opts.apply) {
+      log(
+        `retention: deleted ${retention.editions} edition(s), ` +
+          `${retention.jobs} job(s), ${retention.lineage} lineage edge(s) ` +
+          `older than ${formatDuration(opts.retentionAfterMs)}`,
+      );
+    } else {
+      log(
+        `dry-run: retention would delete ${retention.editions} edition(s), ` +
+          `${retention.jobs} job(s), ${retention.lineage} lineage edge(s) ` +
+          `older than ${formatDuration(opts.retentionAfterMs)}`,
+      );
+    }
+  }
+
+  return { archived, purged, byStatus: after, retention };
 }
 
 function formatDuration(ms: number): string {
@@ -128,7 +166,8 @@ export interface ParseMaintenanceFlagsInput {
  * Flags (all optional; defaults from DEFAULT_MAINTENANCE_OPTIONS):
  *   --apply                                  actually run archive + purge (default: dry-run preview)
  *   --archive-after <duration>               e.g. 1h, 30m, 2d, 7d (default: 1d)
- *   --purge-after   <duration>               e.g. 7d, 30d        (default: 7d)
+ *   --purge-after   <duration>               e.g. 7d, 30d        (default: 30d)
+ *   --retention-after <duration>             edition/data retention (default: 30d)
  *   --limit             <n>                   per-phase row cap   (default: 10000)
  */
 export function parseMaintenanceFlags(
@@ -157,6 +196,13 @@ export function parseMaintenanceFlags(
         const ms = v ? parseDuration(v) : NaN;
         if (Number.isNaN(ms)) errors.push(`--purge-after: invalid duration "${v}"`);
         else out.purgeAfterMs = ms;
+        break;
+      }
+      case "--retention-after": {
+        const v = args[++i];
+        const ms = v ? parseDuration(v) : NaN;
+        if (Number.isNaN(ms) || ms <= 0) errors.push(`--retention-after: invalid duration (must be positive) "${v}"`);
+        else out.retentionAfterMs = ms;
         break;
       }
       case "--limit": {
@@ -192,20 +238,18 @@ Flags:
   --archive-after <duration>       flip completed/failed -> archived
                                    after this age (default: 1d)
   --purge-after   <duration>       DELETE archived rows after this age
-                                   (default: 7d)
+                                   (default: 30d)
+  --retention-after <duration>     DELETE edition-linked data after this age
+                                   (default: 30d)
   --limit         <n>               per-phase row cap (default: 10000)
   -h, --help                       show this help
 
 Durations accept a number with a unit suffix:
   s (seconds), m (minutes), h (hours), d (days). No suffix => ms.
 
-Recommended cadence: daily cron; defaults retain 1d in completed/failed
-and 7d in archived for forensics.
-
-Other tables (editions, documents, enrichment rows) are kept with the
-edition per §40 ("Edition serves as the permanent archive"); if you ever
-need to drop one, that's a separate explicit operation (not part of this
-maintenance pass).
+Recommended cadence: run with --apply from cron every few hours. Edition-linked source
+data, embeddings, enrichment rows, artifacts, discovery events, lineage, and
+old jobs are deleted after 30 days by default.
 `;
 
 function parseDuration(s: string): number {

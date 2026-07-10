@@ -368,7 +368,12 @@ async function main(): Promise<number> {
         console.log(MAINTENANCE_HELP);
         return 2;
       }
-      await runMaintenance({ queue, options: parsed.options, log: (m) => console.log(m) });
+      await runMaintenance({
+        db,
+        queue,
+        options: parsed.options,
+        log: (m) => console.log(m),
+      });
       return 0;
     }
 

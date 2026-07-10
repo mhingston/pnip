@@ -1,5 +1,6 @@
 import type { Kysely } from "kysely";
 import type { Database } from "../database/kysely.js";
+import type { Edition } from "../database/kysely.js";
 import { createDiscoveryRepository } from "./discovery-repository.js";
 import type { DiscoveryRepository } from "./discovery-repository.js";
 import { createProcessingJobQueue } from "../jobs/queue/processing-job-queue.js";
@@ -28,6 +29,74 @@ export interface DiscoveryService {
   }): Promise<DiscoveryResult>;
 }
 
+const MUTABLE_EDITION_STATUSES = new Set<Edition["status"]>([
+  "building",
+  "failed",
+]);
+
+function editionDateKey(value: string | Date): string {
+  if (typeof value === "string") return value.slice(0, 10);
+  return value.toISOString().slice(0, 10);
+}
+
+function nextEditionDate(dateKey: string): string {
+  const date = new Date(`${dateKey}T00:00:00.000Z`);
+  date.setUTCDate(date.getUTCDate() + 1);
+  return date.toISOString().slice(0, 10);
+}
+
+async function resolveOpenEdition(
+  editionRepo: EditionRepository,
+  requestedDate: string | Date,
+): Promise<{ edition: Edition; requestedDate: string; selectedDate: string }> {
+  const requestedDateKey = editionDateKey(requestedDate);
+  let selectedDate = requestedDateKey;
+
+  // A published/ready/publishing edition is immutable for discovery. Walk
+  // forward until we find an existing mutable edition or create the next one.
+  // This keeps late-arriving entries out of a digest that has already shipped.
+  for (let attempts = 0; attempts < 3660; attempts++) {
+    const existing = await editionRepo.getByDate(selectedDate);
+    if (!existing) {
+      return {
+        edition: await editionRepo.getOrCreateForDate(selectedDate),
+        requestedDate: requestedDateKey,
+        selectedDate,
+      };
+    }
+    if (MUTABLE_EDITION_STATUSES.has(existing.status)) {
+      return { edition: existing, requestedDate: requestedDateKey, selectedDate };
+    }
+    selectedDate = nextEditionDate(selectedDate);
+  }
+
+  throw new Error(`could not find an open edition after ${requestedDateKey}`);
+}
+
+async function hasMinifluxReadReset(
+  db: Kysely<Database>,
+  editionId: string,
+): Promise<boolean> {
+  const row = await db
+    .selectFrom("editions")
+    .select("miniflux_read_reset_at")
+    .where("id", "=", editionId)
+    .executeTakeFirst();
+  return row?.miniflux_read_reset_at !== null && row?.miniflux_read_reset_at !== undefined;
+}
+
+async function markMinifluxReadReset(
+  db: Kysely<Database>,
+  editionId: string,
+): Promise<void> {
+  await db
+    .updateTable("editions")
+    .set({ miniflux_read_reset_at: new Date() })
+    .where("id", "=", editionId)
+    .where("miniflux_read_reset_at", "is", null)
+    .execute();
+}
+
 export function createDiscoveryService(deps: {
   db: Kysely<Database>;
   editionRepo: EditionRepository;
@@ -39,8 +108,16 @@ export function createDiscoveryService(deps: {
   return {
     async discover(input) {
       const log = deps.logger?.child({ worker: "discovery" });
-      const edition = await deps.editionRepo.getOrCreateForDate(input.editionDate);
+      const resolved = await resolveOpenEdition(deps.editionRepo, input.editionDate);
+      const edition = resolved.edition;
       const editionLog = log?.child({ editionId: edition.id });
+
+      if (resolved.selectedDate !== resolved.requestedDate) {
+        editionLog?.info("routed discovery to next open edition", {
+          requestedDate: resolved.requestedDate,
+          selectedDate: resolved.selectedDate,
+        });
+      }
 
       const limit = input.limit ?? 100;
       let total = 0;
@@ -128,6 +205,23 @@ export function createDiscoveryService(deps: {
         }
 
         if (entries.length < limit) break;
+      }
+
+      if (!(await hasMinifluxReadReset(deps.db, edition.id))) {
+        try {
+          await input.miniflux.markAllFeedsRead();
+          await markMinifluxReadReset(deps.db, edition.id);
+          editionLog?.info("marked all Miniflux feeds read at edition boundary", {
+            editionDate: resolved.selectedDate,
+          });
+        } catch (err) {
+          // Ingestion remains successful if the read-state housekeeping call
+          // fails. The null marker makes the next poll retry it.
+          editionLog?.warn("could not mark all Miniflux feeds read", {
+            error: err as Error,
+            editionDate: resolved.selectedDate,
+          });
+        }
       }
 
       editionLog?.info("discovery complete", {
