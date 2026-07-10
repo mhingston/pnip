@@ -20,7 +20,6 @@ import { deriveSourceIdentity } from "../../signals/source-identity.js";
 import { getBiasView, type BiasView } from "../../signals/bias-view.js";
 import {
   buildCitationIndex,
-  citationTokenFor,
   type CitationIndex,
 } from "./citation-index.js";
 import {
@@ -29,7 +28,7 @@ import {
   type StoryContinuity,
 } from "./story-continuity.js";
 
-export const DIGEST_TOP_STORIES_LIMIT = 5;
+export const DIGEST_TOP_STORIES_LIMIT = 50;
 
 export const DIGEST_CATEGORY_ORDER = [
   "Technology",
@@ -96,6 +95,9 @@ interface DocumentSnapshot {
   publisher: string | null;
   chunkIds: string[];
   metadata?: unknown;
+  /** Ranking assigned while the edition's story clusters were built. */
+  editionRank?: number;
+  similarity?: number;
 }
 
 export interface StorySnapshot {
@@ -129,6 +131,8 @@ export interface MarkdownDigestService {
     edition: Edition;
     assembly: EditionAssembly;
     stories: StorySnapshot[];
+    /** All ranked edition stories, including stories hidden from the body. */
+    sourceStories?: StorySnapshot[];
     previousStories?: ContinuityStoryIdentity[];
     suppressedStoryCount?: number;
     citationIndex: CitationIndex;
@@ -443,6 +447,7 @@ export function createMarkdownDigestService(
         edition,
         assembly,
         stories: effectiveStories,
+        sourceStories: stories,
         previousStories,
         suppressedStoryCount:
           deps.biasEnabled && stories.length > effectiveStories.length
@@ -550,9 +555,13 @@ export function createMarkdownDigestService(
             publisher: doc.publisher ?? null,
             chunkIds,
             metadata: doc.metadata,
+            similarity: m.similarity,
           });
         }
-        documents.sort((a, b) => a.sourceUrl.localeCompare(b.sourceUrl));
+        documents.sort((a, b) =>
+          (b.similarity ?? 0) - (a.similarity ?? 0) ||
+          a.sourceUrl.localeCompare(b.sourceUrl),
+        );
 
         const summaryRow = s.hasSummary
           ? await deps.storySummaryRepo.getByStoryId(s.story.id)
@@ -565,7 +574,10 @@ export function createMarkdownDigestService(
           storyId: s.story.id,
           storyLabel: s.story.label,
           clusterOrder: s.story.cluster_order,
-          documents,
+          documents: documents.map((document, memberIndex) => ({
+            ...document,
+            editionRank: s.story.cluster_order * 1_000_000 + memberIndex,
+          })),
           summaryText: summaryRow.content,
           claims: citations
             .filter((c) => typeof c.chunk_id === "string" && c.chunk_id.length > 0)
@@ -599,6 +611,7 @@ export function createMarkdownDigestService(
       edition,
       assembly,
       stories,
+      sourceStories = stories,
       previousStories = [],
       suppressedStoryCount,
       citationIndex,
@@ -625,12 +638,14 @@ export function createMarkdownDigestService(
       const remainingStories = newStories.slice(topStoriesLimit);
 
       const allDocs = new Map<string, DocumentSnapshot>();
-      for (const s of renderedStories) {
+      for (const s of sourceStories) {
         for (const d of s.documents) {
           if (!allDocs.has(d.id)) allDocs.set(d.id, d);
         }
       }
       const sortedDocs = [...allDocs.values()].sort((a, b) =>
+        (a.editionRank ?? Number.MAX_SAFE_INTEGER) -
+          (b.editionRank ?? Number.MAX_SAFE_INTEGER) ||
         a.sourceUrl.localeCompare(b.sourceUrl),
       );
 
@@ -652,25 +667,6 @@ export function createMarkdownDigestService(
         `_Coverage: reviewed ${assembly.totalDocuments} sources; included ${sortedDocs.length} sources across ${renderedStories.length} stories${repeatedReceipt}${suppressedReceipt}._`,
       );
       lines.push("");
-      lines.push("## Today in brief");
-      lines.push("");
-      const briefStories = topStories.length > 0
-        ? topStories
-        : continuingStories.slice(0, topStoriesLimit);
-      if (briefStories.length === 0) {
-        lines.push("_No stories selected for this edition._");
-      } else {
-        for (const { story } of briefStories) {
-          const overviewCitation = firstStoryCitation(story, citationIndex);
-          lines.push(
-            bullet(
-              `**${escapeMarkdown(story.storyLabel)}:** ${escapeMarkdown(firstSentence(story.summaryText))}${overviewCitation ? ` ${overviewCitation}` : ""}`,
-            ),
-          );
-        }
-      }
-      lines.push("");
-
       lines.push("## Top Stories");
       lines.push("");
       if (topStories.length === 0) {
@@ -719,13 +715,9 @@ export function createMarkdownDigestService(
       } else {
         for (const d of sortedDocs) {
           const url = d.canonicalUrl ?? d.sourceUrl;
-          const primary = citationIndex.byDocument.get(d.id);
-          const tokens = collectCitationsForDocument(d.id, citationIndex, renderedStories);
-          const primaryPrefix = primary !== undefined ? `[${primary}] ` : "";
-          const citeSuffix =
-            tokens.length > 0 ? ` _cited ${tokens.join(" ")}_` : "";
+          const sourceName = d.publisher?.trim() || d.title;
           lines.push(
-            `- ${primaryPrefix}[${escapeMarkdown(d.title)}](${url}) — ${d.sourceType}${citeSuffix}`,
+            `- [${escapeMarkdown(sourceName)}](${url})`,
           );
         }
       }
@@ -738,11 +730,17 @@ export function createMarkdownDigestService(
 
 function renderStorySection(
   story: StorySnapshot,
-  index: CitationIndex,
+  _index: CitationIndex,
   continuity?: StoryContinuity,
 ): string[] {
   const out: string[] = [];
-  out.push(`### ${escapeMarkdown(story.storyLabel)}`);
+  const leadSource = story.documents[0];
+  const title = escapeMarkdown(story.storyLabel);
+  out.push(
+    leadSource
+      ? `### [${title}](${leadSource.canonicalUrl ?? leadSource.sourceUrl})`
+      : `### ${title}`,
+  );
   out.push("");
   if (continuity?.kind === "continuing") {
     const reason = continuity.reason === "shared_source" ? "same source" : "same specific story label";
@@ -756,53 +754,9 @@ function renderStorySection(
   if (story.claims.length > 0) {
     out.push("_Key details:_");
     for (const claim of story.claims) {
-      let token: string;
-      try {
-        token = citationTokenFor(index, claim.chunkId);
-      } catch {
-        continue;
-      }
-      out.push(bullet(`${escapeMarkdown(claim.text)} ${token}`));
+      out.push(bullet(escapeMarkdown(claim.text)));
     }
     out.push("");
   }
   return out;
-}
-
-function firstSentence(summary: string): string {
-  const normalized = summary.trim().replace(/\s+/g, " ");
-  if (normalized.length === 0) return "Summary unavailable.";
-  return normalized.match(/^.*?[.!?](?=\s|$)/)?.[0] ?? normalized;
-}
-
-function firstStoryCitation(story: StorySnapshot, index: CitationIndex): string | undefined {
-  for (const claim of story.claims) {
-    try {
-      return citationTokenFor(index, claim.chunkId);
-    } catch {
-      // Ignore claims omitted from the final citation index.
-    }
-  }
-  return undefined;
-}
-
-function collectCitationsForDocument(
-  documentId: string,
-  index: CitationIndex,
-  stories: StorySnapshot[],
-): string[] {
-  const numbers: number[] = [];
-  for (const s of stories) {
-    const doc = s.documents.find((d) => d.id === documentId);
-    if (!doc) continue;
-    const docChunkIds = new Set(doc.chunkIds);
-    for (const claim of s.claims) {
-      if (!docChunkIds.has(claim.chunkId)) continue;
-      const n = index.byChunkId.get(claim.chunkId);
-      if (n !== undefined) numbers.push(n);
-    }
-  }
-  numbers.sort((a, b) => a - b);
-  const uniq = [...new Set(numbers)];
-  return uniq.map((n) => `[${n}]`);
 }

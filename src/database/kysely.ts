@@ -369,6 +369,11 @@ export interface Database {
     created_at: Generated<Date>;
     partition_key: Generated<string>;
   };
+  miniflux_ingestion_state: {
+    source_key: string;
+    last_entry_id: string;
+    last_ingested_at: Date;
+  };
   signals: {
     id: Generated<string>;
     signal_kind: string;

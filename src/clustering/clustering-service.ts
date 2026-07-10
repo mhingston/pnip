@@ -24,8 +24,8 @@ export interface ClusterOptions {
   maxStories: number;
   /**
    * Fraction of documentCount that becomes the target story count when
-   * the caller does not pin `targetStories` directly. Clamped to [4, 15].
-   * `0.6` × 11 docs → 7 stories, `0.6` × 19 → 11, `0.6` × 50 → 30 → clamped to 15.
+   * the caller does not pin `targetStories` directly. Clamped to [4, 50].
+   * `0.6` × 11 docs → 7 stories, `0.6` × 50 → 30 stories.
    */
   targetStoriesRatio?: number;
   /**
@@ -85,7 +85,7 @@ function computeTargetStories(
   }
   const ratio = opts.targetStoriesRatio ?? DEFAULT_CLUSTER_OPTIONS.targetStoriesRatio!;
   const raw = Math.round(docCount * ratio);
-  const clamped = Math.max(4, Math.min(15, raw));
+  const clamped = Math.max(4, Math.min(50, raw));
   return Math.max(1, Math.min(docCount, clamped));
 }
 

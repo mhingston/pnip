@@ -9,6 +9,7 @@ import type { MinifluxClient } from "./miniflux-client.js";
 import type { Logger } from "../logging/logger.js";
 import type { PartitionConfig } from "../config/index.js";
 import { resolvePartitionKey } from "./partition-resolver.js";
+import { createMinifluxIngestionStateRepository } from "./miniflux-ingestion-state-repository.js";
 
 export interface DiscoveryResult {
   editionId: string;
@@ -48,9 +49,21 @@ export function createDiscoveryService(deps: {
       let enqueued = 0;
       let failed = 0;
       let afterEntryId: number | undefined;
+      const ingestionState = createMinifluxIngestionStateRepository(deps.db);
+      const savedState = await ingestionState.get();
+      if (savedState) {
+        afterEntryId = Number(savedState.last_entry_id);
+      } else {
+        // Avoid replaying entries already imported before the cursor table was
+        // introduced. New entries are still selected regardless of read state.
+        afterEntryId = await deps.discoveryRepo.getMaxMinifluxEntryId();
+      }
+      let runHadFailure = false;
 
       for (;;) {
-        const entries = await input.miniflux.listUnreadEntries({
+        const listEntries = input.miniflux.listEntries ?? input.miniflux.listUnreadEntries;
+        const entries = await listEntries.call(input.miniflux, {
+          status: "all",
           limit,
           afterEntryId,
         });
@@ -86,6 +99,15 @@ export function createDiscoveryService(deps: {
                 });
                 made = true;
               }
+              // Advance the local cursor in the same transaction as the
+              // event/job. If an earlier entry failed, leave the cursor at
+              // the last contiguous success so that failed entries retry on
+              // the next poll rather than being skipped.
+              if (!runHadFailure) {
+                await createMinifluxIngestionStateRepository(trx).set({
+                  lastEntryId: entry.id,
+                });
+              }
             });
             if (made) {
               created++;
@@ -93,9 +115,9 @@ export function createDiscoveryService(deps: {
             } else {
               duplicates++;
             }
-            await input.miniflux.markEntryRead(entry.id);
           } catch (err) {
             failed++;
+            runHadFailure = true;
             editionLog?.error("discovery entry failed", {
               error: err as Error,
               minifluxEntryId: entry.id,

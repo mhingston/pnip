@@ -25,6 +25,7 @@ export interface DiscoveryRepository {
   getById(id: string): Promise<DiscoveryEvent | undefined>;
   listByEdition(editionId: string): Promise<DiscoveryEvent[]>;
   countByEdition(editionId: string): Promise<number>;
+  getMaxMinifluxEntryId(): Promise<number | undefined>;
 }
 
 function toMetadata(value: unknown): string | null {
@@ -109,6 +110,15 @@ export function createDiscoveryRepository(
         FROM discovery_events
         WHERE edition_id = ${editionId}`.execute(db);
       return Number(result.rows[0].count);
+    },
+
+    async getMaxMinifluxEntryId(): Promise<number | undefined> {
+      const result = await sql<{ max_id: string | null }>`
+        SELECT MAX(miniflux_entry_id)::text AS max_id
+        FROM discovery_events
+      `.execute(db);
+      const value = result.rows[0]?.max_id;
+      return value === null || value === undefined ? undefined : Number(value);
     },
   };
 }

@@ -267,8 +267,7 @@ describe("renderMarkdown", () => {
     });
 
     expect(md).toContain("## Top Stories");
-    expect(md).toContain("## Today in brief");
-    expect(md).toContain("## More Stories");
+    expect(md).not.toContain("## Today in brief");
     expect(md).not.toMatch(/^## Technology$/m);
     expect(md).not.toMatch(/^## Videos$/m);
     expect(md).not.toMatch(/^## Reddit Discussions$/m);
@@ -309,7 +308,7 @@ describe("renderMarkdown", () => {
     expect(mdA).toBe(mdB);
   });
 
-  it("renders citation tokens as [N] inside reader-friendly Key details", () => {
+  it("renders reader-friendly Key details without citation tokens", () => {
     const stories = makeNStories(1, "Technology", "ai");
     const idx = buildCitationIndex(stories.flatMap((s) => s.claims.map((c) => ({ chunkId: c.chunkId, claimText: c.text }))));
     const md = svc.renderMarkdown({
@@ -320,10 +319,10 @@ describe("renderMarkdown", () => {
     });
     expect(md).toContain("_Key details:_");
     expect(md).not.toContain("_Claims:_");
-    expect(md).toMatch(/\[\d+\]/);
+    expect(md).not.toMatch(/\[\d+\]/);
   });
 
-  it("preserves generated summaries for stories beyond the top five", () => {
+  it("preserves generated summaries beyond the former top-five limit", () => {
     const stories = makeNStories(6, "Technology", "ai");
     stories[5]!.summaryText = "A distinctive sixth-story summary that must remain visible.";
     const idx = buildCitationIndex(stories.flatMap((s) => s.claims.map((c) => ({ chunkId: c.chunkId, claimText: c.text }))));
@@ -335,7 +334,7 @@ describe("renderMarkdown", () => {
       citationIndex: idx,
     });
 
-    expect(md).toContain("## More Stories");
+    expect(md).not.toContain("## More Stories");
     expect(md).toContain("A distinctive sixth-story summary that must remain visible.");
   });
 
@@ -355,7 +354,7 @@ describe("renderMarkdown", () => {
     expect(md).toContain("https://example.com/summary-only");
   });
 
-  it("derives Today in brief deterministically from existing story summaries", () => {
+  it("omits the redundant Today in brief section", () => {
     const stories = makeNStories(2, "Technology", "ai");
     stories[0]!.summaryText = "First development happened. Extra context follows.";
     stories[1]!.summaryText = "Second development happened! More detail follows.";
@@ -368,13 +367,7 @@ describe("renderMarkdown", () => {
       citationIndex: idx,
     });
 
-    const overview = md.slice(md.indexOf("## Today in brief"), md.indexOf("## Top Stories"));
-    expect(overview).toContain("First development happened.");
-    expect(overview).toContain("Second development happened!");
-    expect(overview).not.toContain("Extra context follows.");
-    expect(overview).not.toContain("More detail follows.");
-    expect(overview).toMatch(/First development happened\. \[\d+\]/);
-    expect(overview).toMatch(/Second development happened! \[\d+\]/);
+    expect(md).not.toContain("## Today in brief");
   });
 
   it("groups explainable cross-day repeats without dropping their summary or source", () => {
@@ -434,7 +427,7 @@ describe("renderMarkdown", () => {
     }
   });
 
-  it("keeps the newspaper-style five-story default when no reading target is configured", () => {
+  it("includes up to fifty lead stories by default", () => {
     const stories = makeNStories(6, "Technology", "ai");
     const md = svc.renderMarkdown({
       edition: makeEdition(),
@@ -443,7 +436,7 @@ describe("renderMarkdown", () => {
       citationIndex: buildCitationIndex(stories.flatMap((s) => s.claims.map((c) => ({ chunkId: c.chunkId, claimText: c.text })))),
     });
     const top = md.slice(md.indexOf("## Top Stories"), md.indexOf("## More Stories"));
-    expect(top.match(/^### /gm)).toHaveLength(5);
+    expect(top.match(/^### /gm)).toHaveLength(6);
   });
 
   it("frames a quiet edition only when an explicit significance or novelty assessment exists", () => {
@@ -1134,8 +1127,8 @@ describe("bias phase C", () => {
     expect(vi.mocked(getBiasView)).toHaveBeenCalledWith({}, "ed-1");
     expect(result.storyCount).toBe(2);
     const content = digestRepo.createForEdition.mock.calls[0]![0]!.content;
-    expect(content).toContain("### Ai story 1");
-    expect(content).toContain("### Ai story 2");
+    expect(content).toContain("### [Ai story 1]");
+    expect(content).toContain("### [Ai story 2]");
   });
 
   it("drops a story whose every document is from a muted source", async () => {
@@ -1167,11 +1160,11 @@ describe("bias phase C", () => {
     vi.mocked(getBiasView).mockResolvedValue(biasView);
     await svc.generate({ editionId: "ed-1" });
     const content = digestRepo.createForEdition.mock.calls[0]![0]!.content;
-    expect(content).toContain("### Politics: election story kept-a");
-    expect(content).toContain("### Politics: election story kept-b");
+    expect(content).toContain("### [Politics: election story kept-a]");
+    expect(content).toContain("### [Politics: election story kept-b]");
     expect(content).toContain("suppressed 1 story");
-    expect(content).not.toContain("muted-1");
-    expect(content).not.toContain("mutedsite.com/x");
+    expect(content).not.toContain("### [Technology: ai story muted-1]");
+    expect(content).toContain("[ai headline muted-1](https://mutedsite.com/x)");
   });
 
   it("omits suppression from coverage when bias removes no stories", async () => {
@@ -1189,7 +1182,7 @@ describe("bias phase C", () => {
 
   it("moves a down-rated story out of Top Stories into More Stories", async () => {
     const stories: StorySnapshot[] = [];
-    for (let i = 1; i <= 6; i++) {
+    for (let i = 1; i <= 51; i++) {
       stories.push(
         makeStoryAt(
           `downrated-${i}`,
@@ -1223,12 +1216,12 @@ describe("bias phase C", () => {
     expect(topIdx).toBeGreaterThan(-1);
     expect(moreIdx).toBeGreaterThan(topIdx);
     const topSection = content.slice(topIdx, moreIdx);
-    expect(topSection).not.toContain("### Technology: ai story downrated-1");
+    expect(topSection).not.toContain("### [Technology: ai story downrated-1]");
     expect(topSection).not.toContain("bias1.com/x");
-    expect(topSection).toContain("### Technology: ai story downrated-2");
-    expect(topSection).toContain("### Technology: ai story downrated-6");
+    expect(topSection).toContain("### [Technology: ai story downrated-2]");
+    expect(topSection).toContain("### [Technology: ai story downrated-51]");
     const moreSection = content.slice(moreIdx);
-    expect(moreSection).toContain("### Technology: ai story downrated-1");
+    expect(moreSection).toContain("### [Technology: ai story downrated-1]");
     expect(content).toContain("bias1.com/x");
   });
 });

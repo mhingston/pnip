@@ -505,7 +505,7 @@ describe("M7 end-to-end: deterministic markdown digest from ready edition", () =
     expect(fromRepo!.content).not.toContain("## Executive Summary");
     expect(fromRepo!.content).toContain("## Top Stories");
     expect(fromRepo!.content).toContain("## Sources");
-    expect(fromRepo!.content).toMatch(/\[1\]/);
+    expect(fromRepo!.content).not.toMatch(/\[\d+\]/);
 
     // Second call is a no-op (idempotency per §53).
     const r2 = await env.service.generate({ editionId: ed.id });

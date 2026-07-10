@@ -16,8 +16,19 @@ export interface MinifluxEntriesResponse {
   entries: MinifluxEntry[];
 }
 
+export type MinifluxEntryStatus = "read" | "unread" | "all";
+
+export interface ListMinifluxEntriesOptions {
+  status?: MinifluxEntryStatus;
+  limit?: number;
+  afterEntryId?: number;
+}
+
 export interface MinifluxClient {
-  listUnreadEntries(opts?: { limit?: number; afterEntryId?: number }): Promise<MinifluxEntry[]>;
+  /** List entries without changing their read state. */
+  listEntries?(opts?: ListMinifluxEntriesOptions): Promise<MinifluxEntry[]>;
+  /** @deprecated Use listEntries({ status: "unread" }) for unread-only callers. */
+  listUnreadEntries(opts?: Omit<ListMinifluxEntriesOptions, "status">): Promise<MinifluxEntry[]>;
   markEntryRead(entryId: number): Promise<void>;
   markEntriesRead(entryIds: number[]): Promise<void>;
   health(): Promise<{ ok: boolean; status: number; body?: string }>;
@@ -87,9 +98,19 @@ export function createMinifluxClient(opts: {
   }
 
   return {
-    async listUnreadEntries(listOpts?: { limit?: number; afterEntryId?: number }): Promise<MinifluxEntry[]> {
+    async listEntries(listOpts?: ListMinifluxEntriesOptions): Promise<MinifluxEntry[]> {
       const params = new URLSearchParams();
-      params.set("status", "unread");
+      const status = listOpts?.status ?? "all";
+      if (status === "all") {
+        // Miniflux represents an all-state query as repeated status params;
+        // there is no literal status=all value.
+        params.append("status", "read");
+        params.append("status", "unread");
+      } else {
+        params.set("status", status);
+      }
+      params.set("order", "id");
+      params.set("direction", "asc");
       if (listOpts?.limit !== undefined) params.set("limit", String(listOpts.limit));
       if (listOpts?.afterEntryId !== undefined) params.set("after_entry_id", String(listOpts.afterEntryId));
       const url = `${base}/v1/entries?${params.toString()}`;
@@ -101,6 +122,10 @@ export function createMinifluxClient(opts: {
       await ensureOk(res, url, "GET");
       const raw = (await res.json()) as RawEntriesResponse;
       return raw.entries.map(mapEntry);
+    },
+
+    async listUnreadEntries(listOpts?: Omit<ListMinifluxEntriesOptions, "status">): Promise<MinifluxEntry[]> {
+      return this.listEntries!({ ...listOpts, status: "unread" });
     },
 
     async markEntryRead(entryId: number): Promise<void> {

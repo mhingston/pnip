@@ -65,6 +65,25 @@ const TWO_RAW = {
 };
 
 describe("miniflux-client", () => {
+  it("lists read and unread entries together without issuing a write", async () => {
+    const { fetch, calls } = makeFakeFetch(() => jsonResponse({ total: 0, entries: [] }));
+    const client = createMinifluxClient({
+      baseUrl: "http://127.0.0.1:8080",
+      token: TOKEN,
+      fetchImpl: fetch,
+    });
+
+    await client.listEntries!({ status: "all", limit: 25, afterEntryId: 99 });
+
+    const u = new URL(calls[0].url);
+    expect(u.searchParams.getAll("status")).toEqual(["read", "unread"]);
+    expect(u.searchParams.get("order")).toBe("id");
+    expect(u.searchParams.get("direction")).toBe("asc");
+    expect(u.searchParams.get("limit")).toBe("25");
+    expect(u.searchParams.get("after_entry_id")).toBe("99");
+    expect(calls).toHaveLength(1);
+  });
+
   describe("listUnreadEntries", () => {
     it("GETs /v1/entries with status=unread, sends X-Auth-Token, maps snake→camelCase", async () => {
       const { fetch, calls } = makeFakeFetch(() => jsonResponse(TWO_RAW));

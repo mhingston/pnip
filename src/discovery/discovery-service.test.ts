@@ -26,7 +26,12 @@ import {
   type ProcessingJobQueue,
 } from "../jobs/queue/processing-job-queue.js";
 import { createDiscoveryService } from "./discovery-service.js";
-import type { MinifluxClient, MinifluxEntry, MinifluxCategory } from "./miniflux-client.js";
+import type {
+  MinifluxClient,
+  MinifluxEntry,
+  MinifluxCategory,
+  ListMinifluxEntriesOptions,
+} from "./miniflux-client.js";
 
 const sql002Path = fileURLToPath(
   new URL("../database/migrations/002_create_processing_jobs.sql", import.meta.url),
@@ -39,6 +44,9 @@ const sql003Path = fileURLToPath(
 );
 const sql007Path = fileURLToPath(
   new URL("../database/migrations/007_create_discovery_events.sql", import.meta.url),
+);
+const sql028Path = fileURLToPath(
+  new URL("../database/migrations/028_create_miniflux_ingestion_state.sql", import.meta.url),
 );
 
 function schemaName(prefix: string): string {
@@ -57,7 +65,8 @@ function entry(
 }
 
 interface FakeMinifluxCalls {
-  listUnread: Array<{ limit?: number; afterEntryId?: number }>;
+  listUnread: Array<{ limit?: number; afterEntryId?: number; status?: string }>;
+  listEntries: Array<{ limit?: number; afterEntryId?: number; status?: string }>;
   markEntryRead: number[];
 }
 
@@ -65,7 +74,7 @@ function createFakeMiniflux(opts: {
   pages: MinifluxEntry[][];
   markReadThrowsIds?: number[];
 }): { client: MinifluxClient; calls: FakeMinifluxCalls } {
-  const calls: FakeMinifluxCalls = { listUnread: [], markEntryRead: [] };
+  const calls: FakeMinifluxCalls = { listUnread: [], listEntries: [], markEntryRead: [] };
   let pageIndex = 0;
   async function markEntryRead(id: number): Promise<void> {
     calls.markEntryRead.push(id);
@@ -74,16 +83,27 @@ function createFakeMiniflux(opts: {
     }
   }
   const client: MinifluxClient = {
-    async listUnreadEntries(
-      listOpts?: { limit?: number; afterEntryId?: number },
+    async listEntries(
+      listOpts?: ListMinifluxEntriesOptions,
     ): Promise<MinifluxEntry[]> {
+      calls.listEntries.push({
+        limit: listOpts?.limit,
+        afterEntryId: listOpts?.afterEntryId,
+        status: listOpts?.status,
+      });
       calls.listUnread.push({
         limit: listOpts?.limit,
         afterEntryId: listOpts?.afterEntryId,
+        status: listOpts?.status,
       });
       const page = opts.pages[pageIndex] ?? [];
       pageIndex++;
       return page;
+    },
+    async listUnreadEntries(
+      listOpts?: { limit?: number; afterEntryId?: number },
+    ): Promise<MinifluxEntry[]> {
+      return this.listEntries!({ ...listOpts, status: "unread" });
     },
     markEntryRead,
     async markEntriesRead(ids: number[]): Promise<void> {
@@ -113,11 +133,12 @@ describe("DiscoveryService", () => {
     pool = createPool(url);
     kyselyPool = createPool(url);
 
-    const [m002, m006, m003, m007] = await Promise.all([
+    const [m002, m006, m003, m007, m028] = await Promise.all([
       readFile(sql002Path, "utf8"),
       readFile(sql006Path, "utf8"),
       readFile(sql003Path, "utf8"),
       readFile(sql007Path, "utf8"),
+      readFile(sql028Path, "utf8"),
     ]);
 
     const m026 = `
@@ -143,6 +164,7 @@ describe("DiscoveryService", () => {
       await client.query(m003);
       await client.query(m007);
       await client.query(m026);
+      await client.query(m028);
     } finally {
       client.release();
     }
@@ -164,7 +186,7 @@ describe("DiscoveryService", () => {
 
   beforeEach(async () => {
     await pool.query(
-      `TRUNCATE TABLE ${schema}.processing_jobs, ${schema}.discovery_events, ${schema}.editions RESTART IDENTITY CASCADE`,
+      `TRUNCATE TABLE ${schema}.processing_jobs, ${schema}.discovery_events, ${schema}.miniflux_ingestion_state, ${schema}.editions RESTART IDENTITY CASCADE`,
     );
   });
 
@@ -187,7 +209,7 @@ describe("DiscoveryService", () => {
       .execute();
   }
 
-  it("happy path: discovers 2 entries, creates events + expand_document jobs, marks both read", async () => {
+  it("happy path: discovers 2 entries without changing Miniflux read state", async () => {
     const { client, calls } = createFakeMiniflux({
       pages: [[entry(1, "https://x/1"), entry(2, "https://x/2")], []],
     });
@@ -217,10 +239,11 @@ describe("DiscoveryService", () => {
       expect(target.discoveryEventId).toMatch(UUID_RE);
       expect(typeof target.url).toBe("string");
     }
-    expect(calls.markEntryRead).toEqual([1, 2]);
+    expect(calls.markEntryRead).toEqual([]);
+    expect(calls.listEntries[0]?.status).toBe("all");
   });
 
-  it("idempotency: pre-existing event is not re-enqueued; mark-read still called for the duplicate", async () => {
+  it("idempotency: pre-existing event is not re-enqueued", async () => {
     const edition = await editionRepo.getOrCreateForDate("2026-01-02");
     await discoveryRepo.getOrCreate({
       editionId: edition.id,
@@ -251,10 +274,10 @@ describe("DiscoveryService", () => {
     const jobs = await getJobs();
     const target = jobs[0].target as { discoveryEventId: string; url: string };
     expect(target.url).toBe("https://x/2");
-    expect(calls.markEntryRead).toEqual([1, 2]);
+    expect(calls.markEntryRead).toEqual([]);
   });
 
-  it("§52 isolation: mark-read failure for one entry does not abort the run; persist+enqueue still counted", async () => {
+  it("does not call Miniflux mark-read and continues ingesting entries", async () => {
     const { client, calls } = createFakeMiniflux({
       pages: [[entry(1, "https://x/1"), entry(2, "https://x/2")], []],
       markReadThrowsIds: [1],
@@ -269,10 +292,10 @@ describe("DiscoveryService", () => {
     expect(result.created).toBe(2);
     expect(result.enqueued).toBe(2);
     expect(result.duplicates).toBe(0);
-    expect(result.failed).toBe(1);
+    expect(result.failed).toBe(0);
     expect(await discoveryRepo.countByEdition(result.editionId)).toBe(2);
     expect(await countJobs()).toBe(2);
-    expect(calls.markEntryRead).toEqual([1, 2]);
+    expect(calls.markEntryRead).toEqual([]);
   });
 
   it("pagination: advances afterEntryId and terminates on a short page", async () => {
@@ -295,7 +318,7 @@ describe("DiscoveryService", () => {
     expect(result.enqueued).toBe(3);
     expect(result.duplicates).toBe(0);
     expect(result.failed).toBe(0);
-    expect(calls.markEntryRead).toEqual([1, 2, 3]);
+    expect(calls.markEntryRead).toEqual([]);
     expect(calls.listUnread.map((c) => c.limit)).toEqual([2, 2]);
     expect(calls.listUnread.map((c) => c.afterEntryId)).toEqual([undefined, 2]);
   });
@@ -388,7 +411,7 @@ describe("DiscoveryService", () => {
       const jobs = await getJobs();
       const target = jobs[0].target as { url: string };
       expect(target.url).toBe("https://x/2");
-      expect(calls.markEntryRead).toEqual([2]);
+      expect(calls.markEntryRead).toEqual([]);
 
       const sentinelEvent = await discoveryRepo.getByMinifluxEntryId(1);
       expect(sentinelEvent).toBeUndefined();

@@ -129,6 +129,7 @@ const migrationSqlPaths = [
   "../database/migrations/025_create_source_trust.sql",
   "../database/migrations/026_add_partition_key.sql",
   "../database/migrations/027_add_notebook_podcast_partition.sql",
+  "../database/migrations/028_create_miniflux_ingestion_state.sql",
 ];
 
 function readMigrationSql(relativePath: string): Promise<string> {
@@ -578,7 +579,7 @@ async function runDiscoveryStep(
   });
   expect(result.total).toBe(2);
   expect(result.created).toBe(2);
-  expect(calls.markEntryRead).toEqual([100, 200]);
+  expect(calls.markEntryRead).toEqual([]);
   state.editionId = result.editionId;
   for (const id of [100, 200]) {
     const ev = await env.discoveryRepo.getByMinifluxEntryId(id);
@@ -1256,7 +1257,7 @@ describe("M13 §61 acceptance criteria — full pipeline", () => {
       )
     ).rows[0];
     expect(row).toBeDefined();
-    expect(row.content).toMatch(/\[1\]/);
+    expect(row.content).not.toMatch(/\[\d+\]/);
     expect(row.content).toContain("Story summary text combining source documents.");
     expect(row.story_count).toBeGreaterThan(0);
     expect(row.citation_count).toBeGreaterThan(0);
@@ -1284,7 +1285,7 @@ describe("M13 §61 acceptance criteria — full pipeline", () => {
     expect(row.html_content).toContain("<!doctype html>");
     expect(row.html_content).toContain("Daily Digest");
     expect(row.html_content).toContain("AI Article");
-    expect(row.html_content).toMatch(/\[1\]/);
+    expect(row.html_content).not.toMatch(/\[\d+\]/);
     expect(row.text_content).toContain("Daily Digest");
   });
 
