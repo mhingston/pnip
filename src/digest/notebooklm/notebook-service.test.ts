@@ -9,7 +9,6 @@ import {
   type NotebookRepository,
   type NotebookRow,
 } from "./notebook-repository.js";
-import type { MarkdownDigestRow } from "../markdown/markdown-digest-repository.js";
 import type { DocumentRow } from "../../expansion/document-repository.js";
 import type { Edition } from "../../database/kysely.js";
 import type { Logger } from "../../logging/logger.js";
@@ -47,20 +46,6 @@ function makeEdition(overrides: Partial<Edition> = {}): Edition {
     metadata: null,
     partition_key: "master",
     ...overrides,
-  };
-}
-
-function makeMarkdown(
-  content = "# Daily Digest — 2026-07-07\n\nBody.\n",
-): MarkdownDigestRow {
-  return {
-    id: "md-1",
-    edition_id: "ed-1",
-    content,
-    story_count: 1,
-    document_count: 2,
-    citation_count: 3,
-    created_at: new Date(),
   };
 }
 
@@ -169,7 +154,6 @@ interface DepsOverrides {
   notebookLm?: NotebookLmClient;
   existingNotebookRow?: NotebookRow | undefined;
   notebookRepo?: Partial<NotebookRepository>;
-  markdownRow?: MarkdownDigestRow | undefined;
   documents?: DocumentRow[];
   documentsForPartition?: Record<string, DocumentRow[]>;
   titleTemplate?: (d: string, p: string) => string;
@@ -181,12 +165,7 @@ function makeDeps(overrides: DepsOverrides = {}) {
     overrides,
     "edition",
   );
-  const hasMarkdownOverride = Object.prototype.hasOwnProperty.call(
-    overrides,
-    "markdownRow",
-  );
   const defaultEdition = makeEdition();
-  const defaultMarkdown = makeMarkdown();
   const documents = overrides.documents ?? [
     makeDoc({
       id: "doc-1",
@@ -233,11 +212,6 @@ function makeDeps(overrides: DepsOverrides = {}) {
     ),
     getByDate: vi.fn().mockImplementation(async () =>
       hasEditionOverride ? overrides.edition : defaultEdition,
-    ),
-  };
-  const markdownDigestRepo = {
-    getByEdition: vi.fn().mockImplementation(async () =>
-      hasMarkdownOverride ? overrides.markdownRow : defaultMarkdown,
     ),
   };
   const docRepo = {
@@ -347,7 +321,6 @@ function makeDeps(overrides: DepsOverrides = {}) {
   const deps: NotebookServiceDeps = {
     db: {} as never,
     editionRepo: editionRepo as never,
-    markdownDigestRepo: markdownDigestRepo as never,
     docRepo: docRepo as never,
     notebookRepo,
     notebookLm,
@@ -359,7 +332,6 @@ function makeDeps(overrides: DepsOverrides = {}) {
     deps,
     mocks: {
       editionRepo,
-      markdownDigestRepo,
       docRepo,
       notebookRepo,
       notebookLm,
@@ -368,14 +340,14 @@ function makeDeps(overrides: DepsOverrides = {}) {
 }
 
 describe("generate — happy path", () => {
-  it("uploads every document then the markdown digest, waits for all, marks ready", async () => {
+  it("uploads every curated document, waits for all, marks ready (no markdown digest source)", async () => {
     const { deps, mocks } = makeDeps();
     const svc = createNotebookService(deps);
     const result = await svc.generate({ editionId: "ed-1", wait: true });
 
     expect(result.status).toBe("ready");
     expect(result.alreadyExisted).toBe(false);
-    expect(result.sourceCount).toBe(7);
+    expect(result.sourceCount).toBe(6);
     expect(result.notebookId).toBe("nb-row-1");
     expect(result.partitionKey).toBe("master");
     expect(result.skipReason).toBeNull();
@@ -387,7 +359,7 @@ describe("generate — happy path", () => {
 
     const addSourceCalls = (mocks.notebookLm.addSource as ReturnType<typeof vi.fn>).mock
       .calls;
-    expect(addSourceCalls).toHaveLength(7);
+    expect(addSourceCalls).toHaveLength(6);
     expect(addSourceCalls[0]![0]).toMatchObject({
       notebookExternalId: "nb-ext-1",
       url: "https://example.com/one",
@@ -403,15 +375,14 @@ describe("generate — happy path", () => {
       url: "https://example.com/three",
       displayName: "Article Three",
     });
-    expect(addSourceCalls[6]![0]).toMatchObject({
-      notebookExternalId: "nb-ext-1",
-      markdownContent: "# Daily Digest — 2026-07-07\n\nBody.\n",
-      displayName: "Daily Digest 2026-07-07",
-    });
+    for (const call of addSourceCalls) {
+      const input = call[0] as { markdownContent?: string };
+      expect(input.markdownContent).toBeUndefined();
+    }
 
     const waitCalls = (mocks.notebookLm.waitForSource as ReturnType<typeof vi.fn>).mock
       .calls;
-    expect(waitCalls).toHaveLength(7);
+    expect(waitCalls).toHaveLength(6);
 
     const updateCalls = (mocks.notebookRepo.updateDelivery as ReturnType<typeof vi.fn>).mock
       .calls;
@@ -422,7 +393,7 @@ describe("generate — happy path", () => {
     expect(readyCall).toBeDefined();
     expect(readyCall![1]).toMatchObject({
       status: "ready",
-      sourceCount: 7,
+      sourceCount: 6,
     });
   });
 
@@ -611,17 +582,6 @@ describe("generate — idempotency", () => {
 });
 
 describe("generate — validation errors", () => {
-  it("throws when the markdown digest is missing", async () => {
-    const { deps, mocks } = makeDeps({ markdownRow: undefined });
-    const svc = createNotebookService(deps);
-    await expect(svc.generate({ editionId: "ed-1", wait: true })).rejects.toThrow(
-      /no markdown digest/,
-    );
-    expect(
-      (mocks.notebookLm.createNotebook as ReturnType<typeof vi.fn>),
-    ).not.toHaveBeenCalled();
-  });
-
   it("throws when there are zero curated documents", async () => {
     const { deps, mocks } = makeDeps({
       documents: [],
@@ -1571,7 +1531,7 @@ describe("generate — partition awareness", () => {
     expect(result.status).toBe("ready");
     expect(result.alreadyExisted).toBe(false);
     expect(result.partitionKey).toBe("youtube");
-    expect(result.sourceCount).toBe(ytDocs.length + 1);
+    expect(result.sourceCount).toBe(ytDocs.length);
     expect(
       (mocks.notebookLm.createNotebook as ReturnType<typeof vi.fn>),
     ).toHaveBeenCalledOnce();
@@ -1712,7 +1672,7 @@ describe("generate — partition awareness", () => {
     expect(result.status).toBe("pending");
     expect(result.partitionKey).toBe("master");
     expect(result.skipReason).toBeNull();
-    expect(result.sourceCount).toBe(2);
+    expect(result.sourceCount).toBe(1);
     expect(
       (mocks.notebookLm.createNotebook as ReturnType<typeof vi.fn>),
     ).toHaveBeenCalledOnce();
@@ -1753,11 +1713,11 @@ describe("generate — 50-source cap and notebook_excluded signals", () => {
     const result = await svc.generate({ editionId: "ed-1", wait: true });
 
     expect(result.status).toBe("ready");
-    expect(result.sourceCount).toBe(51);
+    expect(result.sourceCount).toBe(50);
 
     const addSourceCalls = (mocks.notebookLm.addSource as ReturnType<typeof vi.fn>).mock
       .calls;
-    expect(addSourceCalls).toHaveLength(51);
+    expect(addSourceCalls).toHaveLength(50);
 
     expect(signalRepo.createBatch).toHaveBeenCalledTimes(1);
     const rows = signalRepo.createBatch.mock.calls[0]![0] as Array<{
@@ -1797,12 +1757,12 @@ describe("generate — 50-source cap and notebook_excluded signals", () => {
     const result = await svc.generate({ editionId: "ed-1", wait: true });
 
     expect(result.status).toBe("ready");
-    expect(result.sourceCount).toBe(31);
+    expect(result.sourceCount).toBe(30);
     expect(signalRepo.createBatch).not.toHaveBeenCalled();
 
     const addSourceCalls = (mocks.notebookLm.addSource as ReturnType<typeof vi.fn>).mock
       .calls;
-    expect(addSourceCalls).toHaveLength(31);
+    expect(addSourceCalls).toHaveLength(30);
   });
 
   it("honours a custom maxSourcesPerNotebook cap from config", async () => {
@@ -1817,11 +1777,11 @@ describe("generate — 50-source cap and notebook_excluded signals", () => {
     const result = await svc.generate({ editionId: "ed-1", wait: true });
 
     expect(result.status).toBe("ready");
-    expect(result.sourceCount).toBe(11);
+    expect(result.sourceCount).toBe(10);
 
     const addSourceCalls = (mocks.notebookLm.addSource as ReturnType<typeof vi.fn>).mock
       .calls;
-    expect(addSourceCalls).toHaveLength(11);
+    expect(addSourceCalls).toHaveLength(10);
 
     expect(signalRepo.createBatch).toHaveBeenCalledTimes(1);
     const rows = signalRepo.createBatch.mock.calls[0]![0] as Array<{
@@ -1843,11 +1803,11 @@ describe("generate — 50-source cap and notebook_excluded signals", () => {
     const result = await svc.generate({ editionId: "ed-1", wait: true });
 
     expect(result.status).toBe("ready");
-    expect(result.sourceCount).toBe(51);
+    expect(result.sourceCount).toBe(50);
 
     const addSourceCalls = (mocks.notebookLm.addSource as ReturnType<typeof vi.fn>).mock
       .calls;
-    expect(addSourceCalls).toHaveLength(51);
+    expect(addSourceCalls).toHaveLength(50);
   });
 
   it("skips the signal write but still creates the notebook when the signal write fails", async () => {
@@ -1862,7 +1822,7 @@ describe("generate — 50-source cap and notebook_excluded signals", () => {
     const result = await svc.generate({ editionId: "ed-1", wait: true });
 
     expect(result.status).toBe("ready");
-    expect(result.sourceCount).toBe(51);
+    expect(result.sourceCount).toBe(50);
     expect(signalRepo.createBatch).toHaveBeenCalledTimes(1);
     expect(
       (mocks.notebookLm.createNotebook as ReturnType<typeof vi.fn>),

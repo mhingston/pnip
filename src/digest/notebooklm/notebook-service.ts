@@ -2,10 +2,6 @@ import type { Logger } from "../../logging/logger.js";
 import type { Kysely } from "kysely";
 import type { Database, Edition } from "../../database/kysely.js";
 import type { EditionRepository } from "../../editions/edition-repository.js";
-import type {
-  MarkdownDigestRepository,
-  MarkdownDigestRow,
-} from "../markdown/markdown-digest-repository.js";
 import type { DocumentRepository } from "../../expansion/document-repository.js";
 import type {
   NotebookRepository,
@@ -34,7 +30,6 @@ export interface NotebookServiceConfig {
 export interface NotebookServiceDeps {
   db: Kysely<Database>;
   editionRepo: EditionRepository;
-  markdownDigestRepo: MarkdownDigestRepository;
   docRepo: DocumentRepository;
   notebookRepo: NotebookRepository;
   notebookLm: NotebookLmClient;
@@ -320,15 +315,6 @@ export function createNotebookService(
     uploadedSources: UploadedSource[];
     recovered: boolean;
   }> {
-    const markdown: MarkdownDigestRow | undefined =
-      await deps.markdownDigestRepo.getByEdition(input.editionId);
-    if (!markdown) {
-      throw new Error(
-        `no markdown digest found for edition ${input.editionId}; ` +
-          `run "digestive generate-digest --date ${formatPublicationDate((await deps.editionRepo.getById(input.editionId))!.publication_date)}" first`,
-      );
-    }
-
     const maxSources =
       deps.config?.maxSourcesPerNotebook ?? DEFAULT_MAX_SOURCES_PER_NOTEBOOK;
     const ranked = await deps.docRepo.getRankedByEditionAndPartition(
@@ -414,17 +400,6 @@ export function createNotebookService(
         displayName: doc.title ?? "Untitled",
       });
     }
-
-    const digestSource = await deps.notebookLm.addSource({
-      notebookExternalId: createNotebook.notebookExternalId,
-      markdownContent: markdown.content,
-      displayName: `Daily Digest ${publicationDate}`,
-    });
-    uploadedSources.push({
-      sourceExternalId: digestSource.sourceExternalId,
-      docId: null,
-      displayName: `Daily Digest ${publicationDate}`,
-    });
 
     if (ranked.excluded.length > 0 && deps.signalRepo) {
       await writeNotebookExcludedSignals(

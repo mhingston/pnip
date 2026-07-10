@@ -338,7 +338,8 @@ describe("checkCompletion", () => {
     const svcA = createPublicationService(depsA);
     const reportA = await svcA.checkCompletion("ed-1");
     expect(reportA.podcastReady).toBe(false);
-    expect(reportA.missingArtifacts).toContain("podcast not ready or no URL");
+    // Podcast is now optional (logged + published without it when missing/failed).
+    expect(reportA.missingArtifacts).not.toContain("podcast not ready or no URL");
 
     const { deps: depsB, mocks: mocksB } = makeFakeDeps();
     mocksB.editionRepo.getById.mockResolvedValue(makeEdition());
@@ -356,7 +357,8 @@ describe("checkCompletion", () => {
     const svcB = createPublicationService(depsB);
     const reportB = await svcB.checkCompletion("ed-1");
     expect(reportB.podcastReady).toBe(false);
-    expect(reportB.missingArtifacts).toContain("podcast not ready or no URL");
+    // Podcast is now optional.
+    expect(reportB.missingArtifacts).not.toContain("podcast not ready or no URL");
   });
 
   it("aggregates multiple missing labels in deterministic order", async () => {
@@ -380,7 +382,6 @@ describe("checkCompletion", () => {
       "markdown digest missing or empty",
       "email not sent",
       "notebook not ready",
-      "podcast not ready or no URL",
     ]);
   });
 
@@ -813,7 +814,7 @@ describe("checkCompletion with partition config", () => {
     expect(mocks.podcastRepo.getByNotebookId).toHaveBeenCalled();
   });
 
-  it("enabled partition that requires podcast but podcast is pending: gate fails with the partition podcast label", async () => {
+  it("enabled partition that requires podcast but podcast is pending: gate passes (podcast is optional)", async () => {
     const { deps, mocks } = makeFakeDepsWithConfig({
       partitionConfig: {
         reddit: { min_articles: 1, enabled: true, with_podcast: true },
@@ -826,12 +827,13 @@ describe("checkCompletion with partition config", () => {
     const svc = createPublicationService(deps);
     const report = await svc.checkCompletion("ed-1");
     expect(report.partitionNotebooks[0]?.podcastReady).toBe(false);
-    expect(report.missingArtifacts).toContain(
+    // Podcast is now optional — it is NOT in missingArtifacts.
+    expect(report.missingArtifacts).not.toContain(
       "podcast not ready or no URL (partition reddit)",
     );
   });
 
-  it("enabled partition that requires podcast but podcast is missing entirely: gate fails", async () => {
+  it("enabled partition that requires podcast but podcast is missing entirely: gate passes (podcast is optional)", async () => {
     const { deps, mocks } = makeFakeDepsWithConfig({
       partitionConfig: {
         reddit: { min_articles: 1, enabled: true, with_podcast: true },
@@ -843,7 +845,8 @@ describe("checkCompletion with partition config", () => {
     const svc = createPublicationService(deps);
     const report = await svc.checkCompletion("ed-1");
     expect(report.partitionNotebooks[0]?.podcastReady).toBe(false);
-    expect(report.missingArtifacts).toContain(
+    // Podcast is now optional — it is NOT in missingArtifacts.
+    expect(report.missingArtifacts).not.toContain(
       "podcast not ready or no URL (partition reddit)",
     );
   });

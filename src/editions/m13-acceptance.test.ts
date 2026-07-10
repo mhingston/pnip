@@ -897,7 +897,6 @@ async function runNotebookStep(
   const service = createNotebookService({
     db: env.db,
     editionRepo: env.editionRepo,
-    markdownDigestRepo: env.markdownDigestRepo,
     docRepo: env.docRepo,
     notebookRepo: env.notebookRepo,
     notebookLm,

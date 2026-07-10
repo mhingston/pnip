@@ -169,8 +169,10 @@ need for the *time-window* half of the design:
 * `notebooks` (`022_create_notebooks.sql`) is `UNIQUE (edition_id)` —
   one notebook per edition. The notebook service uploads **every**
   document in the edition as a source (see
-  `notebook-service.ts:287`), plus the rendered Markdown digest as one
-  extra source.
+  `notebook-service.ts:318`). The rendered Markdown digest is **not**
+  uploaded — the Markdown remains the canonical archive (§7) and the
+  notebook stays source-grounded; editorial framing lives only in the
+  Markdown digest and email.
 * `EDITION_SCHEDULE=0 6 * * *` exists in `.env.example` as an
   operator-facing hint, but the pipeline does not run it.
 
@@ -399,6 +401,7 @@ config knob, not a behaviour change.
 | NotebookLM upload cost: one notebook per active partition per day. If 3 categories are enabled, we triple the per-day notebook cost | High if opted in | Low — NotebookLM has no per-call cost, but the operator's wall-clock time and the NotebookLM quota go up | Make the partition config explicit, document the cost, default to master-only. |
 | "min_idle_minutes" can stretch finalization past the scheduled time indefinitely if a feed keeps posting | Low | Low — the operator's email/notebook is late | Add a `max_idle_minutes` override in a follow-up. |
 | Splitting the master edition into partitions means we now have N+1 notebook artifacts per day to gate-check on publication | Low | Low | The publication completion gate (§49) already iterates over the artifacts of *one* edition. We extend it to iterate over the artifacts of *one edition × active partitions*. No state machine change. |
+| The notebook only contains the curated source URLs/files — the rendered Markdown digest is **not** uploaded as a source | Medium | Low — the notebook loses editorial grouping present in the Markdown digest | Decision (2026-07-10): we keep the notebook source-grounded by uploading only the underlying articles. Rationale: (a) the digest is heavily redundant with the underlying sources on factual claims; (b) uploading a synthesis the model wrote from the same corpus risks drift (NotebookLM answering with editorial framing rather than source facts); (c) the Markdown digest remains the canonical archive and is delivered unchanged in the email. The notebook becomes a pure Q&A surface over the curated sources. |
 
 ### Trade-offs the design explicitly accepts
 
@@ -411,6 +414,13 @@ config knob, not a behaviour change.
   Markdown is the canonical archive; the notebook is a convenience
   artifact for Q&A. Losing 6-16-style bursts from the master notebook
   is acceptable; losing them from the digest would not be.
+* **We accept that the NotebookLM notebook's source list is exactly the
+  curated source documents — not the Markdown digest.** The digest's
+  editorial clustering and cross-source narrative live only in the
+  digest artifact (Markdown file + email body). The notebook is a pure
+  Q&A surface over the underlying sources. If a future operator wants
+  the synthesis in the notebook, that's a separate config opt-in and
+  not the current default.
 * **We accept that the `master` partition is always active.** It is
   the "everything" partition. There is no operator config to disable
   it. If the operator wants to opt out of notebooks entirely, that is
@@ -700,6 +710,23 @@ need, but the substrate is in place when it becomes load-bearing.
   matters).
 * "Same-day, no exceptions" late-arrival rule (rejected; revisit if a
   breaking-news source is added).
+
+### Phase 6 — Notebook source policy: digest synthesis no longer uploaded (implemented 2026-07-10)
+
+* The notebook service no longer uploads the rendered Markdown digest
+  as a synthetic source. It uploads only the underlying curated
+  documents (URLs and local PDFs).
+* Rationale and impact recorded in §7 (risk row "notebook only contains
+  curated source URLs/files...") and §7 trade-offs accepted. The CLI's
+  `notebooklm source add --markdown-content` plumbing remains in
+  `notebooklm-client.ts` (it is part of the upstream `notebooklm`
+  CLI's API surface) but the PNIP service no longer uses it for
+  notebook generation.
+* Consequence for operators: source count per notebook drops by 1
+  relative to pre-2026-07-10 notebooks; the previous ephemeral
+  `source-{uuid}.md` no longer appears. The Markdown digest remains
+  the canonical archive for the edition and is unchanged for email /
+  HTML / `daily.md` consumers.
 
 ---
 

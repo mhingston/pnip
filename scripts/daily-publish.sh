@@ -173,7 +173,9 @@ while IFS= read -r line; do
     env PARTITION_CONFIG="${PARTITION_CONFIG:-}" \
     npm run digestive -- generate-notebook --date "$DATE" --partition "$partition" --wait
   if [ "$tag" = "with_podcast" ]; then
-    run "wait podcast (partition=$partition)" \
+    # Podcast is optional — NotebookLM may rate-limit audio generation.
+    # A failure here is logged and the publication continues.
+    run_effort "wait podcast (partition=$partition)" \
       env PARTITION_CONFIG="${PARTITION_CONFIG:-}" \
       npm run digestive -- generate-podcast --date "$DATE" --partition "$partition" --wait
   fi

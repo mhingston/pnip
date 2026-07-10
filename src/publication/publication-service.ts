@@ -170,13 +170,24 @@ export function createPublicationService(
     if (!markdownNonEmpty) missingArtifacts.push(LABEL_MARKDOWN);
     if (!emailSent) missingArtifacts.push(LABEL_EMAIL);
     if (!notebookReady) missingArtifacts.push(LABEL_NOTEBOOK);
-    if (!podcastReady) missingArtifacts.push(LABEL_PODCAST);
+    if (!podcastReady) {
+      deps.logger?.warn(
+        "podcast not ready, continuing publication without it",
+        {
+          editionId,
+          partitionKey: PARTITION_MASTER,
+        },
+      );
+    }
     for (const pn of partitionNotebooks) {
       if (!pn.notebookReady) {
         missingArtifacts.push(partitionNotebookLabel(pn.partitionKey));
       }
       if (pn.podcastRequired && !pn.podcastReady) {
-        missingArtifacts.push(partitionPodcastLabel(pn.partitionKey));
+        deps.logger?.warn(
+          "podcast not ready, continuing publication without it",
+          { editionId, partitionKey: pn.partitionKey },
+        );
       }
     }
 

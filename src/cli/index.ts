@@ -484,14 +484,12 @@ async function main(): Promise<number> {
       const logger = createLogger({ baseFields: { worker: "generate-notebook" } });
       const editionRepo = createEditionRepository(db);
       const docRepo = createDocumentRepository(db);
-      const markdownDigestRepo = createMarkdownDigestRepository(db);
       const notebookRepo = createNotebookRepository(db);
       const notebookLm = createNotebookLmClient({});
       const signalRepo = createSignalRepository(db);
       const service = createNotebookService({
         db,
         editionRepo,
-        markdownDigestRepo,
         docRepo,
         notebookRepo,
         notebookLm,

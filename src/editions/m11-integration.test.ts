@@ -529,25 +529,21 @@ describe("M11 end-to-end: publication gate + Ready → Publishing → Published 
     expect(stillReady!.status).toBe("ready");
   });
 
-  itWithDb("throws PublicationGateFailedError when podcast URL is null", async () => {
+  itWithDb("publishes successfully when podcast URL is null (podcast is optional)", async () => {
     const { ed } = await seedEditionAtReady(env, "2026-07-13");
     await pool.query(
       `UPDATE ${schema}.podcasts SET url = NULL WHERE edition_id = $1`,
       [ed.id],
     );
 
-    let caught: unknown;
-    try {
-      await env.service.publish({ editionId: ed.id });
-    } catch (err) {
-      caught = err;
-    }
-    expect(caught).toBeInstanceOf(PublicationGateFailedError);
-    expect((caught as PublicationGateFailedError).missingArtifacts).toContain(
+    const result = await env.service.publish({ editionId: ed.id });
+    expect(result.status).toBe("published");
+    expect(result.completion.podcastReady).toBe(false);
+    expect(result.completion.missingArtifacts).not.toContain(
       "podcast not ready or no URL",
     );
 
-    const stillReady = await env.editionRepo.getById(ed.id);
-    expect(stillReady!.status).toBe("ready");
+    const published = await env.editionRepo.getById(ed.id);
+    expect(published!.status).toBe("published");
   });
 });
