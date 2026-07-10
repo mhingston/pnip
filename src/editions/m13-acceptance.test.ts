@@ -786,6 +786,7 @@ async function runClusterStep(
     provenanceRepo: env.provenanceRepo,
     signalRepo: env.signalRepo,
     sourceTrustRepo: env.sourceTrustRepo,
+    enrichmentTracker: env.enrichmentTracker,
   });
   const job = await env.jobQueue.enqueue({
     jobType: "cluster_stories",

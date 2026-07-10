@@ -302,6 +302,7 @@ async function main(): Promise<number> {
         provenanceRepo,
         signalRepo,
         sourceTrustRepo,
+        enrichmentTracker: createEnrichmentTrackerRepository(db),
       });
 
       const summarizeStoryWorker = createSummarizeStoryWorker({

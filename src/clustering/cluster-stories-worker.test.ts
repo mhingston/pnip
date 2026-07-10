@@ -123,6 +123,7 @@ function makeDeps(overrides?: {
   topicsByDoc?: Map<string, TopicRow[]>;
   embeddingsByDoc?: Map<string, EmbeddingRow[]>;
   trustRows?: SourceTrustRow[];
+  fullyEnrichedDocs?: Set<string>;
   options?: Partial<import("./clustering-service.js").ClusterOptions>;
 }) {
   const documents = overrides?.documents ?? [];
@@ -218,6 +219,19 @@ function makeDeps(overrides?: {
     delete: vi.fn(),
   };
 
+  const fullyEnrichedDocs = overrides?.fullyEnrichedDocs ?? new Set(documents.map((d) => d.id));
+  const enrichmentTracker: import("../editions/enrichment-tracker-repository.js").EnrichmentTrackerRepository = {
+    markDone: vi.fn(),
+    resetForDocument: vi.fn(),
+    getCompletedTypesForDocument: vi.fn(),
+    isDocumentFullyEnriched: vi.fn().mockImplementation(async (id: string) => fullyEnrichedDocs.has(id)),
+    getDocumentCounts: vi.fn(),
+    isEditionFullyEnriched: vi.fn(),
+    getEditionEnqueuedAt: vi.fn(),
+    claimEditionEnqueue: vi.fn(),
+    resetEditionEnqueue: vi.fn(),
+  };
+
   return {
     docRepo,
     summaryRepo,
@@ -227,6 +241,7 @@ function makeDeps(overrides?: {
     provenanceRepo,
     signalRepo,
     sourceTrustRepo,
+    enrichmentTracker,
     options: overrides?.options,
   };
 }

@@ -306,6 +306,17 @@ describe("M5 Story Clustering end-to-end", () => {
         getAll: async () => [],
         delete: async () => { throw new Error("not used"); },
       } as any,
+      enrichmentTracker: {
+        markDone: async () => ({} as any),
+        resetForDocument: async () => undefined,
+        getCompletedTypesForDocument: async () => [],
+        isDocumentFullyEnriched: async () => true,
+        getDocumentCounts: async () => ({ totalDocuments: 0, fullyEnrichedDocuments: 0 }),
+        isEditionFullyEnriched: async () => true,
+        getEditionEnqueuedAt: async () => null,
+        claimEditionEnqueue: async () => new Date(),
+        resetEditionEnqueue: async () => undefined,
+      } as any,
     };
   }
 

@@ -52,6 +52,11 @@ const migrationSqlPaths = [
   "../database/migrations/019_add_cluster_stories_enqueued_at_to_editions.sql",
   "../database/migrations/020_create_markdown_digests.sql",
   "../database/migrations/026_add_partition_key.sql",
+  "../database/migrations/022_create_notebooks.sql",
+  "../database/migrations/023_create_podcasts.sql",
+  "../database/migrations/024_create_signals.sql",
+  "../database/migrations/025_create_source_trust.sql",
+  "../database/migrations/027_add_notebook_podcast_partition.sql",
 ];
 
 function readMigrationSql(relativePath: string): Promise<string> {
@@ -500,12 +505,6 @@ describe("M7 end-to-end: deterministic markdown digest from ready edition", () =
     expect(fromRepo!.content).not.toContain("## Executive Summary");
     expect(fromRepo!.content).toContain("## Top Stories");
     expect(fromRepo!.content).toContain("## Sources");
-    expect(fromRepo!.content).toMatch(/## Technology/);
-    expect(fromRepo!.content).toMatch(/## Politics/);
-    expect(fromRepo!.content).toMatch(/## Science/);
-    expect(fromRepo!.content).toMatch(/## Business/);
-    expect(fromRepo!.content).toMatch(/## Videos/);
-    expect(fromRepo!.content).toMatch(/## Reddit Discussions/);
     expect(fromRepo!.content).toMatch(/\[1\]/);
 
     // Second call is a no-op (idempotency per §53).

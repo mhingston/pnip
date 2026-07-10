@@ -8,6 +8,7 @@ import type { ProvenanceRepository } from "../provenance/provenance-repository.j
 import type { StoryRepository } from "./story-repository.js";
 import type { SignalRepository, CreateSignalInput } from "../signals/signal-repository.js";
 import type { SourceTrustRepository } from "../signals/source-trust-repository.js";
+import type { EnrichmentTrackerRepository } from "../editions/enrichment-tracker-repository.js";
 import { deriveSourceIdentity } from "../signals/source-identity.js";
 import {
   clusterDocuments,
@@ -28,6 +29,7 @@ export interface ClusterStoriesDeps {
   provenanceRepo: ProvenanceRepository;
   signalRepo: SignalRepository;
   sourceTrustRepo: SourceTrustRepository;
+  enrichmentTracker: EnrichmentTrackerRepository;
   options?: Partial<ClusterOptions>;
 }
 
@@ -88,6 +90,11 @@ export function createClusterStoriesWorker(
       const inputs: DocumentClusterInput[] = [];
 
       for (const doc of documents) {
+        const isFullyEnriched = await deps.enrichmentTracker.isDocumentFullyEnriched(
+          doc.id,
+        );
+        if (!isFullyEnriched) continue;
+
         const summaries = await deps.summaryRepo.getByDocumentId(doc.id);
         if (summaries.length === 0) continue;
         const summaryText = summaries
