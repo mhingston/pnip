@@ -81,7 +81,7 @@ describe("seedDefaultPrompts", () => {
 
   it("creates all 6 default prompt versions on first run (5 names + story_summary v2)", async () => {
     const summary = await seedDefaultPrompts(promptRepo);
-    expect(summary.created).toBe(6);
+    expect(summary.created).toBe(7);
     expect(summary.skipped).toBe(0);
     expect(summary.results.map((r) => `${r.name}@v${r.version}`).sort()).toEqual(
       [
@@ -89,6 +89,7 @@ describe("seedDefaultPrompts", () => {
         "quality@v1",
         "story_summary@v1",
         "story_summary@v2",
+        "story_summary@v3",
         "summary@v1",
         "topics@v1",
       ],
@@ -106,10 +107,10 @@ describe("seedDefaultPrompts", () => {
     await seedDefaultPrompts(promptRepo);
     const second = await seedDefaultPrompts(promptRepo);
     expect(second.created).toBe(0);
-    expect(second.skipped).toBe(6);
+    expect(second.skipped).toBe(7);
 
     const all = await promptRepo.listByName("story_summary");
-    expect(all).toHaveLength(2);
+    expect(all).toHaveLength(3);
   });
 
   it("only seeds missing prompts (partial seed)", async () => {
@@ -120,7 +121,7 @@ describe("seedDefaultPrompts", () => {
     });
 
     const summary = await seedDefaultPrompts(promptRepo);
-    expect(summary.created).toBe(5);
+    expect(summary.created).toBe(6);
     expect(summary.skipped).toBe(1);
     const skipped = summary.results.find((r) => r.name === "summary");
     expect(skipped?.status).toBe("skipped");
@@ -154,21 +155,22 @@ describe("seedDefaultPrompts", () => {
     );
     expect(storyResults.find((r) => r.version === 1)?.status).toBe("skipped");
     expect(storyResults.find((r) => r.version === 2)?.status).toBe("created");
+    expect(storyResults.find((r) => r.version === 3)?.status).toBe("created");
 
     const v1 = await promptRepo.getByNameAndVersion("story_summary", 1);
     const v2 = await promptRepo.getByNameAndVersion("story_summary", 2);
+    const v3 = await promptRepo.getByNameAndVersion("story_summary", 3);
     expect(v1?.template).toBe("custom-v1");
     expect(v2?.template.toLowerCase()).toContain("abstractive");
+    expect(v3?.template.toLowerCase()).toContain("source chunks (these are your only source");
   });
 
-  it("new v2 story_summary requires claims to add information not in the summary", async () => {
-    const v2 = DEFAULT_PROMPTS.find(
-      (d) => d.name === "story_summary" && d.version === 2,
+  it("new v3 story_summary hides document_summaries to force abstractive claims", async () => {
+    const v3 = DEFAULT_PROMPTS.find(
+      (d) => d.name === "story_summary" && d.version === 3,
     );
-    expect(v2).toBeDefined();
-    expect(v2!.template.toLowerCase()).toContain("abstractive");
-    expect(v2!.template).toContain("NOT already in the summary");
-    expect(v2!.template).toContain("DO NOT include claims");
-    expect(v2!.template).not.toContain("extracted from the summary");
+    expect(v3).toBeDefined();
+    expect(v3!.template).toContain("Source chunks (these are your ONLY source of facts");
+    expect(v3!.template).not.toContain("Document summaries:");
   });
 });

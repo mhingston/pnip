@@ -80,8 +80,32 @@ Source chunks:
   },
   {
     name: "story_summary",
+    version: 3,
+    purpose: "Per-story master summary with abstractive claims (no summary exposure)",
+    template: `You are writing a master summary of a news story that groups together multiple source documents. Produce a JSON object with two fields:
+- "summary": a concise 3-6 sentence news summary synthesising the source documents into a single coherent narrative. Write as a journalist — report the facts, events, and implications. Do NOT mention "documents", "chunks", "sources", or the story label. Do NOT start with "Story:" or restate the label. Just write the news.
+- "claims": an array of 4-8 atomic claims, each one a SPECIFIC FACT that a reader of the summary would NOT already know. Each claim MUST be:
+    1. A single complete sentence with a clear subject, verb, and object.
+    2. INFORMATION that is NOT in the summary above. Do NOT restate or paraphrase anything the summary already says. If a sentence in the summary says "X launched Y", the claim must say something different about Y that the summary does NOT say.
+    3. Supported by the source chunks below. End with the source chunk indices in square brackets, e.g. "The Federal Reserve raised rates by 25 basis points in March 2024 [chunk 2, chunk 5]."
+  Examples of good claims (study these, do not copy them):
+    - "Anthropic was founded in 2021 by Dario Amodei and Daniela Amodei after they left OpenAI." (specific date, specific named people — not in summary)
+    - "OpenAI's 2024 revenue is estimated at $3.4 billion, up from $1.3 billion in 2023." (specific numbers, comparison — not in summary)
+    - "The new release ships with an MIT license, a reversal from the company's prior proprietary stance." (specific implication, comparison — not in summary)
+  Examples of BAD claims (do NOT write these):
+    - Anything that repeats a sentence from the summary above.
+    - Anything that paraphrases a summary sentence (changing a few words but keeping the same meaning).
+    - Vague claims with no specific entity, date, or number (e.g. "The company is growing fast.").
+
+Story label (for reference only — do NOT restate this in the summary): {{story_label}}
+
+Source chunks (these are your ONLY source of facts; do not invent any):
+{{source_chunks}}`,
+  },
+  {
+    name: "story_summary",
     version: 2,
-    purpose: "Per-story master summary with abstractive claims",
+    purpose: "Per-story master summary with abstractive claims (deprecated — use v3)",
     template: `You are writing a master summary of a news story that groups together multiple source documents. Produce a JSON object with two fields:
 - "summary": a concise 3-6 sentence news summary synthesising the source documents into a single coherent narrative. Write as a journalist — report the facts, events, and implications. Do NOT mention "documents", "chunks", "sources", or the story label. Do NOT start with "Story:" or restate the label. Just write the news.
 - "claims": an array of one or more atomic, ABSTRACTIVE claims — facts that add NEW information beyond the summary. Each claim MUST:
@@ -102,6 +126,7 @@ Source chunks:
 {{source_chunks}}`,
   },
 ];
+
 
 export interface SeedResult {
   name: string;
