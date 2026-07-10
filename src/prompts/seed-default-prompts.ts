@@ -1,10 +1,12 @@
 import type { Logger } from "../logging/logger.js";
 import type { PromptRepository } from "./prompt-repository.js";
+import { PromptVersionConflictError } from "./prompt-repository.js";
 
 export interface PromptDefinition {
   name: string;
   purpose: string;
   template: string;
+  version?: number;
 }
 
 export const DEFAULT_PROMPTS: readonly PromptDefinition[] = [
@@ -76,6 +78,29 @@ Document summaries:
 Source chunks:
 {{source_chunks}}`,
   },
+  {
+    name: "story_summary",
+    version: 2,
+    purpose: "Per-story master summary with abstractive claims",
+    template: `You are writing a master summary of a news story that groups together multiple source documents. Produce a JSON object with two fields:
+- "summary": a concise 3-6 sentence news summary synthesising the source documents into a single coherent narrative. Write as a journalist — report the facts, events, and implications. Do NOT mention "documents", "chunks", "sources", or the story label. Do NOT start with "Story:" or restate the label. Just write the news.
+- "claims": an array of one or more atomic, ABSTRACTIVE claims — facts that add NEW information beyond the summary. Each claim MUST:
+    1. Be a single complete sentence with a clear subject, verb, and object.
+    2. Add information that is NOT already in the summary — for example, a named entity, a specific date, a specific number, a specific person or company, an implication or consequence, OR a comparison between two things.
+    3. Be supported by the source documents.
+    4. End with the source chunk indices in square brackets, e.g. "The Federal Reserve raised rates by 25 basis points in March 2024 [chunk 2, chunk 5]."
+  DO NOT include claims that are direct quotes, close paraphrases, or simple restatements of sentences in the summary. Each claim must add NEW information that is not already in the summary.
+
+The summary's claims must be supported by the provided document text. Each claim must reference at least one source chunk by its index as shown in the "Source chunks" list. Return ONLY the JSON object, no prose.
+
+Story label (for reference only — do NOT restate this in the summary): {{story_label}}
+
+Document summaries:
+{{document_summaries}}
+
+Source chunks:
+{{source_chunks}}`,
+  },
 ];
 
 export interface SeedResult {
@@ -96,13 +121,64 @@ export async function seedDefaultPrompts(
 ): Promise<SeedSummary> {
   const results: SeedResult[] = [];
   for (const def of DEFAULT_PROMPTS) {
+    if (def.version !== undefined) {
+      const existing = await promptRepo.getByNameAndVersion(
+        def.name,
+        def.version,
+      );
+      if (existing) {
+        logger?.debug("prompt version already seeded, skipping", {
+          name: def.name,
+          version: existing.version,
+        });
+        results.push({
+          name: def.name,
+          status: "skipped",
+          version: existing.version,
+        });
+        continue;
+      }
+      try {
+        const created = await promptRepo.create({
+          name: def.name,
+          version: def.version,
+          template: def.template,
+          purpose: def.purpose,
+        });
+        logger?.info("prompt version seeded", {
+          name: created.name,
+          version: created.version,
+        });
+        results.push({
+          name: created.name,
+          status: "created",
+          version: created.version,
+        });
+      } catch (err) {
+        if (err instanceof PromptVersionConflictError) {
+          results.push({
+            name: def.name,
+            status: "skipped",
+            version: def.version,
+          });
+          continue;
+        }
+        throw err;
+      }
+      continue;
+    }
+
     const existing = await promptRepo.getLatestVersion(def.name);
     if (existing) {
       logger?.debug("prompt already seeded, skipping", {
         name: def.name,
         version: existing.version,
       });
-      results.push({ name: def.name, status: "skipped", version: existing.version });
+      results.push({
+        name: def.name,
+        status: "skipped",
+        version: existing.version,
+      });
       continue;
     }
     const created = await promptRepo.createNewVersion({
@@ -110,8 +186,15 @@ export async function seedDefaultPrompts(
       template: def.template,
       purpose: def.purpose,
     });
-    logger?.info("prompt seeded", { name: created.name, version: created.version });
-    results.push({ name: created.name, status: "created", version: created.version });
+    logger?.info("prompt seeded", {
+      name: created.name,
+      version: created.version,
+    });
+    results.push({
+      name: created.name,
+      status: "created",
+      version: created.version,
+    });
   }
   const summary: SeedSummary = {
     created: results.filter((r) => r.status === "created").length,

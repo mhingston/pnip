@@ -89,6 +89,7 @@ interface DocumentSnapshot {
   canonicalUrl: string | null;
   sourceType: string;
   publisher: string | null;
+  chunkIds: string[];
   metadata?: unknown;
 }
 
@@ -343,7 +344,16 @@ export function createMarkdownDigestService(
       }
 
       const allCitations = effectiveStories.flatMap((s) =>
-        s.claims.map((c) => ({ chunkId: c.chunkId, claimText: c.text })),
+        s.claims.map((c) => {
+          const doc = s.documents.find((d) =>
+            d.chunkIds.includes(c.chunkId),
+          );
+          return {
+            chunkId: c.chunkId,
+            claimText: c.text,
+            documentId: doc?.id,
+          };
+        }),
       );
       const citationIndex = buildCitationIndex(allCitations);
 
@@ -429,6 +439,9 @@ export function createMarkdownDigestService(
         for (const m of s.members) {
           const doc = await deps.docRepo.getById(m.document_id);
           if (!doc) continue;
+          const chunkIds = await deps.chunkRepo
+            .getByDocumentId(doc.id)
+            .then((cs) => cs.map((c) => c.id));
           documents.push({
             id: doc.id,
             title: doc.title ?? "Untitled",
@@ -436,6 +449,7 @@ export function createMarkdownDigestService(
             canonicalUrl: doc.canonical_url ?? null,
             sourceType: doc.source_type,
             publisher: doc.publisher ?? null,
+            chunkIds,
             metadata: doc.metadata,
           });
         }
@@ -564,11 +578,13 @@ export function createMarkdownDigestService(
       } else {
         for (const d of sortedDocs) {
           const url = d.canonicalUrl ?? d.sourceUrl;
+          const primary = citationIndex.byDocument.get(d.id);
           const tokens = collectCitationsForDocument(d.id, citationIndex, validStories);
+          const primaryPrefix = primary !== undefined ? `[${primary}] ` : "";
           const citeSuffix =
             tokens.length > 0 ? ` _cited ${tokens.join(" ")}_` : "";
           lines.push(
-            `- [${escapeMarkdown(d.title)}](${url}) — ${d.sourceType}${citeSuffix}`,
+            `- ${primaryPrefix}[${escapeMarkdown(d.title)}](${url}) — ${d.sourceType}${citeSuffix}`,
           );
         }
       }
@@ -614,8 +630,11 @@ function collectCitationsForDocument(
 ): string[] {
   const numbers: number[] = [];
   for (const s of stories) {
-    if (!s.documents.some((d) => d.id === documentId)) continue;
+    const doc = s.documents.find((d) => d.id === documentId);
+    if (!doc) continue;
+    const docChunkIds = new Set(doc.chunkIds);
     for (const claim of s.claims) {
+      if (!docChunkIds.has(claim.chunkId)) continue;
       const n = index.byChunkId.get(claim.chunkId);
       if (n !== undefined) numbers.push(n);
     }

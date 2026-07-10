@@ -79,19 +79,26 @@ describe("seedDefaultPrompts", () => {
     await db.deleteFrom("prompt_versions").execute();
   });
 
-  it("creates all 5 default prompts on first run", async () => {
+  it("creates all 6 default prompt versions on first run (5 names + story_summary v2)", async () => {
     const summary = await seedDefaultPrompts(promptRepo);
-    expect(summary.created).toBe(5);
+    expect(summary.created).toBe(6);
     expect(summary.skipped).toBe(0);
-    expect(summary.results.map((r) => r.name).sort()).toEqual(
-      ["entities", "quality", "story_summary", "summary", "topics"],
+    expect(summary.results.map((r) => `${r.name}@v${r.version}`).sort()).toEqual(
+      [
+        "entities@v1",
+        "quality@v1",
+        "story_summary@v1",
+        "story_summary@v2",
+        "summary@v1",
+        "topics@v1",
+      ],
     );
 
     for (const def of DEFAULT_PROMPTS) {
-      const latest = await promptRepo.getLatestVersion(def.name);
-      expect(latest).toBeDefined();
-      expect(latest!.version).toBe(1);
-      expect(latest!.template).toBe(def.template);
+      const version = def.version ?? 1;
+      const row = await promptRepo.getByNameAndVersion(def.name, version);
+      expect(row).toBeDefined();
+      expect(row!.template).toBe(def.template);
     }
   });
 
@@ -99,14 +106,10 @@ describe("seedDefaultPrompts", () => {
     await seedDefaultPrompts(promptRepo);
     const second = await seedDefaultPrompts(promptRepo);
     expect(second.created).toBe(0);
-    expect(second.skipped).toBe(5);
-    for (const r of second.results) {
-      expect(r.status).toBe("skipped");
-      expect(r.version).toBe(1);
-    }
+    expect(second.skipped).toBe(6);
 
-    const all = await promptRepo.listByName("summary");
-    expect(all).toHaveLength(1);
+    const all = await promptRepo.listByName("story_summary");
+    expect(all).toHaveLength(2);
   });
 
   it("only seeds missing prompts (partial seed)", async () => {
@@ -117,7 +120,7 @@ describe("seedDefaultPrompts", () => {
     });
 
     const summary = await seedDefaultPrompts(promptRepo);
-    expect(summary.created).toBe(4);
+    expect(summary.created).toBe(5);
     expect(summary.skipped).toBe(1);
     const skipped = summary.results.find((r) => r.name === "summary");
     expect(skipped?.status).toBe("skipped");
@@ -136,5 +139,36 @@ describe("seedDefaultPrompts", () => {
     const after = await promptRepo.getLatestVersion("summary");
     expect(after?.version).toBe(1);
     expect(after?.id).toBe(before?.id);
+  });
+
+  it("preserves user-customized v1 of story_summary while seeding the new v2 default", async () => {
+    await promptRepo.createNewVersion({
+      name: "story_summary",
+      template: "custom-v1",
+      purpose: "custom-v1",
+    });
+
+    const summary = await seedDefaultPrompts(promptRepo);
+    const storyResults = summary.results.filter(
+      (r) => r.name === "story_summary",
+    );
+    expect(storyResults.find((r) => r.version === 1)?.status).toBe("skipped");
+    expect(storyResults.find((r) => r.version === 2)?.status).toBe("created");
+
+    const v1 = await promptRepo.getByNameAndVersion("story_summary", 1);
+    const v2 = await promptRepo.getByNameAndVersion("story_summary", 2);
+    expect(v1?.template).toBe("custom-v1");
+    expect(v2?.template.toLowerCase()).toContain("abstractive");
+  });
+
+  it("new v2 story_summary requires claims to add information not in the summary", async () => {
+    const v2 = DEFAULT_PROMPTS.find(
+      (d) => d.name === "story_summary" && d.version === 2,
+    );
+    expect(v2).toBeDefined();
+    expect(v2!.template.toLowerCase()).toContain("abstractive");
+    expect(v2!.template).toContain("NOT already in the summary");
+    expect(v2!.template).toContain("DO NOT include claims");
+    expect(v2!.template).not.toContain("extracted from the summary");
   });
 });

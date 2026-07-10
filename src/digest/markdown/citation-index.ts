@@ -16,10 +16,12 @@
 export interface CitationRef {
   chunkId: string;
   claimText: string;
+  documentId?: string;
 }
 
 export interface CitationIndex {
   byChunkId: Map<string, number>;
+  byDocument: Map<string, number>;
   entries: { number: number; chunkId: string }[];
 }
 
@@ -27,6 +29,7 @@ export function buildCitationIndex(
   citations: readonly CitationRef[],
 ): CitationIndex {
   const seenNumbers = new Map<string, number>();
+  const seenByDocument = new Map<string, number>();
   const entries: { number: number; chunkId: string }[] = [];
 
   for (const ref of citations) {
@@ -34,6 +37,9 @@ export function buildCitationIndex(
     const n = seenNumbers.size + 1;
     seenNumbers.set(ref.chunkId, n);
     entries.push({ number: n, chunkId: ref.chunkId });
+    if (ref.documentId && !seenByDocument.has(ref.documentId)) {
+      seenByDocument.set(ref.documentId, n);
+    }
   }
 
   entries.sort((a, b) => {
@@ -51,7 +57,7 @@ export function buildCitationIndex(
     reEntries.push({ number: i + 1, chunkId });
   }
 
-  return { byChunkId, entries: reEntries };
+  return { byChunkId, byDocument: seenByDocument, entries: reEntries };
 }
 
 /**
