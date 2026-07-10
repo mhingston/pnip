@@ -13,12 +13,14 @@
 
 set -euo pipefail
 
-# Cron runs with a minimal PATH (typically /usr/bin:/bin). Set a sane
-# PATH so `node`, `npm`, and the project's node_modules/.bin tools
-# are all resolvable. The PNIP project's tsx lives at
-# node_modules/.bin/tsx and is invoked by `npm run`, so we don't
-# need to add it to PATH here.
-export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+# Cron runs with a minimal PATH (typically /usr/bin:/bin). Build a
+# PATH that covers the system defaults AND the operator's local bin
+# directory, which is where third-party CLIs (fabric, markitdown, the
+# AI provider's CLI, etc.) typically live on a per-user install. The
+# original problem this fixes: cron was running expansions that
+# called `fabric` and failing with spawn fabric ENOENT because
+# /home/<user>/.local/bin was not in cron's minimal PATH.
+export PATH="$HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"

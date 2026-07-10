@@ -43,10 +43,11 @@
 
 set -euo pipefail
 
-# Cron runs with a minimal PATH (typically /usr/bin:/bin). Set a sane
-# PATH so `node`, `npm`, and the project's node_modules/.bin tools
-# are all resolvable.
-export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+# Cron runs with a minimal PATH (typically /usr/bin:/bin). Build a
+# PATH that covers the system defaults AND the operator's local bin
+# directory, which is where third-party CLIs (fabric, notebooklm,
+# markitdown, etc.) typically live on a per-user install.
+export PATH="$HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
@@ -182,7 +183,16 @@ while IFS= read -r line; do
   fi
 done <<< "$PARTITION_LINES"
 
-# 5. Dry-run gate check. If the gate fails, the script aborts BEFORE
+# 5. Evaluate the building -> ready transition. The edition is in
+# 'building' state once all 5 enrichers are done for every document
+# in the partition and the cluster_stories + summarize_story
+# workers have completed. generate-edition runs the readiness gate
+# and transitions the edition to 'ready' (or leaves it in
+# 'building' if the gate is not yet met).
+run "generate-edition" \
+  npm run digestive -- generate-edition --date "$DATE"
+
+# 6. Dry-run gate check. If the gate fails, the script aborts BEFORE
 # the real publish so the operator can investigate. The dry-run
 # output is logged for audit.
 run "publish-edition --dry-run" \
@@ -194,7 +204,7 @@ if [ -n "$DRY_RUN" ]; then
   exit 0
 fi
 
-# 6. Real publish
+# 7. Real publish
 run "publish-edition" \
   npm run digestive -- publish-edition --date "$DATE"
 

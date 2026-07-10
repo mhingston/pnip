@@ -80,9 +80,12 @@ build_fragment() {
 # sequence uses the local date as the edition date.
 #
 # PATH: cron runs with a minimal PATH by default. The PNIP scripts
-# set their own PATH internally; this PATH= line is a safety net
-# for any future inline command that may need it.
-PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# set their own PATH internally (with the operator's $HOME/.local/bin
+# prepended so fabric, markitdown, etc. are findable). This PATH=
+# line is a safety net for any future inline command that may need
+# it, and also covers the case where cron strips HOME from the
+# environment.
+PATH=/root/.local/bin:/home/mark/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # Drain Miniflux -> editions. Idempotent. Tight interval.
 $SCHEDULE_DRAIN $DRAIN_SCRIPT >> $PROJECT_DIR/logs/digest-drain.log 2>&1
