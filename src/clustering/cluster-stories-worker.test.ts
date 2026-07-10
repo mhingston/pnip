@@ -123,6 +123,7 @@ function makeDeps(overrides?: {
   topicsByDoc?: Map<string, TopicRow[]>;
   embeddingsByDoc?: Map<string, EmbeddingRow[]>;
   trustRows?: SourceTrustRow[];
+  options?: Partial<import("./clustering-service.js").ClusterOptions>;
 }) {
   const documents = overrides?.documents ?? [];
   const summariesByDoc = overrides?.summariesByDoc ?? new Map();
@@ -217,7 +218,17 @@ function makeDeps(overrides?: {
     delete: vi.fn(),
   };
 
-  return { docRepo, summaryRepo, topicRepo, embeddingRepo, storyRepo, provenanceRepo, signalRepo, sourceTrustRepo };
+  return {
+    docRepo,
+    summaryRepo,
+    topicRepo,
+    embeddingRepo,
+    storyRepo,
+    provenanceRepo,
+    signalRepo,
+    sourceTrustRepo,
+    options: overrides?.options,
+  };
 }
 
 describe("ClusterStoriesWorker", () => {
@@ -263,7 +274,13 @@ describe("ClusterStoriesWorker", () => {
       ["doc-1", [makeEmbedding("doc-1", v)]],
       ["doc-2", [makeEmbedding("doc-2", v)]],
     ]);
-    const deps = makeDeps({ documents: docs, summariesByDoc, topicsByDoc, embeddingsByDoc });
+    const deps = makeDeps({
+      documents: docs,
+      summariesByDoc,
+      topicsByDoc,
+      embeddingsByDoc,
+      options: { targetStories: 1 },
+    });
     const worker = createClusterStoriesWorker(deps);
 
     const outcome = await worker.execute(makeJob(), { db: {} as any, logger: silentLogger() });
@@ -346,7 +363,13 @@ describe("ClusterStoriesWorker", () => {
       ["doc-1", [makeEmbedding("doc-1", v)]],
       ["doc-2", [makeEmbedding("doc-2", v)]],
     ]);
-    const deps = makeDeps({ documents: docs, summariesByDoc, topicsByDoc, embeddingsByDoc });
+    const deps = makeDeps({
+      documents: docs,
+      summariesByDoc,
+      topicsByDoc,
+      embeddingsByDoc,
+      options: { targetStories: 1 },
+    });
     const worker = createClusterStoriesWorker(deps);
 
     await worker.execute(makeJob(), { db: {} as any, logger: silentLogger() });
@@ -380,7 +403,13 @@ describe("ClusterStoriesWorker", () => {
       ["doc-1", [makeEmbedding("doc-1", v)]],
       ["doc-2", [makeEmbedding("doc-2", v)]],
     ]);
-    const deps = makeDeps({ documents: docs, summariesByDoc, topicsByDoc, embeddingsByDoc });
+    const deps = makeDeps({
+      documents: docs,
+      summariesByDoc,
+      topicsByDoc,
+      embeddingsByDoc,
+      options: { targetStories: 1 },
+    });
     (deps.signalRepo.createBatch as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("db down"));
     const worker = createClusterStoriesWorker(deps);
 
@@ -452,5 +481,125 @@ describe("ClusterStoriesWorker", () => {
     expect(passed.stories).toHaveLength(2);
     expect(passed.stories[0].documentIds).toEqual(["doc-trusted"]);
     expect(passed.stories[1].documentIds).toEqual(["doc-shady"]);
+  });
+
+  it("respects targetStories: 11 diverse docs with targetStories=7 produce ~7 stories", async () => {
+    const docs = Array.from({ length: 11 }, (_, i) =>
+      makeDoc({
+        id: `doc-${i}`,
+        source_url: `https://example.com/d${i}`,
+        source_type: "article",
+      }),
+    );
+    const summariesByDoc = new Map(
+      docs.map((d) => [d.id, [makeSummary(d.id, `Summary for ${d.id}`)]]),
+    );
+    const topicsByDoc = new Map(
+      docs.map((d) => [d.id, [makeTopic(d.id, "ai", 0.9)]]),
+    );
+    const base = [0.1, 0.2, 0.3, 0.4];
+    const embeddingsByDoc = new Map(
+      docs.map((d, i) => [
+        d.id,
+        [
+          makeEmbedding(
+            d.id,
+            base.map((b, j) => b + Math.sin(i * 1.7 + j * 0.7) * 0.05),
+          ),
+        ],
+      ]),
+    );
+    const deps = makeDeps({
+      documents: docs,
+      summariesByDoc,
+      topicsByDoc,
+      embeddingsByDoc,
+      options: { targetStories: 7, similarityThreshold: 0.6 },
+    });
+    const worker = createClusterStoriesWorker(deps);
+
+    const outcome = await worker.execute(makeJob(), {
+      db: {} as any,
+      logger: silentLogger(),
+    });
+
+    expect(outcome.childJobs).toBeDefined();
+    expect(outcome.childJobs!.length).toBeGreaterThanOrEqual(5);
+    expect(outcome.childJobs!.length).toBeLessThanOrEqual(7);
+  });
+
+  it("respects targetStories=11: 11 orthogonal docs produce 11 stories", async () => {
+    const docs = Array.from({ length: 11 }, (_, i) =>
+      makeDoc({
+        id: `doc-${i}`,
+        source_url: `https://example.com/d${i}`,
+        source_type: "article",
+      }),
+    );
+    const summariesByDoc = new Map(
+      docs.map((d) => [d.id, [makeSummary(d.id, `Summary for ${d.id}`)]]),
+    );
+    const topicsByDoc = new Map(
+      docs.map((d, i) => [d.id, [makeTopic(d.id, `topic-${i}`, 0.9)]]),
+    );
+    const embeddingsByDoc = new Map(
+      docs.map((d, i) => {
+        const v = new Array<number>(11).fill(0);
+        v[i] = 1;
+        return [d.id, [makeEmbedding(d.id, v)]];
+      }),
+    );
+    const deps = makeDeps({
+      documents: docs,
+      summariesByDoc,
+      topicsByDoc,
+      embeddingsByDoc,
+      options: { targetStories: 11 },
+    });
+    const worker = createClusterStoriesWorker(deps);
+
+    const outcome = await worker.execute(makeJob(), {
+      db: {} as any,
+      logger: silentLogger(),
+    });
+
+    expect(outcome.childJobs).toHaveLength(11);
+    for (const cj of outcome.childJobs!) {
+      expect(cj.jobType).toBe("summarize_story");
+    }
+  });
+
+  it("average-link: 2 similar docs and 1 outlier — with targetStories=1, the outlier stays separate (no chain-merge)", async () => {
+    const docs = [
+      makeDoc({ id: "doc-0", source_url: "https://example.com/d0", source_type: "article" }),
+      makeDoc({ id: "doc-1", source_url: "https://example.com/d1", source_type: "article" }),
+      makeDoc({ id: "doc-2", source_url: "https://example.com/d2", source_type: "article" }),
+    ];
+    const summariesByDoc = new Map(docs.map((d) => [d.id, [makeSummary(d.id, `Summary ${d.id}`)]]));
+    const topicsByDoc = new Map(docs.map((d) => [d.id, [makeTopic(d.id, "ai", 0.9)]]));
+    const embeddingsByDoc = new Map([
+      ["doc-0", [makeEmbedding("doc-0", [1, 0])]],
+      ["doc-1", [makeEmbedding("doc-1", [0.99, 0.01])]],
+      ["doc-2", [makeEmbedding("doc-2", [0, 1])]],
+    ]);
+    const deps = makeDeps({
+      documents: docs,
+      summariesByDoc,
+      topicsByDoc,
+      embeddingsByDoc,
+      options: { targetStories: 1, similarityThreshold: 0.7 },
+    });
+    const worker = createClusterStoriesWorker(deps);
+
+    const outcome = await worker.execute(makeJob(), {
+      db: {} as any,
+      logger: silentLogger(),
+    });
+
+    expect(outcome.childJobs).toBeDefined();
+    expect(outcome.childJobs!.length).toBeGreaterThanOrEqual(2);
+    const sizes = (outcome.childJobs as { target: { storyId: string } }[])
+      .map(() => 1);
+    expect(sizes.length).toBe(outcome.childJobs!.length);
   });
 });

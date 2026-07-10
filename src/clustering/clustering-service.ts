@@ -23,6 +23,18 @@ export interface ClusterOptions {
   minClusterSize: number;
   maxStories: number;
   /**
+   * Fraction of documentCount that becomes the target story count when
+   * the caller does not pin `targetStories` directly. Clamped to [4, 15].
+   * `0.6` × 11 docs → 7 stories, `0.6` × 19 → 11, `0.6` × 50 → 30 → clamped to 15.
+   */
+  targetStoriesRatio?: number;
+  /**
+   * Optional explicit target story count. Overrides the ratio-based
+   * computation when set. The greedy merge stops once cluster count <= this
+   * value, so a value >= documentCount degenerates to one-doc-per-cluster.
+   */
+  targetStories?: number;
+  /**
    * Optional RNG injection, kept for backward compatibility with older tests.
    * NOT used by the default code path: tiebreaks use deterministic orderings
    * (alphabetical sort of topics, sorted union-find iteration) so that
@@ -40,9 +52,10 @@ export interface ClusterRankingInput {
 }
 
 export const DEFAULT_CLUSTER_OPTIONS: ClusterOptions = {
-  similarityThreshold: 0.5,
+  similarityThreshold: 0.65,
   minClusterSize: 1,
   maxStories: 100,
+  targetStoriesRatio: 0.6,
 };
 
 function cosineSimilarity(a: number[], b: number[]): number {
@@ -63,6 +76,19 @@ function cosineSimilarity(a: number[], b: number[]): number {
   return dot / (Math.sqrt(normA) * Math.sqrt(normB));
 }
 
+function computeTargetStories(
+  docCount: number,
+  opts: { targetStories?: number; targetStoriesRatio?: number },
+): number {
+  if (opts.targetStories !== undefined) {
+    return Math.max(1, Math.min(docCount, Math.floor(opts.targetStories)));
+  }
+  const ratio = opts.targetStoriesRatio ?? DEFAULT_CLUSTER_OPTIONS.targetStoriesRatio!;
+  const raw = Math.round(docCount * ratio);
+  const clamped = Math.max(4, Math.min(15, raw));
+  return Math.max(1, Math.min(docCount, clamped));
+}
+
 function pickRepresentativeTopic(
   topics: readonly string[],
   rng?: () => number,
@@ -78,9 +104,6 @@ function pickRepresentativeTopic(
     deduped.push(norm);
   }
   if (deduped.length === 0) return "general";
-  // Determinism: pick the lexicographically FIRST topic (stable across runs).
-  // The `rng` parameter is preserved for backward-compatible testing only;
-  // production callers leave it unset and rely on the alphabetical tiebreak.
   if (rng) {
     const idx = Math.floor(rng() * deduped.length);
     return deduped[Math.min(idx, deduped.length - 1)]!;
@@ -119,6 +142,45 @@ function makeLabel(
   return candidate;
 }
 
+interface EmbeddingIndex {
+  ids: string[];
+  vectors: number[][];
+}
+
+interface MergeCandidate {
+  i: number;
+  j: number;
+  sim: number;
+}
+
+function computeAllPairs(emb: EmbeddingIndex): MergeCandidate[] {
+  const out: MergeCandidate[] = [];
+  for (let i = 0; i < emb.ids.length; i++) {
+    for (let j = i + 1; j < emb.ids.length; j++) {
+      const sim = cosineSimilarity(emb.vectors[i]!, emb.vectors[j]!);
+      out.push({ i, j, sim });
+    }
+  }
+  return out;
+}
+
+function averageLink(
+  a: number[],
+  b: number[],
+  emb: EmbeddingIndex,
+): number {
+  if (a.length === 0 || b.length === 0) return 0;
+  let sum = 0;
+  let count = 0;
+  for (const i of a) {
+    for (const j of b) {
+      sum += cosineSimilarity(emb.vectors[i]!, emb.vectors[j]!);
+      count += 1;
+    }
+  }
+  return count === 0 ? 0 : sum / count;
+}
+
 export function clusterDocuments(
   inputs: readonly DocumentClusterInput[],
   opts?: Partial<ClusterOptions>,
@@ -128,8 +190,11 @@ export function clusterDocuments(
     opts?.similarityThreshold ?? DEFAULT_CLUSTER_OPTIONS.similarityThreshold;
   const maxStories =
     opts?.maxStories ?? DEFAULT_CLUSTER_OPTIONS.maxStories;
-  // `opts?.random` is the only knob that introduces nondeterminism.
-  // Production callers leave it unset; adversarial tests can inject it.
+  const targetStories = computeTargetStories(inputs.length, {
+    targetStories: opts?.targetStories,
+    targetStoriesRatio:
+      opts?.targetStoriesRatio ?? DEFAULT_CLUSTER_OPTIONS.targetStoriesRatio,
+  });
   const rng = opts?.random;
 
   if (inputs.length === 0) return [];
@@ -140,55 +205,50 @@ export function clusterDocuments(
     representativeTopic: pickRepresentativeTopic(d.topics, rng),
   }));
 
-  const parent = new Array<number>(indexed.length);
-  for (let i = 0; i < indexed.length; i++) parent[i] = i;
-
-  const find = (i: number): number => {
-    let cur = i;
-    while (parent[cur] !== cur) {
-      parent[cur] = parent[parent[cur]];
-      cur = parent[cur];
-    }
-    return cur;
-  };
-  const union = (a: number, b: number): void => {
-    const ra = find(a);
-    const rb = find(b);
-    if (ra !== rb) parent[ra] = rb;
+  const emb: EmbeddingIndex = {
+    ids: indexed.map((d) => d.documentId),
+    vectors: inputs.map((d) => d.embedding),
   };
 
-  for (let i = 0; i < inputs.length; i++) {
-    for (let j = i + 1; j < inputs.length; j++) {
-      const sim = cosineSimilarity(
-        inputs[i].embedding,
-        inputs[j].embedding,
-      );
-      if (sim >= similarityThreshold) {
-        union(i, j);
-      }
-    }
-  }
+  const candidates = computeAllPairs(emb);
+  candidates.sort((a, b) => b.sim - a.sim || a.i - b.i || a.j - b.j);
 
-  const groups = new Map<number, number[]>();
-  for (let i = 0; i < indexed.length; i++) {
-    const root = find(i);
-    const arr = groups.get(root) ?? [];
-    arr.push(i);
-    groups.set(root, arr);
+  const clusters: number[][] = indexed.map((_, i) => [i]);
+  const clusterOf = new Array<number>(indexed.length);
+  for (let i = 0; i < indexed.length; i++) clusterOf[i] = i;
+
+  for (const c of candidates) {
+    if (c.sim < similarityThreshold) break;
+    if (clusters.length <= targetStories) break;
+    const rootI = clusterOf[c.i]!;
+    const rootJ = clusterOf[c.j]!;
+    if (rootI === rootJ) continue;
+    const avg = averageLink(clusters[rootI]!, clusters[rootJ]!, emb);
+    if (avg < similarityThreshold) continue;
+    if (clusters.length <= targetStories) break;
+    const merged: number[] = clusters[rootI]!.concat(clusters[rootJ]!);
+    const keepIdx = rootI < rootJ ? rootI : rootJ;
+    const dropIdx = rootI < rootJ ? rootJ : rootI;
+    for (const idx of clusters[dropIdx]!) clusterOf[idx] = keepIdx;
+    clusters[keepIdx] = merged;
+    clusters.splice(dropIdx, 1);
+    for (let k = 0; k < indexed.length; k++) {
+      if (clusterOf[k]! > dropIdx) clusterOf[k] = clusterOf[k]! - 1;
+    }
   }
 
   const outputs: ClusterOutput[] = [];
   const usedLabels = new Set<string>();
   let storyIndex = 0;
 
-  for (const members of groups.values()) {
+  for (const members of clusters) {
     if (outputs.length >= maxStories) break;
     const topicCounts = new Map<string, number>();
     for (const idx of members) {
       const t = indexed[idx].representativeTopic;
       topicCounts.set(t, (topicCounts.get(t) ?? 0) + 1);
     }
-    let bestTopic = indexed[members[0]].representativeTopic;
+    let bestTopic = indexed[members[0]!]!.representativeTopic;
     let bestCount = -1;
     for (const [t, c] of topicCounts) {
       if (c > bestCount) {
@@ -197,14 +257,14 @@ export function clusterDocuments(
       }
     }
     const memberTitles = members
-      .map((idx) => indexed[idx].title)
+      .map((idx) => indexed[idx]!.title)
       .filter((t): t is string => t !== null && t.trim().length > 0)
       .map((t) => t.trim());
     const label = makeLabel(bestTopic, storyIndex, usedLabels, memberTitles);
     storyIndex += 1;
     outputs.push({
       label,
-      documentIds: members.map((m) => indexed[m].documentId),
+      documentIds: members.map((m) => indexed[m]!.documentId),
     });
   }
 
@@ -240,7 +300,7 @@ export function clusterDocuments(
     });
   }
 
-  const relabeled: ClusterOutput[] = outputs.map((o, i) => ({
+  const relabeled: ClusterOutput[] = outputs.map((o) => ({
     label: o.label,
     documentIds: o.documentIds,
   }));

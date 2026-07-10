@@ -62,6 +62,7 @@ describe("clusterDocuments", () => {
     ];
     const result = clusterDocuments(inputs, {
       similarityThreshold: 0.9,
+      targetStories: 1,
       random: () => 0,
     });
     expect(result).toHaveLength(1);
@@ -78,6 +79,7 @@ describe("clusterDocuments", () => {
     ];
     const result = clusterDocuments(inputs, {
       similarityThreshold: 0.9,
+      targetStories: 2,
       random: () => 0,
     });
     expect(result).toHaveLength(2);
@@ -104,10 +106,12 @@ describe("clusterDocuments", () => {
     ];
     const a = clusterDocuments(inputs, {
       similarityThreshold: 0.5,
+      targetStories: 1,
       random: () => 0,
     });
     const b = clusterDocuments(inputs, {
       similarityThreshold: 0.5,
+      targetStories: 1,
       random: () => 0,
     });
     expect(a[0].label).toBe(b[0].label);
@@ -121,6 +125,7 @@ describe("clusterDocuments", () => {
     ];
     const result = clusterDocuments(inputs, {
       similarityThreshold: 0.99,
+      targetStories: 2,
       random: () => 0,
     });
     expect(result[0].documentIds).toHaveLength(2);
@@ -166,7 +171,10 @@ describe("clusterDocuments", () => {
       makeInput("d1", ["ai"], a, null, "OpenAI Ships New Agent Framework"),
       makeInput("d2", ["ai"], b, null, "Deep Dive: OpenAI's Latest Release"),
     ];
-    const result = clusterDocuments(inputs, { similarityThreshold: 0.5 });
+    const result = clusterDocuments(inputs, {
+      similarityThreshold: 0.5,
+      targetStories: 1,
+    });
     expect(result).toHaveLength(1);
     expect(result[0].label).toBe("OpenAI Ships New Agent Framework");
   });
@@ -176,7 +184,10 @@ describe("clusterDocuments", () => {
       makeInput("d1", ["ai"], makeVector([1, 0]), null, "AI Breakthrough"),
       makeInput("d2", ["ai"], makeVector([0.99, 0.01]), null, "Researchers Announce Major AI Breakthrough in Quantum Computing"),
     ];
-    const result = clusterDocuments(inputs, { similarityThreshold: 0.5 });
+    const result = clusterDocuments(inputs, {
+      similarityThreshold: 0.5,
+      targetStories: 1,
+    });
     expect(result[0].label).toBe("AI Breakthrough");
   });
 
@@ -185,7 +196,10 @@ describe("clusterDocuments", () => {
       makeInput("d1", ["ai"], makeVector([1, 0])),
       makeInput("d2", ["ai"], makeVector([0.99, 0.01])),
     ];
-    const result = clusterDocuments(inputs, { similarityThreshold: 0.5 });
+    const result = clusterDocuments(inputs, {
+      similarityThreshold: 0.5,
+      targetStories: 1,
+    });
     expect(result[0].label).toMatch(/^story-ai-/);
   });
 
@@ -194,7 +208,10 @@ describe("clusterDocuments", () => {
       makeInput("d1", ["ai"], makeVector([1, 0]), null, "  "),
       makeInput("d2", ["ai"], makeVector([0.99, 0.01]), null, ""),
     ];
-    const result = clusterDocuments(inputs, { similarityThreshold: 0.5 });
+    const result = clusterDocuments(inputs, {
+      similarityThreshold: 0.5,
+      targetStories: 1,
+    });
     expect(result[0].label).toMatch(/^story-ai-/);
   });
 
@@ -205,9 +222,15 @@ describe("clusterDocuments", () => {
       makeInput("d1", ["ai"], makeVector([1, 0])),
       makeInput("d2", ["ai"], makeVector([0.99, 0.01])),
     ];
-    const first = clusterDocuments(inputs, { similarityThreshold: 0.5 });
+    const first = clusterDocuments(inputs, {
+      similarityThreshold: 0.5,
+      targetStories: 1,
+    });
     for (let run = 0; run < 8; run++) {
-      const result = clusterDocuments(inputs, { similarityThreshold: 0.5 });
+      const result = clusterDocuments(inputs, {
+        similarityThreshold: 0.5,
+        targetStories: 1,
+      });
       expect(result[0]?.label).toBe(first[0]?.label);
     }
   });
@@ -253,6 +276,7 @@ describe("clusterDocuments", () => {
       ];
       const result = clusterDocuments(inputs, {
         similarityThreshold: 0.9,
+        targetStories: 2,
         random: () => 0,
       });
       expect(result[0].documentIds.sort()).toEqual(["d2", "d3"]);
@@ -317,6 +341,99 @@ describe("clusterDocuments", () => {
       expect(result.map((c) => c.documentIds)).toEqual(
         baseline.map((c) => c.documentIds),
       );
+    });
+  });
+
+  describe("target story count + average-link", () => {
+    function makeBaseVector(dim = 16): number[] {
+      const v = new Array<number>(dim);
+      for (let i = 0; i < dim; i++) v[i] = Math.cos(i * 0.31) * 0.5 + Math.sin(i * 0.17) * 0.3;
+      return v;
+    }
+    function perturb(base: number[], noise: number, seed: number): number[] {
+      const out = base.slice();
+      for (let i = 0; i < out.length; i++) {
+        out[i] = base[i]! + Math.sin(seed * 13.37 + i * 0.7) * noise;
+      }
+      return out;
+    }
+
+    it("with 11 similar-topic docs and target=5, produces ~5 clusters", () => {
+      const base = makeBaseVector(16);
+      const inputs = Array.from({ length: 11 }, (_, i) =>
+        makeInput(`d${i}`, ["ai"], perturb(base, 0.05, i)),
+      );
+      const result = clusterDocuments(inputs, {
+        similarityThreshold: 0.9,
+        targetStories: 5,
+        random: () => 0,
+      });
+      expect(result.length).toBeGreaterThanOrEqual(4);
+      expect(result.length).toBeLessThanOrEqual(5);
+      const all = result.flatMap((c) => c.documentIds).sort();
+      expect(all).toEqual(inputs.map((d) => d.documentId).sort());
+    });
+
+    it("with 11 diverse docs and target=11, produces ~11 clusters", () => {
+      const inputs = Array.from({ length: 11 }, (_, i) => {
+        const v = new Array<number>(16).fill(0);
+        v[i % 16] = 1;
+        return makeInput(`d${i}`, [`topic-${i}`], v);
+      });
+      const result = clusterDocuments(inputs, {
+        similarityThreshold: 0.9,
+        targetStories: 11,
+        random: () => 0,
+      });
+      expect(result.length).toBe(11);
+      for (const c of result) {
+        expect(c.documentIds).toHaveLength(1);
+      }
+    });
+
+    it("targetStoriesRatio=0.6 with 11 docs yields 7 clusters (regression guard for the 2026-07-09 case)", () => {
+      const base = makeBaseVector(16);
+      const inputs = Array.from({ length: 11 }, (_, i) =>
+        makeInput(`d${i}`, ["ai"], perturb(base, 0.05, i)),
+      );
+      const result = clusterDocuments(inputs, {
+        similarityThreshold: 0.65,
+        targetStoriesRatio: 0.6,
+        random: () => 0,
+      });
+      expect(result.length).toBeGreaterThanOrEqual(5);
+      expect(result.length).toBeLessThanOrEqual(8);
+    });
+
+    it("average-link: a high-similarity pair is NOT merged if it would drag the cluster's average below threshold", () => {
+      const inputs = [
+        makeInput("d0", ["x"], [1, 0]),
+        makeInput("d1", ["x"], [0.99, 0.01]),
+        makeInput("d2", ["x"], [0, 1]),
+      ];
+      const result = clusterDocuments(inputs, {
+        similarityThreshold: 0.7,
+        targetStories: 1,
+        random: () => 0,
+      });
+      expect(result.length).toBeGreaterThanOrEqual(2);
+      const sizes = result.map((c) => c.documentIds.length).sort();
+      expect(sizes).toEqual([1, 2]);
+    });
+
+    it("average-link: a high-similarity pair IS merged when both members are close to each other", () => {
+      const inputs = [
+        makeInput("d0", ["x"], [1, 0]),
+        makeInput("d1", ["x"], [0.99, 0.01]),
+        makeInput("d2", ["x"], [0.98, 0.02]),
+      ];
+      const result = clusterDocuments(inputs, {
+        similarityThreshold: 0.9,
+        targetStories: 1,
+        random: () => 0,
+      });
+      expect(result).toHaveLength(1);
+      expect(result[0].documentIds).toHaveLength(3);
     });
   });
 });
