@@ -112,7 +112,7 @@ All commands support -h and --help. Dates default to today.
 | digestive maintenance | Preview by default; `--apply` cleans the queue and purges edition-linked data older than 30 days |
 | digestive active-partitions --date YYYY-MM-DD | Print partitions active for an edition |
 
-Retry filters include edition ID, worker/job type, age, and limit. Maintenance supports archive-after, purge-after, retention-after, and limit durations using s, m, h, or d suffixes. The installed cron invokes `maintenance --apply --retention-after 30d`; edition-linked source data, chunks, enrichment rows, embeddings, artifact rows, discovery events, lineage, and old jobs are removed after 30 days, while archived queue rows use the same 30-day purge age. External NotebookLM assets and already-downloaded podcast files are outside PostgreSQL retention.
+Retry filters include edition ID, worker/job type, age, and limit. Maintenance supports archive-after, purge-after, retention-after, and limit durations using s, m, h, or d suffixes. The installed cron invokes `maintenance --apply --retention-after 30d`; edition-linked source data, chunks, enrichment rows, embeddings, artifact rows, discovery events, lineage, old jobs, and their NotebookLM notebooks are removed after 30 days. Archived queue rows use the same 30-day purge age; already-downloaded podcast files are outside PostgreSQL retention.
 
 ### Feedback and source trust
 

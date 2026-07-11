@@ -402,6 +402,7 @@ async function main(): Promise<number> {
 
     if (command === "maintenance") {
       const queue = createProcessingJobQueue(db);
+      const notebookLm = createNotebookLmClient({});
       const parsed = parseMaintenanceFlags({ args: rest });
       if (parsed.help) {
         console.log(MAINTENANCE_HELP);
@@ -414,6 +415,7 @@ async function main(): Promise<number> {
       }
       await runMaintenance({
         db,
+        notebookLm,
         queue,
         options: parsed.options,
         log: (m) => console.log(m),

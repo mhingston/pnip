@@ -122,6 +122,8 @@ export interface NotebookLmClient {
   downloadAudio(input: DownloadAudioInput): Promise<DownloadAudioResult>;
   authCheck(): Promise<{ ok: boolean; details: unknown }>;
   listNotebooks(): Promise<Array<{ id: string; title: string; createdAt: string | null }>>;
+  /** Delete a notebook owned by the authenticated NotebookLM account. */
+  deleteNotebook?(notebookExternalId: string): Promise<void>;
 }
 
 export type SpawnRunner = (input: {
@@ -734,6 +736,13 @@ export function createNotebookLmClient(
     return output;
   }
 
+  async function deleteNotebook(notebookExternalId: string): Promise<void> {
+    if (!notebookExternalId || notebookExternalId === "pending") {
+      throw new Error("deleteNotebook: a real notebook id is required");
+    }
+    await runCli(["delete", notebookExternalId, "--yes", "--json"]);
+  }
+
   return {
     createNotebook,
     addSource,
@@ -743,5 +752,6 @@ export function createNotebookLmClient(
     downloadAudio,
     authCheck,
     listNotebooks,
+    deleteNotebook,
   };
 }

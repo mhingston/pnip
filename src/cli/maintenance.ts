@@ -1,6 +1,7 @@
 import type { ProcessingJobQueue } from "../jobs/queue/processing-job-queue.js";
 import type { Kysely } from "kysely";
 import type { Database } from "../database/kysely.js";
+import type { NotebookLmClient } from "../digest/notebooklm/notebooklm-client.js";
 import {
   previewRetention,
   purgeExpiredData,
@@ -37,6 +38,7 @@ export interface MaintenanceResult {
   purged: number;
   byStatus: Record<string, number>;
   retention: RetentionCounts;
+  notebooks: { candidates: number; deleted: number };
 }
 
 export type Log = (msg: string) => void;
@@ -46,6 +48,7 @@ const silent: Log = () => {};
 export interface RunMaintenanceInput {
   queue: ProcessingJobQueue;
   db?: Kysely<Database>;
+  notebookLm?: NotebookLmClient;
   options: Partial<MaintenanceOptions>;
   log?: Log;
 }
@@ -121,7 +124,36 @@ export async function runMaintenance(
   }
 
   let retention: RetentionCounts = { editions: 0, jobs: 0, lineage: 0 };
+  const notebooks = { candidates: 0, deleted: 0 };
   if (input.db) {
+    const notebookCutoff = new Date(Date.now() - opts.retentionAfterMs);
+    const notebookCandidates = await input.db
+      .selectFrom("notebooks")
+      .innerJoin("editions", "editions.id", "notebooks.edition_id")
+      .select([
+        "notebooks.notebook_external_id as externalId",
+        "editions.created_at as editionCreatedAt",
+      ])
+      .where("editions.created_at", "<", notebookCutoff)
+      .orderBy("editions.created_at", "asc")
+      .limit(opts.limit)
+      .execute();
+    notebooks.candidates = notebookCandidates.length;
+
+    if (input.notebookLm && notebookCandidates.length > 0) {
+      if (!input.notebookLm.deleteNotebook) {
+        throw new Error("NotebookLM client does not support notebook deletion");
+      }
+      if (opts.apply) {
+        // Delete provider resources before the database cascade removes their
+        // local rows. Failed runs retain local references for a safe retry.
+        for (const candidate of notebookCandidates) {
+          await input.notebookLm.deleteNotebook(candidate.externalId);
+          notebooks.deleted++;
+        }
+      }
+    }
+
     retention = opts.apply
       ? await purgeExpiredData(input.db, {
           olderThanMs: opts.retentionAfterMs,
@@ -144,9 +176,16 @@ export async function runMaintenance(
           `older than ${formatDuration(opts.retentionAfterMs)}`,
       );
     }
+    if (input.notebookLm) {
+      log(
+        opts.apply
+          ? `notebooklm: deleted ${notebooks.deleted} notebook(s) older than ${formatDuration(opts.retentionAfterMs)}`
+          : `dry-run: notebooklm would delete ${notebooks.candidates} notebook(s) older than ${formatDuration(opts.retentionAfterMs)}`,
+      );
+    }
   }
 
-  return { archived, purged, byStatus: after, retention };
+  return { archived, purged, byStatus: after, retention, notebooks };
 }
 
 function formatDuration(ms: number): string {
@@ -247,9 +286,10 @@ Flags:
 Durations accept a number with a unit suffix:
   s (seconds), m (minutes), h (hours), d (days). No suffix => ms.
 
-Recommended cadence: run with --apply from cron every few hours. Edition-linked source
-data, embeddings, enrichment rows, artifacts, discovery events, lineage, and
-old jobs are deleted after 30 days by default.
+Recommended cadence: run with --apply from cron every few hours. Edition-linked
+source data, embeddings, enrichment rows, artifacts, discovery events, lineage,
+old jobs, and their NotebookLM notebooks are deleted after 30 days by default
+when NotebookLM is configured.
 `;
 
 function parseDuration(s: string): number {

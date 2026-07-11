@@ -520,6 +520,23 @@ describe("notebooklm-client", () => {
     });
   });
 
+  describe("deleteNotebook", () => {
+    it("deletes the requested notebook with confirmation", async () => {
+      const { spawn, calls } = makeSpawnRunner(() => okResult({}));
+      const client = createNotebookLmClient({ spawn });
+      await client.deleteNotebook!("nb-old");
+      expect(calls[0]?.args).toEqual(["delete", "nb-old", "--yes", "--json"]);
+    });
+
+    it("rejects the local pending placeholder", async () => {
+      const { spawn } = makeSpawnRunner(() => okResult({}));
+      const client = createNotebookLmClient({ spawn });
+      await expect(client.deleteNotebook!("pending")).rejects.toThrow(
+        "real notebook id",
+      );
+    });
+  });
+
   describe("error handling", () => {
     it("wraps non-zero exit in NotebookLmError with exitCode and stderr populated", async () => {
       const { spawn } = makeSpawnRunner(() =>
