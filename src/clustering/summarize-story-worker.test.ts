@@ -357,6 +357,60 @@ describe("SummarizeStoryWorker", () => {
     expect(outcome).toEqual({});
   });
 
+  it("uses the dedicated prompt and transcript-wide sampling for a focused YouTube channel", async () => {
+    const docs = new Map([
+      [
+        "doc-1",
+        makeDoc({
+          source_type: "youtube",
+          authors: ["Better Stack"],
+          metadata: {
+            author_name: "Better Stack",
+            author_url: "https://www.youtube.com/@betterstack",
+          },
+        }),
+      ],
+    ]);
+    const chunks = new Map([
+      [
+        "doc-1",
+        Array.from({ length: 10 }, (_, i) =>
+          makeChunk({
+            id: `chunk-${i + 1}`,
+            chunk_sequence: i,
+            content_text: `Transcript section ${i + 1}`,
+          }),
+        ),
+      ],
+    ]);
+    const summaries = new Map([
+      ["doc-1", [makeSummary("doc-1", "Video enrichment summary.")]],
+    ]);
+    const deps = {
+      ...makeDeps({
+        members: [{ document_id: "doc-1" }],
+        documents: docs,
+        chunks,
+        summaries,
+      }),
+      youtubeFocusChannels: ["Better Stack"],
+    };
+    const worker = createSummarizeStoryWorker(deps);
+
+    await worker.execute(makeJob(), {
+      db: {} as any,
+      logger: silentLogger(),
+    });
+
+    expect(deps.promptRepo.getLatestVersion).toHaveBeenCalledWith(
+      "youtube_story_summary",
+    );
+    const callArg = (deps.promptExecutor.execute as ReturnType<typeof vi.fn>)
+      .mock.calls[0][0];
+    expect(callArg.variables.source_chunks).toContain("chunk-10");
+    expect(callArg.variables.source_chunks).toContain("source=Fed raises rates");
+  });
+
   it("falls back to a source chunk when claim has no chunk reference", async () => {
     const docs = new Map([["doc-1", makeDoc()]]);
     const chunks = new Map([["doc-1", [makeChunk({ id: "chunk-1" }), makeChunk({ id: "chunk-2", chunk_sequence: 1, content_text: "Other text.", start_offset: 29, end_offset: 40 })]]]);

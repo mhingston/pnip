@@ -11,6 +11,10 @@ import type { SourceTrustRepository } from "../signals/source-trust-repository.j
 import type { EnrichmentTrackerRepository } from "../editions/enrichment-tracker-repository.js";
 import { deriveSourceIdentity } from "../signals/source-identity.js";
 import {
+  isFocusedYoutubeChannel,
+  YOUTUBE_FOCUS_RANK_BOOST,
+} from "../expansion/youtube-channel-preferences.js";
+import {
   clusterDocuments,
   type DocumentClusterInput,
   type ClusterOptions,
@@ -30,6 +34,7 @@ export interface ClusterStoriesDeps {
   signalRepo: SignalRepository;
   sourceTrustRepo: SourceTrustRepository;
   enrichmentTracker: EnrichmentTrackerRepository;
+  youtubeFocusChannels?: readonly string[];
   options?: Partial<ClusterOptions>;
 }
 
@@ -136,6 +141,17 @@ export function createClusterStoriesWorker(
           embedding: vector,
           publishedAt: doc.published_at,
           sourceIdentity,
+          sourcePriorityBoost: isFocusedYoutubeChannel(
+            {
+              sourceType: doc.source_type,
+              sourceIdentity,
+              metadata: doc.metadata,
+              authors: doc.authors,
+            },
+            deps.youtubeFocusChannels,
+          )
+            ? YOUTUBE_FOCUS_RANK_BOOST
+            : 0,
           title: doc.title,
         });
       }

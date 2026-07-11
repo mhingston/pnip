@@ -125,6 +125,23 @@ Document summaries:
 Source chunks:
 {{source_chunks}}`,
   },
+  {
+    name: "youtube_story_summary",
+    purpose: "Detailed source-grounded analysis of focused YouTube content",
+    template: `You are producing a detailed, source-grounded analysis of one or more focused YouTube videos. Produce a JSON object with two fields:
+- "summary": an 8-12 sentence analysis that explains the speaker's thesis, the main arguments or ideas, important technical details, evidence or examples, trade-offs, practical implications, and meaningful uncertainties. Distinguish claims made by the speaker from facts directly supported by the transcript. Do not mention "documents", "chunks", "sources", or the story label. Do not invent facts or fill gaps with general knowledge.
+- "claims": an array of 8-12 atomic, specific facts or insights that add information beyond the summary. Each claim must be a complete sentence, supported by the transcript excerpts, and end with the source chunk indices in square brackets, for example "The system uses retrieval before tool execution [chunk 3, chunk 7]."
+
+The summary and claims must stay grounded in the supplied material. If the transcript is ambiguous, say so instead of guessing. Return ONLY the JSON object, no prose.
+
+Story label (for reference only — do NOT restate this in the summary): {{story_label}}
+
+Per-document enrichment summaries:
+{{document_summaries}}
+
+Transcript excerpts sampled across the video(s):
+{{source_chunks}}`,
+  },
 ];
 
 

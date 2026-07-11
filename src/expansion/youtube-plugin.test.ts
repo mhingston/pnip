@@ -162,6 +162,7 @@ describe("YouTubePlugin.expand", () => {
     expect(result.metadata).toBeDefined();
     expect(result.metadata!.videoId).toBe("aircAruvnKk");
     expect(result.metadata!.thumbnail_url).toBe(metadata.thumbnail_url);
+    expect(result.metadata!.author_name).toBe(metadata.author_name);
     expect(result.metadata!.author_url).toBe(metadata.author_url);
   });
 

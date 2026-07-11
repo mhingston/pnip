@@ -116,7 +116,7 @@ The Markdown digest is the canonical editorial artifact. It contains:
 
 Story headings link to the lead document. The source list uses the publisher name when available, otherwise the document title. The email is rendered from this Markdown artifact.
 
-The optional DIGEST_TARGET_READING_MINUTES setting changes how many new stories are promoted into Top Stories; it does not remove stories or sources from the canonical digest. DIGEST_BIAS_ENABLED enables the feedback-based suppression/reordering policy.
+The optional DIGEST_TARGET_READING_MINUTES setting changes how many new stories are promoted into Top Stories; it does not remove stories or sources from the canonical digest. DIGEST_BIAS_ENABLED enables the feedback-based suppression/reordering policy. YOUTUBE_FOCUS_CHANNELS adds an editorial boost to matching YouTube stories and switches those stories to a transcript-wide analysis prompt that samples chunks across the full video rather than only its introduction.
 
 NotebookLM receives the curated source URLs/files for the selected partition. It does not receive the Markdown synthesis. A per-notebook source cap defaults to 50; excluded documents remain in the Markdown digest and produce notebook_excluded signals.
 

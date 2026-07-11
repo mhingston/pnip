@@ -36,6 +36,7 @@ const configSchema = z.object({
   DIGEST_QUIET_EDITION_REASON: z
     .enum(["low_significance", "low_novelty"])
     .optional(),
+  YOUTUBE_FOCUS_CHANNELS: z.string().optional(),
   PARTITION_CONFIG: z.string().optional(),
 });
 
@@ -50,6 +51,26 @@ export interface PartitionConfigEntry {
 }
 
 export type PartitionConfig = Record<string, PartitionConfigEntry>;
+
+/**
+ * Parse the display names/handles used to identify the operator's preferred
+ * YouTube channels. Matching is done downstream against both the channel
+ * author name and URL because oEmbed does not expose the same identifier
+ * consistently for every channel.
+ */
+export function parseYoutubeFocusChannels(
+  raw: string | undefined,
+): string[] {
+  if (!raw || raw.trim() === "") return [];
+  return Array.from(
+    new Set(
+      raw
+        .split(",")
+        .map((value) => value.trim())
+        .filter((value) => value.length > 0),
+    ),
+  );
+}
 
 export function parsePartitionConfig(
   raw: string | undefined,

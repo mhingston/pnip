@@ -5,6 +5,8 @@ export interface DocumentClusterInput {
   embedding: number[];
   publishedAt: Date | null;
   sourceIdentity?: string;
+  /** Optional per-document editorial boost, applied after source trust. */
+  sourcePriorityBoost?: number;
   title?: string | null;
 }
 
@@ -270,15 +272,18 @@ export function clusterDocuments(
 
   if (ranking) {
     const docIdToSourceIdentity = new Map<string, string | undefined>();
+    const docIdToInput = new Map<string, DocumentClusterInput>();
     for (const inp of inputs) {
       docIdToSourceIdentity.set(inp.documentId, inp.sourceIdentity);
+      docIdToInput.set(inp.documentId, inp);
     }
     const trustScore = (cluster: ClusterOutput): { sum: number; count: number } => {
       let sum = 0;
       for (const docId of cluster.documentIds) {
         const identity = docIdToSourceIdentity.get(docId);
         const tier = identity ? ranking.sourceTrust.get(identity) ?? 3 : 3;
-        sum += 6 - tier;
+        const input = docIdToInput.get(docId);
+        sum += 6 - tier + (input?.sourcePriorityBoost ?? 0);
       }
       return { sum, count: cluster.documentIds.length };
     };

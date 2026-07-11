@@ -79,9 +79,9 @@ describe("seedDefaultPrompts", () => {
     await db.deleteFrom("prompt_versions").execute();
   });
 
-  it("creates all 6 default prompt versions on first run (5 names + story_summary v2)", async () => {
+  it("creates all default prompt versions on first run", async () => {
     const summary = await seedDefaultPrompts(promptRepo);
-    expect(summary.created).toBe(7);
+    expect(summary.created).toBe(8);
     expect(summary.skipped).toBe(0);
     expect(summary.results.map((r) => `${r.name}@v${r.version}`).sort()).toEqual(
       [
@@ -92,6 +92,7 @@ describe("seedDefaultPrompts", () => {
         "story_summary@v3",
         "summary@v1",
         "topics@v1",
+        "youtube_story_summary@v1",
       ],
     );
 
@@ -107,7 +108,7 @@ describe("seedDefaultPrompts", () => {
     await seedDefaultPrompts(promptRepo);
     const second = await seedDefaultPrompts(promptRepo);
     expect(second.created).toBe(0);
-    expect(second.skipped).toBe(7);
+    expect(second.skipped).toBe(8);
 
     const all = await promptRepo.listByName("story_summary");
     expect(all).toHaveLength(3);
@@ -121,7 +122,7 @@ describe("seedDefaultPrompts", () => {
     });
 
     const summary = await seedDefaultPrompts(promptRepo);
-    expect(summary.created).toBe(6);
+    expect(summary.created).toBe(7);
     expect(summary.skipped).toBe(1);
     const skipped = summary.results.find((r) => r.name === "summary");
     expect(skipped?.status).toBe("skipped");

@@ -124,6 +124,7 @@ function makeDeps(overrides?: {
   embeddingsByDoc?: Map<string, EmbeddingRow[]>;
   trustRows?: SourceTrustRow[];
   fullyEnrichedDocs?: Set<string>;
+  youtubeFocusChannels?: readonly string[];
   options?: Partial<import("./clustering-service.js").ClusterOptions>;
 }) {
   const documents = overrides?.documents ?? [];
@@ -244,6 +245,7 @@ function makeDeps(overrides?: {
     signalRepo,
     sourceTrustRepo,
     enrichmentTracker,
+    youtubeFocusChannels: overrides?.youtubeFocusChannels,
     options: overrides?.options,
   };
 }
@@ -510,6 +512,54 @@ describe("ClusterStoriesWorker", () => {
     expect(passed.stories).toHaveLength(2);
     expect(passed.stories[0].documentIds).toEqual(["doc-trusted"]);
     expect(passed.stories[1].documentIds).toEqual(["doc-shady"]);
+  });
+
+  it("boosts configured YouTube channels before ordinary sources", async () => {
+    const docs = [
+      makeDoc({
+        id: "doc-ordinary",
+        source_url: "https://ordinary.example/story",
+        source_type: "article",
+      }),
+      makeDoc({
+        id: "doc-focused",
+        source_url: "https://www.youtube.com/watch?v=focused",
+        source_type: "youtube",
+        authors: ["Better Stack"],
+        metadata: {
+          author_url: "https://www.youtube.com/@betterstack",
+        },
+      }),
+    ];
+    const summariesByDoc = new Map([
+      ["doc-ordinary", [makeSummary("doc-ordinary", "ordinary story")]],
+      ["doc-focused", [makeSummary("doc-focused", "focused story")]],
+    ]);
+    const topicsByDoc = new Map([
+      ["doc-ordinary", [makeTopic("doc-ordinary", "ordinary", 0.9)]],
+      ["doc-focused", [makeTopic("doc-focused", "engineering", 0.9)]],
+    ]);
+    const embeddingsByDoc = new Map([
+      ["doc-ordinary", [makeEmbedding("doc-ordinary", [1, 0])]],
+      ["doc-focused", [makeEmbedding("doc-focused", [0, 1])]],
+    ]);
+    const deps = makeDeps({
+      documents: docs,
+      summariesByDoc,
+      topicsByDoc,
+      embeddingsByDoc,
+      youtubeFocusChannels: ["Better Stack"],
+    });
+    const worker = createClusterStoriesWorker(deps);
+
+    await worker.execute(makeJob(), { db: {} as any, logger: silentLogger() });
+
+    const replaceForEdition = deps.storyRepo.replaceForEdition as ReturnType<typeof vi.fn>;
+    const passed = replaceForEdition.mock.calls[0][0] as {
+      stories: { documentIds: string[] }[];
+    };
+    expect(passed.stories[0].documentIds).toEqual(["doc-focused"]);
+    expect(passed.stories[1].documentIds).toEqual(["doc-ordinary"]);
   });
 
   it("respects targetStories: 11 diverse docs with targetStories=7 produce ~7 stories", async () => {

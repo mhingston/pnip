@@ -1,4 +1,8 @@
-import { loadConfig, parsePartitionConfig } from "../config/index.js";
+import {
+  loadConfig,
+  parsePartitionConfig,
+  parseYoutubeFocusChannels,
+} from "../config/index.js";
 import { createPool } from "../database/pool.js";
 import { runMigrations } from "../database/migrations.js";
 import { createKysely, closeKysely } from "../database/kysely.js";
@@ -189,6 +193,9 @@ async function main(): Promise<number> {
 
     if (command === "process") {
       const logger = createLogger({ baseFields: { worker: "cli" } });
+      const youtubeFocusChannels = parseYoutubeFocusChannels(
+        cfg.YOUTUBE_FOCUS_CHANNELS,
+      );
 
       const docRepo = createDocumentRepository(db);
       const sectionRepo = createSectionRepository(db);
@@ -321,6 +328,7 @@ async function main(): Promise<number> {
         signalRepo,
         sourceTrustRepo,
         enrichmentTracker: createEnrichmentTrackerRepository(db),
+        youtubeFocusChannels,
       });
 
       const summarizeStoryWorker = createSummarizeStoryWorker({
@@ -334,6 +342,7 @@ async function main(): Promise<number> {
         provider: aiProvider,
         provenanceRepo,
         signalRepo,
+        youtubeFocusChannels,
         model: cfg.AI_TEXT_MODEL,
       });
 

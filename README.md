@@ -173,6 +173,7 @@ The complete schema is in .env.example. The main settings are:
 | DIGEST_BIAS_ENABLED | Enable feedback biasing |
 | DIGEST_TARGET_READING_MINUTES | Calibrate lead-story prominence |
 | DIGEST_QUIET_EDITION_REASON | Explicit low-significance/low-novelty framing |
+| YOUTUBE_FOCUS_CHANNELS | Comma-separated YouTube names/handles promoted and deeply analyzed |
 | DOCTOR_FAILED_THRESHOLD | Queue failure threshold (default 100) |
 | WORKER_CONCURRENCY / RETRY_MAX_ATTEMPTS | Worker and retry tuning |
 | LOG_LEVEL | debug, info, warn, or error |

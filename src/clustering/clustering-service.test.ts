@@ -342,6 +342,28 @@ describe("clusterDocuments", () => {
         baseline.map((c) => c.documentIds),
       );
     });
+
+    it("promotes a focused source with an editorial priority boost", () => {
+      const inputs = [
+        makeInputWithSource("d1", ["ai"], makeVector([1, 0]), "ordinary.com"),
+        {
+          ...makeInputWithSource(
+            "d2",
+            ["engineering"],
+            makeVector([0, 1]),
+            "youtube.com/@betterstack",
+          ),
+          sourcePriorityBoost: 4,
+        },
+      ];
+      const result = clusterDocuments(
+        inputs,
+        { similarityThreshold: 0.9, random: () => 0 },
+        { sourceTrust: new Map(), storyBias: new Map() },
+      );
+      expect(result[0].documentIds).toEqual(["d2"]);
+      expect(result[1].documentIds).toEqual(["d1"]);
+    });
   });
 
   describe("target story count + average-link", () => {

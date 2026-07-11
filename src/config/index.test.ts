@@ -1,5 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { loadConfig, resetConfigCache, type Config } from "./index.js";
+import {
+  loadConfig,
+  parseYoutubeFocusChannels,
+  resetConfigCache,
+  type Config,
+} from "./index.js";
 
 describe("config", () => {
   const originalEnv: NodeJS.ProcessEnv = { ...process.env };
@@ -116,5 +121,12 @@ describe("config", () => {
     process.env.DATABASE_URL = "postgres://localhost/db";
     process.env.DIGEST_QUIET_EDITION_REASON = "few_sources";
     expect(() => loadConfig()).toThrow(/DIGEST_QUIET_EDITION_REASON/);
+  });
+
+  it("parses and de-duplicates focused YouTube channel names", () => {
+    expect(
+      parseYoutubeFocusChannels(" AI Engineer, Better Stack,AI Engineer, "),
+    ).toEqual(["AI Engineer", "Better Stack"]);
+    expect(parseYoutubeFocusChannels(undefined)).toEqual([]);
   });
 });

@@ -180,6 +180,7 @@ export function createYouTubePlugin(opts?: {
         sections,
         metadata: {
           thumbnail_url: meta.thumbnail_url,
+          author_name: meta.author_name,
           author_url: meta.author_url,
           videoId: extractVideoId(context.url),
         },

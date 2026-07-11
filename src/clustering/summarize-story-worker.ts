@@ -11,11 +11,16 @@ import type { StoryRepository } from "./story-repository.js";
 import type { StorySummaryRepository } from "./story-summary-repository.js";
 import type { SignalRepository, CreateSignalInput } from "../signals/signal-repository.js";
 import { extractJson } from "../common/json-extract.js";
+import { isFocusedYoutubeChannel } from "../expansion/youtube-channel-preferences.js";
 
 const STORY_SUMMARY_PROMPT_NAME = "story_summary";
+const YOUTUBE_STORY_SUMMARY_PROMPT_NAME = "youtube_story_summary";
 
-const MAX_CHUNKS_PER_DOC = 4;
-const MAX_CHARS_PER_CHUNK = 400;
+const DEFAULT_MAX_CHUNKS_PER_DOC = 4;
+const DEFAULT_MAX_CHARS_PER_CHUNK = 400;
+const DETAILED_MAX_CHUNKS_PER_DOC = 8;
+const DETAILED_MAX_CHARS_PER_CHUNK = 900;
+const DETAILED_MAX_SOURCE_CHUNKS = 24;
 
 export interface SummarizeStoryDeps {
   storyRepo: StoryRepository;
@@ -28,6 +33,7 @@ export interface SummarizeStoryDeps {
   provider: AiProvider;
   provenanceRepo: ProvenanceRepository;
   signalRepo: SignalRepository;
+  youtubeFocusChannels?: readonly string[];
   model?: string;
 }
 
@@ -40,6 +46,7 @@ interface SourceChunk {
   chunkId: string;
   documentId: string;
   text: string;
+  title: string | null;
 }
 
 interface SummarizeStoryTarget {
@@ -94,6 +101,15 @@ function stripReferences(claim: string): string {
     .trim();
 }
 
+function selectEvenly<T>(items: readonly T[], maxItems: number): T[] {
+  if (items.length <= maxItems) return [...items];
+  if (maxItems <= 1) return [items[0]!];
+  return Array.from({ length: maxItems }, (_, i) => {
+    const index = Math.round((i * (items.length - 1)) / (maxItems - 1));
+    return items[index]!;
+  });
+}
+
 export function createSummarizeStoryWorker(
   deps: SummarizeStoryDeps,
 ): Worker {
@@ -121,12 +137,24 @@ export function createSummarizeStoryWorker(
       }
 
       const documentSummaries: string[] = [];
-      const sourceChunks: SourceChunk[] = [];
+      let sourceChunks: SourceChunk[] = [];
       const chunkIdSet = new Set<string>();
+      let detailedAnalysis = false;
 
       for (const member of members) {
         const doc = await deps.docRepo.getById(member.document_id);
         const title = doc?.title ?? null;
+        const focusedYoutube = doc
+          ? isFocusedYoutubeChannel(
+              {
+                sourceType: doc.source_type,
+                metadata: doc.metadata,
+                authors: doc.authors,
+              },
+              deps.youtubeFocusChannels,
+            )
+          : false;
+        detailedAnalysis = detailedAnalysis || focusedYoutube;
 
         const summaries = await deps.summaryRepo.getByDocumentId(
           member.document_id,
@@ -140,7 +168,9 @@ export function createSummarizeStoryWorker(
         const chunks = await deps.chunkRepo.getByDocumentIdOrdered(
           member.document_id,
         );
-        const limited = chunks.slice(0, MAX_CHUNKS_PER_DOC);
+        const limited = focusedYoutube
+          ? selectEvenly(chunks, DETAILED_MAX_CHUNKS_PER_DOC)
+          : chunks.slice(0, DEFAULT_MAX_CHUNKS_PER_DOC);
         for (const c of limited) {
           if (chunkIdSet.has(c.id)) continue;
           chunkIdSet.add(c.id);
@@ -148,6 +178,7 @@ export function createSummarizeStoryWorker(
             chunkId: c.id,
             documentId: c.document_id,
             text: c.content_text,
+            title,
           });
         }
       }
@@ -159,20 +190,27 @@ export function createSummarizeStoryWorker(
         return {};
       }
 
-      const prompt = await deps.promptRepo.getLatestVersion(
-        STORY_SUMMARY_PROMPT_NAME,
-      );
+      if (detailedAnalysis) {
+        sourceChunks = selectEvenly(sourceChunks, DETAILED_MAX_SOURCE_CHUNKS);
+      }
+
+      const promptName = detailedAnalysis
+        ? YOUTUBE_STORY_SUMMARY_PROMPT_NAME
+        : STORY_SUMMARY_PROMPT_NAME;
+      const prompt = await deps.promptRepo.getLatestVersion(promptName);
       if (!prompt) {
         throw new Error(
-          `prompt '${STORY_SUMMARY_PROMPT_NAME}' has no registered version; seed default prompts`,
+          `prompt '${promptName}' has no registered version; seed default prompts`,
         );
       }
 
       const chunkList = sourceChunks
         .map((c, i) =>
           clip(
-            `[chunk ${i + 1} id=${c.chunkId}] ${c.text}`,
-            MAX_CHARS_PER_CHUNK + 64,
+            `[chunk ${i + 1} id=${c.chunkId}${detailedAnalysis && c.title ? ` source=${c.title}` : ""}] ${c.text}`,
+            (detailedAnalysis
+              ? DETAILED_MAX_CHARS_PER_CHUNK
+              : DEFAULT_MAX_CHARS_PER_CHUNK) + 64,
           ),
         )
         .join("\n");
@@ -255,6 +293,7 @@ export function createSummarizeStoryWorker(
         storyId,
         summaryId: summary.id,
         claimCount: citations.length,
+        detailedAnalysis,
       });
 
       const editionId = job.edition_id;
