@@ -1,4 +1,4 @@
-import type { Kysely } from "kysely";
+import { sql, type Kysely } from "kysely";
 import type { Database } from "../database/kysely.js";
 import type { Edition } from "../database/kysely.js";
 import { createDiscoveryRepository } from "./discovery-repository.js";
@@ -168,6 +168,18 @@ export function createDiscoveryService(deps: {
                 partitionKey,
               });
               if (c) {
+                // A late discovery invalidates any cluster snapshot that was
+                // queued for this still-mutable edition. The cluster worker
+                // will defer until the new document is fully enriched.
+                await trx
+                  .updateTable("editions")
+                  .set({
+                    cluster_stories_enqueued_at: null,
+                    updated_at: sql<Date>`now()`,
+                  })
+                  .where("id", "=", edition.id)
+                  .where("cluster_stories_enqueued_at", "is not", null)
+                  .execute();
                 const q = createProcessingJobQueue(trx);
                 await q.enqueue({
                   jobType: "expand_document",

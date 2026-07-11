@@ -17,6 +17,11 @@ export interface WorkerContext {
 
 export interface WorkerOutcome {
   childJobs?: EnqueueJobInput[];
+  /**
+   * Leave the claimed job pending until this time without consuming a retry.
+   * Useful for orchestration jobs that can become ready as other jobs finish.
+   */
+  deferUntil?: Date;
 }
 
 export interface Worker {

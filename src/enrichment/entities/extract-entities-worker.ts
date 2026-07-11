@@ -121,14 +121,36 @@ export function createExtractEntitiesWorker(deps: ExtractEntitiesDeps): Worker {
       }
 
       const normalized: { name: string; entityType: string; mentionText: string }[] = [];
+      const seen = new Set<string>();
+      let duplicateCount = 0;
       for (const raw of extracted.value.entities) {
         if (!isString(raw.name) || !isString(raw.type) || !isString(raw.mention)) {
           throw new Error("entities prompt JSON has entity missing name/type/mention strings");
         }
+        const name = raw.name.trim();
+        const entityType = raw.type.trim();
+        const mentionText = raw.mention.trim();
+        if (!name || !entityType || !mentionText) {
+          throw new Error("entities prompt JSON has entity with blank name/type/mention");
+        }
+        const key = `${name}\u0000${entityType}`;
+        if (seen.has(key)) {
+          duplicateCount++;
+          continue;
+        }
+        seen.add(key);
         normalized.push({
-          name: raw.name,
-          entityType: raw.type,
-          mentionText: raw.mention,
+          name,
+          entityType,
+          mentionText,
+        });
+      }
+
+      if (duplicateCount > 0) {
+        ctx.logger.warn("duplicate entities suppressed", {
+          chunkId,
+          documentId,
+          duplicateCount,
         });
       }
 
@@ -173,6 +195,7 @@ export function createExtractEntitiesWorker(deps: ExtractEntitiesDeps): Worker {
         editionId,
         documentId,
         ENRICHMENT_TYPE,
+        chunkId,
       );
       return childJob ? { childJobs: [childJob] } : {};
     },

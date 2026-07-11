@@ -226,7 +226,9 @@ function makeDeps(overrides?: {
     getCompletedTypesForDocument: vi.fn(),
     isDocumentFullyEnriched: vi.fn().mockImplementation(async (id: string) => fullyEnrichedDocs.has(id)),
     getDocumentCounts: vi.fn(),
-    isEditionFullyEnriched: vi.fn(),
+    isEditionFullyEnriched: vi.fn().mockResolvedValue(
+      documents.every((document) => fullyEnrichedDocs.has(document.id)),
+    ),
     getEditionEnqueuedAt: vi.fn(),
     claimEditionEnqueue: vi.fn(),
     resetEditionEnqueue: vi.fn(),
@@ -261,6 +263,18 @@ describe("ClusterStoriesWorker", () => {
     const outcome = await worker.execute(makeJob(), { db: {} as any, logger: silentLogger() });
     expect(outcome).toEqual({});
     expect(deps.storyRepo.deleteByEdition).toHaveBeenCalledWith("edition-1");
+    expect(deps.storyRepo.replaceForEdition).not.toHaveBeenCalled();
+  });
+
+  it("defers instead of clustering a partially enriched edition", async () => {
+    const docs = [makeDoc({ id: "doc-1" })];
+    const deps = makeDeps({ documents: docs, fullyEnrichedDocs: new Set() });
+    const worker = createClusterStoriesWorker(deps);
+
+    const outcome = await worker.execute(makeJob(), { db: {} as any, logger: silentLogger() });
+
+    expect(outcome.deferUntil).toBeInstanceOf(Date);
+    expect(outcome.childJobs).toBeUndefined();
     expect(deps.storyRepo.replaceForEdition).not.toHaveBeenCalled();
   });
 

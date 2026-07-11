@@ -177,7 +177,7 @@ describe("ExpandDocumentWorker", () => {
 
     const sectionRepo: SectionRepository = {
       createBatch: vi.fn(),
-      getByDocumentId: vi.fn(),
+      getByDocumentId: vi.fn().mockResolvedValue([{} as any]),
       getMaxOrder: vi.fn(),
       getByDocumentIdAndType: vi.fn(),
     };
@@ -198,6 +198,71 @@ describe("ExpandDocumentWorker", () => {
     expect(docRepo.create).not.toHaveBeenCalled();
     expect(sectionRepo.createBatch).not.toHaveBeenCalled();
     expect(outcome).toEqual({});
+  });
+
+  it("repairs an existing document with no sections and emits the chunk job", async () => {
+    const plugin = fakePlugin("article", true);
+    const pluginRegistry: PluginRegistry = {
+      register: vi.fn(),
+      select: vi.fn(() => plugin),
+      list: vi.fn(() => []),
+    };
+    const docRepo: DocumentRepository = {
+      create: vi.fn(),
+      getById: vi.fn(),
+      getByEdition: vi.fn(),
+      getByEditionAndUrl: vi.fn().mockResolvedValue({
+        id: "partial-doc",
+        edition_id: "edition-1",
+      }),
+      getByEditionAndPartition: vi.fn(),
+      getRankedByEditionAndPartition: vi.fn(),
+    };
+    const sectionRepo: SectionRepository = {
+      createBatch: vi.fn().mockResolvedValue([]),
+      getByDocumentId: vi.fn().mockResolvedValue([]),
+      getMaxOrder: vi.fn(),
+      getByDocumentIdAndType: vi.fn(),
+    };
+    const provenanceRepo: ProvenanceRepository = {
+      recordLineage: vi.fn().mockResolvedValue(undefined),
+      recordLineageBatch: vi.fn(),
+      getSources: vi.fn(),
+      getConsumers: vi.fn(),
+      resolveCitations: vi.fn(),
+      resolveToDocuments: vi.fn(),
+    };
+
+    const worker = createExpandDocumentWorker({
+      docRepo,
+      sectionRepo,
+      pluginRegistry,
+      provenanceRepo,
+      queue: fakeQueue(),
+    });
+
+    const outcome = await worker.execute(makeJob(), {
+      db: {} as any,
+      logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn(), child: vi.fn() } as any,
+    });
+
+    expect(plugin.expand).toHaveBeenCalledTimes(1);
+    expect(sectionRepo.createBatch).toHaveBeenCalledWith([
+      expect.objectContaining({ documentId: "partial-doc", order: 0 }),
+      expect.objectContaining({ documentId: "partial-doc", order: 1 }),
+    ]);
+    expect(provenanceRepo.recordLineage).toHaveBeenCalledWith(
+      expect.objectContaining({ targetId: "partial-doc" }),
+    );
+    expect(outcome).toEqual({
+      childJobs: [
+        {
+          jobType: "chunk_document",
+          editionId: "edition-1",
+          target: { documentId: "partial-doc" },
+        },
+      ],
+    });
   });
 
   it("throws when no plugin matches the URL", async () => {

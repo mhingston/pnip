@@ -50,6 +50,18 @@ export interface EntityRepository {
   deleteByChunkId(chunkId: string): Promise<void>;
 }
 
+function uniqueEntities(
+  entities: CreateEntitiesInput["entities"],
+): CreateEntitiesInput["entities"] {
+  const seen = new Set<string>();
+  return entities.filter((entity) => {
+    const key = `${entity.name}\u0000${entity.entityType}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 export function createEntityRepository(db: Kysely<Database>): EntityRepository {
   return {
     async replaceForChunk(input, tx) {
@@ -60,7 +72,7 @@ export function createEntityRepository(db: Kysely<Database>): EntityRepository {
         const entityRows: EntityRow[] = [];
         const mentionRows: EntityMentionRow[] = [];
 
-        for (const e of input.entities) {
+        for (const e of uniqueEntities(input.entities)) {
           const entity = await trx
             .insertInto("entities")
             .values({

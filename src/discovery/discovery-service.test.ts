@@ -42,6 +42,12 @@ const sql006Path = fileURLToPath(
 const sql003Path = fileURLToPath(
   new URL("../database/migrations/003_create_editions.sql", import.meta.url),
 );
+const sql019Path = fileURLToPath(
+  new URL(
+    "../database/migrations/019_add_cluster_stories_enqueued_at_to_editions.sql",
+    import.meta.url,
+  ),
+);
 const sql007Path = fileURLToPath(
   new URL("../database/migrations/007_create_discovery_events.sql", import.meta.url),
 );
@@ -147,10 +153,11 @@ describe("DiscoveryService", () => {
     pool = createPool(url);
     kyselyPool = createPool(url);
 
-    const [m002, m006, m003, m007, m028, m029] = await Promise.all([
+    const [m002, m006, m003, m019, m007, m028, m029] = await Promise.all([
       readFile(sql002Path, "utf8"),
       readFile(sql006Path, "utf8"),
       readFile(sql003Path, "utf8"),
+      readFile(sql019Path, "utf8"),
       readFile(sql007Path, "utf8"),
       readFile(sql028Path, "utf8"),
       readFile(sql029Path, "utf8"),
@@ -177,6 +184,7 @@ describe("DiscoveryService", () => {
       await client.query(m002);
       await client.query(m006);
       await client.query(m003);
+      await client.query(m019);
       await client.query(m007);
       await client.query(m026);
       await client.query(m028);
@@ -258,6 +266,23 @@ describe("DiscoveryService", () => {
     expect(calls.markEntryRead).toEqual([]);
     expect(calls.markAllFeedsRead).toBe(1);
     expect(calls.listEntries[0]?.status).toBe("all");
+  });
+
+  it("invalidates a queued cluster snapshot when a late entry is discovered", async () => {
+    const edition = await editionRepo.create("2026-01-01");
+    await db
+      .updateTable("editions")
+      .set({ cluster_stories_enqueued_at: new Date() })
+      .where("id", "=", edition.id)
+      .execute();
+
+    const { client } = createFakeMiniflux({
+      pages: [[entry(3, "https://x/late")], []],
+    });
+    const service = createDiscoveryService({ db, editionRepo, discoveryRepo, queue });
+    await service.discover({ editionDate: "2026-01-01", miniflux: client });
+
+    expect((await editionRepo.getById(edition.id))?.cluster_stories_enqueued_at).toBeNull();
   });
 
   it("idempotency: pre-existing event is not re-enqueued", async () => {

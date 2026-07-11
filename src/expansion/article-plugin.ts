@@ -92,6 +92,13 @@ function parseSections(content: string): SectionData[] {
   return sections;
 }
 
+function reindexSections(sections: SectionData[]): SectionData[] {
+  return sections.map((section, index) => ({
+    ...section,
+    order: index,
+  }));
+}
+
 async function defaultFetchContent(url: string): Promise<string> {
   const bin = loadConfig().FABRIC_BIN ?? "fabric";
   return new Promise((resolve, reject) => {
@@ -135,6 +142,17 @@ export function createArticlePlugin(opts?: {
       const sections = parseSections(content);
       const titleSection = sections.find((s) => s.section_type === "title");
       const remainingSections = sections.filter((s) => s.section_type !== "title");
+      const orderedSections = titleSection
+        ? [titleSection, ...remainingSections]
+        : [
+            {
+              order: 0,
+              section_type: "title",
+              content_markdown: `# ${title}`,
+              content_text: title,
+            },
+            ...remainingSections,
+          ];
 
       return {
         title,
@@ -143,17 +161,7 @@ export function createArticlePlugin(opts?: {
         sourceType: "article",
         canonicalUrl: parsed.canonicalUrl,
         publishedAt: parsed.publishedAt,
-        sections: titleSection
-          ? [titleSection, ...remainingSections.map((s) => ({ ...s, order: s.order + 1 }))]
-          : [
-              {
-                order: 0,
-                section_type: "title",
-                content_markdown: `# ${title}`,
-                content_text: title,
-              },
-              ...remainingSections.map((s) => ({ ...s, order: s.order + 1 })),
-            ],
+        sections: reindexSections(orderedSections),
       };
     },
   };

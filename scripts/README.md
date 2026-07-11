@@ -34,9 +34,10 @@ Sequence:
 2. Resolve active partitions with the database-backed `enabled` +
    `min_articles` rule, then fire-and-forget `generate-notebook` and (where `with_podcast: true`)
    `generate-podcast` for every active partition.
-3. `--wait` on every active partition's notebook and (where applicable)
-   podcast. This is the wall-clock heavy step (~10–20 min per source).
-4. `digestive generate-email --date <local-today>` after artifact URLs are ready.
+3. `--wait` on every active partition's notebook. Podcast generation remains
+   asynchronous because podcasts are optional and must not block publication.
+4. `digestive generate-email --date <local-today>` after required notebook
+   artifacts are ready.
 5. Evaluate edition readiness and run `publish-edition --dry-run` (gate check).
 6. `digestive publish-edition --date <local-today>` (real publish).
 

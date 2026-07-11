@@ -27,6 +27,7 @@ import { createEditionAssemblyService } from "./edition-assembly-service.js";
 import { createEditionReadinessGate } from "./edition-readiness-gate.js";
 
 const migrationSqlPaths = [
+  "../database/migrations/002_create_processing_jobs.sql",
   "../database/migrations/003_create_editions.sql",
   "../database/migrations/004_create_prompt_versions.sql",
   "../database/migrations/008_create_documents.sql",

@@ -5,6 +5,7 @@ import {
   type EnrichmentTrackerRepository,
   REQUIRED_ENRICHMENT_TYPES,
   assertValidEnrichmentType,
+  getDocumentEnrichmentCompletion,
 } from "./enrichment-tracker-repository.js";
 
 const CLUSTER_STORIES_JOB_TYPE = "cluster_stories";
@@ -19,6 +20,7 @@ export interface EnrichmentGateService {
     editionId: string,
     documentId: string,
     enrichmentType: string,
+    chunkId?: string,
   ): Promise<EnqueueJobInput | null>;
 }
 
@@ -31,38 +33,76 @@ async function countFullyEnrichedInTransaction(
   trx: Transaction<Database>,
   editionId: string,
 ): Promise<TrackedCounts> {
-  const totalRow = await trx
+  const documents = await trx
     .selectFrom("documents")
-    .select((eb) => eb.fn.count<number>("id").as("total"))
+    .select("id")
     .where("edition_id", "=", editionId)
-    .executeTakeFirstOrThrow();
-  const totalDocuments = Number(totalRow.total);
+    .execute();
+  const totalDocuments = documents.length;
 
   if (totalDocuments === 0) {
     return { totalDocuments: 0, fullyEnrichedDocuments: 0 };
   }
 
-  const perDoc = await trx
-    .selectFrom("document_enrichment_status as s")
-    .innerJoin("documents as d", "d.id", "s.document_id")
-    .select(["s.document_id", (eb) => eb.fn.count<number>("s.enrichment_type").as("c")])
-    .where("d.edition_id", "=", editionId)
-    .where("s.status", "=", "done")
-    .groupBy("s.document_id")
-    .execute();
-
   let fullyEnrichedDocuments = 0;
-  for (const r of perDoc) {
-    if (Number(r.c) === REQUIRED_ENRICHMENT_TYPES.length) fullyEnrichedDocuments += 1;
+  for (const document of documents) {
+    const completion = await getDocumentEnrichmentCompletion(trx, document.id);
+    if (completion.completedTypes.length === REQUIRED_ENRICHMENT_TYPES.length) {
+      fullyEnrichedDocuments += 1;
+    }
   }
 
   return { totalDocuments, fullyEnrichedDocuments };
+}
+
+async function documentEnrichmentHasCompletedAllChunks(
+  trx: Transaction<Database>,
+  editionId: string,
+  documentId: string,
+  enrichmentType: string,
+  currentChunkId: string,
+): Promise<boolean> {
+  const totalRow = await trx
+    .selectFrom("document_chunks")
+    .select((eb) => eb.fn.count<number>("id").as("total"))
+    .where("document_id", "=", documentId)
+    .executeTakeFirstOrThrow();
+  const totalChunks = Number(totalRow.total);
+  if (totalChunks === 0) return false;
+
+  const completedRows = await sql<{ chunk_id: string }>`
+    SELECT DISTINCT target->>'chunkId' AS chunk_id
+    FROM processing_jobs
+    WHERE edition_id = ${editionId}
+      AND job_type = ${enrichmentType}
+      AND status IN ('completed', 'archived')
+      AND target->>'documentId' = ${documentId}
+      AND target ? 'chunkId'
+  `.execute(trx);
+  const completedChunkIds = new Set(
+    completedRows.rows
+      .map((row) => row.chunk_id)
+      .filter((chunkId): chunkId is string => typeof chunkId === "string"),
+  );
+  // The worker calls this before the runtime transaction marks its own job
+  // completed, so account for the successful current chunk explicitly.
+  completedChunkIds.add(currentChunkId);
+  return completedChunkIds.size >= totalChunks;
 }
 
 async function claimEditionForClusterInTransaction(
   trx: Transaction<Database>,
   editionId: string,
 ): Promise<Date | null> {
+  const activeClusterJob = await trx
+    .selectFrom("processing_jobs")
+    .select("id")
+    .where("edition_id", "=", editionId)
+    .where("job_type", "=", CLUSTER_STORIES_JOB_TYPE)
+    .where("status", "in", ["pending", "running"])
+    .executeTakeFirst();
+  if (activeClusterJob) return null;
+
   const updated = await trx
     .updateTable("editions")
     .set({
@@ -103,10 +143,27 @@ export function createEnrichmentGateService(
   deps: EnrichmentGateServiceDeps,
 ): EnrichmentGateService {
   return {
-    async markEnrichmentDoneAndMaybeEnqueueCluster(editionId, documentId, enrichmentType) {
+    async markEnrichmentDoneAndMaybeEnqueueCluster(
+      editionId,
+      documentId,
+      enrichmentType,
+      chunkId,
+    ) {
       assertValidEnrichmentType(enrichmentType);
 
       return deps.db.transaction().execute(async (trx) => {
+        if (
+          chunkId !== undefined &&
+          !(await documentEnrichmentHasCompletedAllChunks(
+            trx,
+            editionId,
+            documentId,
+            enrichmentType,
+            chunkId,
+          ))
+        ) {
+          return null;
+        }
         await markDoneInTransaction(trx, documentId, enrichmentType);
 
         const counts = await countFullyEnrichedInTransaction(trx, editionId);

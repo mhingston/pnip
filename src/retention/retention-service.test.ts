@@ -79,6 +79,17 @@ describe("retention-service", () => {
       .returning("id")
       .executeTakeFirstOrThrow();
 
+    await db
+      .insertInto("discovery_events")
+      .values({
+        edition_id: oldEdition.id,
+        miniflux_entry_id: "1001",
+        feed_id: "2001",
+        url: "https://old.example/discovered",
+        partition_key: "master",
+      })
+      .execute();
+
     const oldDocument = await db
       .insertInto("documents")
       .values({
@@ -165,6 +176,7 @@ describe("retention-service", () => {
     expect(await db.selectFrom("documents").select("id").execute()).toHaveLength(0);
     expect(await db.selectFrom("embeddings").select("id").execute()).toHaveLength(0);
     expect(await db.selectFrom("document_lineage").select("id").execute()).toHaveLength(0);
+    expect(await db.selectFrom("discovery_events").select("id").execute()).toHaveLength(0);
     expect(await db.selectFrom("processing_jobs").select("id").execute()).toHaveLength(1);
   });
 });

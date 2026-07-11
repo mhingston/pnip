@@ -313,6 +313,30 @@ describe("WorkerRuntime", () => {
     expect(await rowCount()).toBe(0);
   });
 
+  it("defers a job without consuming a retry or completing it", async () => {
+    const deferUntil = new Date(Date.now() + 60_000);
+    const deferWorker: Worker = {
+      supports: (t) => t === "defer",
+      execute: async () => ({ deferUntil }),
+    };
+    const runtime = createWorkerRuntime({
+      db,
+      queue,
+      workers: [deferWorker],
+      logger: silentLogger(),
+    });
+
+    const enqueued = await queue.enqueue({ jobType: "defer" });
+    expect(await runtime.runOne("w1")).toBe(true);
+
+    const job = await queue.getJob(enqueued.id);
+    expect(job!.status).toBe("pending");
+    expect(job!.retry_count).toBe(0);
+    expect(job!.locked_by).toBeNull();
+    expect(job!.locked_at).toBeNull();
+    expect(job!.next_eligible_at.getTime()).toBe(deferUntil.getTime());
+  });
+
   it("atomicity: children+complete roll back together if enqueue fails mid-transaction", async () => {
     const circular: Record<string, unknown> = {};
     circular.self = circular;

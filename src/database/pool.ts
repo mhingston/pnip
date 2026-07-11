@@ -4,7 +4,15 @@ export type PgPool = Pool;
 export type PgClient = PoolClient;
 
 export function createPool(connectionString: string): PgPool {
-  return new Pool({ connectionString });
+  const pool = new Pool({ connectionString });
+  // pg emits client errors on the pool itself. Without a listener, a
+  // transient server/network disconnect can become an uncaught process error
+  // and terminate a queue drain instead of allowing the pool to replace the
+  // failed client.
+  pool.on("error", (err) => {
+    console.error(`[pnip] PostgreSQL pool client error: ${err.message}`);
+  });
+  return pool;
 }
 
 export async function withTransaction<T>(

@@ -74,6 +74,18 @@ export function createClusterStoriesWorker(
     ): Promise<WorkerOutcome> {
       const { editionId } = parseTarget(job.target);
 
+      // Discovery can add a late document while a cluster job is already
+      // queued. Do not replace the edition's stories with a partial snapshot;
+      // leave this same job pending until every document is complete.
+      if (!(await deps.enrichmentTracker.isEditionFullyEnriched(editionId))) {
+        const deferUntil = new Date(Date.now() + 60_000);
+        ctx.logger.info("edition not fully enriched, deferring clustering", {
+          editionId,
+          nextEligibleAt: deferUntil.toISOString(),
+        });
+        return { deferUntil };
+      }
+
       const documents = await deps.docRepo.getByEdition(editionId);
       if (documents.length === 0) {
         ctx.logger.info("no documents to cluster, clearing stories", { editionId });

@@ -22,8 +22,12 @@ import {
 import { createEnrichmentGateService } from "./enrichment-gate-service.js";
 
 const migrationSqlPaths = [
+  "../database/migrations/002_create_processing_jobs.sql",
   "../database/migrations/003_create_editions.sql",
   "../database/migrations/008_create_documents.sql",
+  "../database/migrations/009_create_document_sections.sql",
+  "../database/migrations/010_create_document_chunks.sql",
+  "../database/migrations/006_add_depends_on_to_processing_jobs.sql",
   "../database/migrations/018_create_document_enrichment_status.sql",
   "../database/migrations/019_add_cluster_stories_enqueued_at_to_editions.sql",
 ];
@@ -97,6 +101,7 @@ describe("EnrichmentGateService", () => {
   });
 
   beforeEach(async () => {
+    await pool.query(`TRUNCATE TABLE ${schema}.processing_jobs`);
     await pool.query(`TRUNCATE TABLE ${schema}.document_enrichment_status`);
     await pool.query(`TRUNCATE TABLE ${schema}.documents CASCADE`);
     await pool.query(`TRUNCATE TABLE ${schema}.editions CASCADE`);
@@ -172,6 +177,94 @@ describe("EnrichmentGateService", () => {
     expect(out!.editionId).toBe(ed.id);
     expect(out!.target).toEqual({ editionId: ed.id });
     expect(await tracker.getEditionEnqueuedAt(ed.id)).toBeInstanceOf(Date);
+  });
+
+  it("does not mark an enrichment done until every document chunk job completes", async () => {
+    const ed = await makeEdition("2026-02-04");
+    const doc = await makeDoc(ed.id, "https://e.com/4b");
+    const section = await db
+      .insertInto("document_sections")
+      .values({
+        document_id: doc.id,
+        section_order: 0,
+        section_type: "paragraph",
+        content_text: "test",
+      })
+      .returning("id")
+      .executeTakeFirstOrThrow();
+    await db
+      .insertInto("document_chunks")
+      .values([
+        {
+          id: "gate-chunk-1",
+          document_id: doc.id,
+          section_id: section.id,
+          chunk_sequence: 0,
+          content_text: "one",
+          token_count: 1,
+          start_offset: 0,
+          end_offset: 3,
+          paragraph_start: 0,
+          paragraph_end: 0,
+        },
+        {
+          id: "gate-chunk-2",
+          document_id: doc.id,
+          section_id: section.id,
+          chunk_sequence: 1,
+          content_text: "two",
+          token_count: 1,
+          start_offset: 3,
+          end_offset: 6,
+          paragraph_start: 1,
+          paragraph_end: 1,
+        },
+      ])
+      .execute();
+    await markAllBut(ed.id, doc.id, "summarize_chunk");
+    const jobs = await db
+      .insertInto("processing_jobs")
+      .values([
+        {
+          job_type: "summarize_chunk",
+          edition_id: ed.id,
+          target: JSON.stringify({ chunkId: "gate-chunk-1", documentId: doc.id }),
+          status: "completed",
+          completed_at: new Date(),
+        },
+        {
+          job_type: "summarize_chunk",
+          edition_id: ed.id,
+          target: JSON.stringify({ chunkId: "gate-chunk-2", documentId: doc.id }),
+          status: "pending",
+        },
+      ])
+      .returning(["id", "status"])
+      .execute();
+
+    const first = await gate.markEnrichmentDoneAndMaybeEnqueueCluster(
+      ed.id,
+      doc.id,
+      "summarize_chunk",
+      "gate-chunk-1",
+    );
+    expect(first).toBeNull();
+    expect(await tracker.getCompletedTypesForDocument(doc.id)).not.toContain(
+      "summarize_chunk",
+    );
+
+    await db
+      .updateTable("processing_jobs")
+      .set({ status: "completed", completed_at: new Date() })
+      .where("id", "=", jobs[1]!.id)
+      .execute();
+    const second = await gate.markEnrichmentDoneAndMaybeEnqueueCluster(
+      ed.id,
+      doc.id,
+      "summarize_chunk",
+      "gate-chunk-2",
+    );
+    expect(second?.jobType).toBe("cluster_stories");
   });
 
   it("does not re-enqueue cluster_stories on a redundant later completion", async () => {

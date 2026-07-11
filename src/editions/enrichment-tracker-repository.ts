@@ -1,4 +1,4 @@
-import { Kysely, sql } from "kysely";
+import { Kysely, sql, Transaction } from "kysely";
 import type { Database } from "../database/kysely.js";
 
 export const REQUIRED_ENRICHMENT_TYPES = [
@@ -27,6 +27,10 @@ export interface EditionEnrichmentCounts {
   fullyEnrichedDocuments: number;
   totalCompletedTypeRows: number;
   expectedTypeRows: number;
+}
+
+export interface DocumentEnrichmentCompletion {
+  completedTypes: string[];
 }
 
 export class InvalidEnrichmentTypeError extends Error {
@@ -59,6 +63,84 @@ function assertValidEnrichmentType(enrichmentType: string): asserts enrichmentTy
 }
 
 export { assertValidEnrichmentType };
+
+/**
+ * Read the effective completion state for a document.
+ *
+ * The tracker table is intentionally a compact document-level summary, but
+ * the source of truth for chunked documents is the per-chunk job history. A
+ * document can otherwise look complete if an older worker marked a type done
+ * after only its first chunk. Documents without enrichment jobs retain the
+ * tracker-only behavior used by small fixtures and legacy imports.
+ */
+export async function getDocumentEnrichmentCompletion(
+  db: Kysely<Database> | Transaction<Database>,
+  documentId: string,
+): Promise<DocumentEnrichmentCompletion> {
+  const rows = await sql<{
+    enrichment_type: string;
+    chunk_count: number | string;
+    observed_job_chunks: number | string;
+    completed_job_chunks: number | string;
+    done_status_rows: number | string;
+  }>`
+    WITH required_types(enrichment_type) AS (
+      VALUES ${sql.join(
+        REQUIRED_ENRICHMENT_TYPES.map((type) => sql`(${type})`),
+        sql`, `,
+      )}
+    ),
+    chunk_counts AS (
+      SELECT COUNT(*)::int AS chunk_count
+      FROM document_chunks
+      WHERE document_id = ${documentId}
+    ),
+    job_counts AS (
+      SELECT
+        job_type AS enrichment_type,
+        COUNT(DISTINCT target->>'chunkId')::int AS observed_job_chunks,
+        COUNT(DISTINCT target->>'chunkId') FILTER (
+          WHERE status IN ('completed', 'archived')
+        )::int AS completed_job_chunks
+      FROM processing_jobs
+      WHERE target->>'documentId' = ${documentId}
+        AND target ? 'chunkId'
+      GROUP BY job_type
+    ),
+    status_counts AS (
+      SELECT
+        enrichment_type,
+        COUNT(*) FILTER (WHERE status = 'done')::int AS done_status_rows
+      FROM document_enrichment_status
+      WHERE document_id = ${documentId}
+      GROUP BY enrichment_type
+    )
+    SELECT
+      r.enrichment_type,
+      c.chunk_count,
+      COALESCE(j.observed_job_chunks, 0)::int AS observed_job_chunks,
+      COALESCE(j.completed_job_chunks, 0)::int AS completed_job_chunks,
+      COALESCE(s.done_status_rows, 0)::int AS done_status_rows
+    FROM required_types r
+    CROSS JOIN chunk_counts c
+    LEFT JOIN job_counts j ON j.enrichment_type = r.enrichment_type
+    LEFT JOIN status_counts s ON s.enrichment_type = r.enrichment_type
+  `.execute(db);
+
+  const completedTypes = rows.rows
+    .filter((row) => {
+      const chunkCount = Number(row.chunk_count);
+      const observedJobChunks = Number(row.observed_job_chunks);
+      const completedJobChunks = Number(row.completed_job_chunks);
+      if (observedJobChunks > 0) {
+        return completedJobChunks >= chunkCount && chunkCount > 0;
+      }
+      return Number(row.done_status_rows) > 0;
+    })
+    .map((row) => row.enrichment_type);
+
+  return { completedTypes };
+}
 
 export function createEnrichmentTrackerRepository(
   db: Kysely<Database>,
@@ -103,13 +185,8 @@ export function createEnrichmentTrackerRepository(
     },
 
     async isDocumentFullyEnriched(documentId) {
-      const row = await db
-        .selectFrom("document_enrichment_status")
-        .select((eb) => eb.fn.count<number>("document_id").as("done_count"))
-        .where("document_id", "=", documentId)
-        .where("status", "=", "done")
-        .executeTakeFirstOrThrow();
-      return Number(row.done_count) === REQUIRED_ENRICHMENT_TYPES.length;
+      const completion = await getDocumentEnrichmentCompletion(db, documentId);
+      return completion.completedTypes.length === REQUIRED_ENRICHMENT_TYPES.length;
     },
 
     async getDocumentCounts(editionId) {
@@ -120,36 +197,26 @@ export function createEnrichmentTrackerRepository(
         .executeTakeFirstOrThrow();
       const totalDocuments = Number(totalRow.total);
 
-      const completedTypeRowsRow = await db
-        .selectFrom("documents as d")
-        .innerJoin("document_enrichment_status as s", "s.document_id", "d.id")
-        .select((eb) => eb.fn.count<number>("s.document_id").as("completed"))
-        .where("d.edition_id", "=", editionId)
-        .where("s.status", "=", "done")
-        .executeTakeFirstOrThrow();
-
-      const completedByDoc = new Map<string, number>();
-      const perDocRows = await db
-        .selectFrom("document_enrichment_status as s")
-        .innerJoin("documents as d", "d.id", "s.document_id")
-        .select(["s.document_id", (eb) => eb.fn.count<number>("s.enrichment_type").as("c")])
-        .where("d.edition_id", "=", editionId)
-        .where("s.status", "=", "done")
-        .groupBy("s.document_id")
+      const documents = await db
+        .selectFrom("documents")
+        .select("id")
+        .where("edition_id", "=", editionId)
         .execute();
-      for (const r of perDocRows) {
-        completedByDoc.set(r.document_id, Number(r.c));
-      }
 
       let fullyEnrichedDocuments = 0;
-      for (const [, c] of completedByDoc) {
-        if (c === REQUIRED_ENRICHMENT_TYPES.length) fullyEnrichedDocuments += 1;
+      let totalCompletedTypeRows = 0;
+      for (const document of documents) {
+        const completion = await getDocumentEnrichmentCompletion(db, document.id);
+        totalCompletedTypeRows += completion.completedTypes.length;
+        if (completion.completedTypes.length === REQUIRED_ENRICHMENT_TYPES.length) {
+          fullyEnrichedDocuments += 1;
+        }
       }
 
       return {
         totalDocuments,
         fullyEnrichedDocuments,
-        totalCompletedTypeRows: Number(completedTypeRowsRow.completed),
+        totalCompletedTypeRows,
         expectedTypeRows: totalDocuments * REQUIRED_ENRICHMENT_TYPES.length,
       };
     },

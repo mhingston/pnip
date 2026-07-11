@@ -265,6 +265,41 @@ describe("EntityRepository", () => {
     }
   });
 
+  it("deduplicates identical entities before inserting", async () => {
+    const chunks = await chunkRepo.createBatch([
+      {
+        id: "en-chunk-duplicate",
+        documentId,
+        sectionId,
+        sequence: 0,
+        text: "Body.",
+        tokenCount: 1,
+        startOffset: 0,
+        endOffset: 5,
+        paragraphStart: 0,
+        paragraphEnd: 0,
+      },
+    ]);
+    const chunkId = chunks[0].id;
+
+    const { entities, mentions } = await entityRepo.replaceForChunk({
+      chunkId,
+      documentId,
+      promptId,
+      promptVersion: 1,
+      model: "m",
+      provider: "p",
+      inputHash: "h",
+      entities: [
+        { name: "Apple", entityType: "organization", mentionText: "Apple" },
+        { name: "Apple", entityType: "organization", mentionText: "Apple Inc." },
+      ],
+    });
+
+    expect(entities).toHaveLength(1);
+    expect(mentions).toHaveLength(1);
+  });
+
   it("replaceForChunk with empty entities array clears the chunk", async () => {
     const chunks = await chunkRepo.createBatch([
       {

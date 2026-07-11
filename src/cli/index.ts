@@ -124,6 +124,24 @@ import {
   runFeedbackSummaryCommand,
 } from "./feedback-summary.js";
 
+const DEFAULT_WORKER_CONCURRENCY = 4;
+const MAX_WORKER_CONCURRENCY = 16;
+
+function resolvePositiveInt(
+  raw: string | undefined,
+  fallback: number,
+  maximum?: number,
+): number {
+  if (raw === undefined || raw.trim() === "") return fallback;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < 1) return fallback;
+  return maximum === undefined ? parsed : Math.min(parsed, maximum);
+}
+
+export function resolveWorkerConcurrency(raw?: string): number {
+  return resolvePositiveInt(raw, DEFAULT_WORKER_CONCURRENCY, MAX_WORKER_CONCURRENCY);
+}
+
 async function main(): Promise<number> {
   const cfg = loadConfig();
 
@@ -334,24 +352,50 @@ async function main(): Promise<number> {
           summarizeStoryWorker,
         ],
         logger: createLogger({ baseFields: { worker: "runtime" } }),
+        retry: {
+          maxAttempts: resolvePositiveInt(cfg.RETRY_MAX_ATTEMPTS, 5, 20),
+        },
       });
 
-      const workerId = "cli-worker";
+      const workerConcurrency = resolveWorkerConcurrency(cfg.WORKER_CONCURRENCY);
+      const processLogger = createLogger({ baseFields: { worker: "process" } });
 
       const STALE_LOCK_THRESHOLD_MS = 30 * 60 * 1000;
       const recovered = await queue.recoverStaleJobs(STALE_LOCK_THRESHOLD_MS);
       if (recovered > 0) {
-        const logger = createLogger({ baseFields: { worker: "process" } });
-        logger.info("recovered stale running jobs at start of drain", {
+        processLogger.info("recovered stale running jobs at start of drain", {
           recovered,
           thresholdMs: STALE_LOCK_THRESHOLD_MS,
         });
       }
 
-      let processed = 0;
-      while (await runtime.runOne(workerId)) {
-        processed++;
-      }
+      const processedByWorker = await Promise.all(
+        Array.from({ length: workerConcurrency }, async (_, index) => {
+          const workerId = `cli-worker-${index + 1}`;
+          let processed = 0;
+          let connectionRetries = 0;
+          for (;;) {
+            try {
+              while (await runtime.runOne(workerId)) {
+                processed++;
+              }
+              return processed;
+            } catch (err) {
+              connectionRetries++;
+              if (connectionRetries > 3) throw err;
+              const delayMs = connectionRetries * 1000;
+              processLogger.warn("worker loop failed; retrying", {
+                workerId,
+                retry: connectionRetries,
+                delayMs,
+                error: err as Error,
+              });
+              await new Promise((resolve) => setTimeout(resolve, delayMs));
+            }
+          }
+        }),
+      );
+      const processed = processedByWorker.reduce((total, count) => total + count, 0);
       console.log(`Processed ${processed} jobs. Queue is empty.`);
       return 0;
     }

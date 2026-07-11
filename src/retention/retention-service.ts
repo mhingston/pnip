@@ -184,6 +184,16 @@ export async function purgeExpiredData(
       RETURNING id
     `.execute(trx);
 
+    // discovery_events intentionally has a non-cascading edition foreign key
+    // because it is the ingestion audit trail. Remove those rows explicitly
+    // before deleting the edition so retention works for real editions, not
+    // only databases whose expired editions happen to have no events.
+    await sql`
+      ${ctes}
+      DELETE FROM discovery_events
+      WHERE edition_id IN (SELECT id FROM expired_editions)
+    `.execute(trx);
+
     const editions = await sql`
       ${ctes}
       DELETE FROM editions

@@ -59,6 +59,19 @@ describe("ArticlePlugin", () => {
     expect(para!.content_text).toBe("This is the body text.");
   });
 
+  it("reindexes sections when content appears before the title heading", async () => {
+    const fetchContent = vi.fn().mockResolvedValue(
+      "Introductory text.\n\n# The actual title\n\nThe body.",
+    );
+    const plugin = createArticlePlugin({ fetchContent });
+
+    const result = await plugin.expand(ctx);
+
+    expect(result.sections.map((section) => section.order)).toEqual([0, 1, 2]);
+    expect(new Set(result.sections.map((section) => section.order)).size).toBe(3);
+    expect(result.sections[0]?.section_type).toBe("title");
+  });
+
   it("returns undefined publishedAt when Fabric output omits Published Time", async () => {
     const raw =
       "Title: No Date\n\n" +

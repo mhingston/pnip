@@ -175,6 +175,27 @@ describe("runPublishEditionCommand", () => {
     expect(logs.some((l) => l.includes("podcast=true"))).toBe(true);
   });
 
+  it("dry-run does not block when the optional podcast is not ready", async () => {
+    const service = makeFakeService({
+      checkCompletion: vi.fn().mockResolvedValue(
+        makeReadyCompletionReport({ podcastReady: false, missingArtifacts: [] }),
+      ),
+    });
+    const lookup = makeFakeLookup({
+      getByDate: vi.fn().mockResolvedValue(makeEdition()),
+    });
+
+    const result = await runPublishEditionCommand({
+      service,
+      editionLookup: lookup,
+      editionDate: "2026-07-07",
+      dryRun: true,
+      log: () => {},
+    });
+
+    expect(result.exitCode).toBe(0);
+  });
+
   it("dry-run exits 1 and logs each missing artifact when a gate check fails", async () => {
     const service = makeFakeService({
       checkCompletion: vi.fn().mockResolvedValue(

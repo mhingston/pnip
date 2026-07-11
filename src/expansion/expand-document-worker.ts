@@ -3,6 +3,7 @@ import type { ProcessingJob } from "../database/kysely.js";
 import type { DocumentRepository } from "./document-repository.js";
 import type { SectionRepository } from "./section-repository.js";
 import type { PluginRegistry } from "./plugin-registry.js";
+import type { ExpansionPlugin, SectionData } from "./types.js";
 import type { ProvenanceRepository } from "../provenance/provenance-repository.js";
 import type { ProcessingJobQueue } from "../jobs/queue/processing-job-queue.js";
 import { RedditRateLimitError } from "./reddit-rate-limiter.js";
@@ -11,6 +12,17 @@ interface ExpandTarget {
   discoveryEventId: string;
   url: string;
   partitionKey?: string;
+}
+
+function sectionInputs(documentId: string, sections: SectionData[]) {
+  return sections.map((section, index) => ({
+    documentId,
+    order: index,
+    heading: section.heading,
+    type: section.section_type,
+    contentMarkdown: section.content_markdown,
+    contentText: section.content_text,
+  }));
 }
 
 function parseTarget(target: unknown): ExpandTarget {
@@ -48,34 +60,74 @@ export function createExpandDocumentWorker(deps: {
         throw new Error(`no plugin supports URL: ${url}`);
       }
 
+      const expand = async (): Promise<Awaited<ReturnType<ExpansionPlugin["expand"]>> | null> => {
+        try {
+          return await plugin.expand({
+            url,
+            editionId: job.edition_id!,
+            discoveryEventId,
+          });
+        } catch (err) {
+          if (err instanceof RedditRateLimitError) {
+            ctx.logger.info("rate limited, deferring expansion", {
+              url,
+              resetSeconds: err.resetSeconds,
+            });
+            await deps.queue.enqueue({
+              jobType: "expand_document",
+              editionId: job.edition_id ?? undefined,
+              target: { discoveryEventId, url, partitionKey },
+              nextEligibleAt: new Date(Date.now() + err.resetSeconds * 1000),
+            });
+            return null;
+          }
+          throw err;
+        }
+      };
+
       const existing = await deps.docRepo.getByEditionAndUrl(job.edition_id!, url);
       if (existing) {
-        ctx.logger.info("document already exists, skipping", { documentId: existing.id });
-        return {};
-      }
-
-      let result;
-      try {
-        result = await plugin.expand({
-          url,
-          editionId: job.edition_id!,
-          discoveryEventId,
-        });
-      } catch (err) {
-        if (err instanceof RedditRateLimitError) {
-          ctx.logger.info("rate limited, deferring expansion", {
-            url,
-            resetSeconds: err.resetSeconds,
-          });
-          await deps.queue.enqueue({
-            jobType: "expand_document",
-            editionId: job.edition_id ?? undefined,
-            target: { discoveryEventId, url, partitionKey },
-            nextEligibleAt: new Date(Date.now() + err.resetSeconds * 1000),
-          });
+        const existingSections = await deps.sectionRepo.getByDocumentId(existing.id);
+        if (existingSections.length > 0) {
+          ctx.logger.info("document already exists, skipping", { documentId: existing.id });
           return {};
         }
-        throw err;
+
+        // A previous attempt may have created the document and then failed
+        // while persisting sections. Re-expand and finish that partial row so
+        // the retry can emit the chunk job instead of silently accepting a
+        // document with content but no sections.
+        ctx.logger.warn("repairing existing document without sections", {
+          documentId: existing.id,
+        });
+        const repaired = await expand();
+        if (repaired === null) return {};
+        if (repaired.sections.length === 0) {
+          throw new Error(`expansion produced no sections for ${url}`);
+        }
+        await deps.sectionRepo.createBatch(sectionInputs(existing.id, repaired.sections));
+        await deps.provenanceRepo.recordLineage({
+          sourceType: "discovery_event",
+          sourceId: discoveryEventId,
+          targetType: "document",
+          targetId: existing.id,
+          relation: "expanded_from",
+        });
+        return {
+          childJobs: [
+            {
+              jobType: "chunk_document",
+              editionId: existing.edition_id,
+              target: { documentId: existing.id },
+            },
+          ],
+        };
+      }
+
+      const result = await expand();
+      if (result === null) return {};
+      if (result.sections.length === 0) {
+        throw new Error(`expansion produced no sections for ${url}`);
       }
 
       const doc = await deps.docRepo.create({
@@ -95,14 +147,7 @@ export function createExpandDocumentWorker(deps: {
 
       if (result.sections.length > 0) {
         await deps.sectionRepo.createBatch(
-          result.sections.map((s) => ({
-            documentId: doc.id,
-            order: s.order,
-            heading: s.heading,
-            type: s.section_type,
-            contentMarkdown: s.content_markdown,
-            contentText: s.content_text,
-          })),
+          sectionInputs(doc.id, result.sections),
         );
       }
 

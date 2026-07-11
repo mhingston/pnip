@@ -161,6 +161,7 @@ export function createSummarizeChunkWorker(deps: SummarizeChunkDeps): Worker {
         editionId,
         documentId,
         ENRICHMENT_TYPE,
+        chunkId,
       );
       return childJob ? { childJobs: [childJob] } : {};
     },

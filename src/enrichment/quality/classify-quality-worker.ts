@@ -156,6 +156,7 @@ export function createClassifyQualityWorker(deps: ClassifyQualityDeps): Worker {
         editionId,
         documentId,
         ENRICHMENT_TYPE,
+        chunkId,
       );
       return childJob ? { childJobs: [childJob] } : {};
     },

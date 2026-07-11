@@ -22,7 +22,7 @@
 #        kick off generate-podcast  --partition <key> in fire-and-forget (master and with_podcast partitions)
 #   3. for each active partition:
 #        wait on the notebook via --wait
-#        wait on the podcast  via --wait (master and with_podcast partitions)
+#        podcast generation remains asynchronous because it is optional
 #   4. digestive generate-email --date <date> (with artifact links)
 #   5. digestive publish-edition --date <date> --dry-run
 #   6. digestive publish-edition --date <date>
@@ -145,8 +145,9 @@ run "generate-digest" \
 # generate-* call is idempotent: if a row already exists in the
 # requested state, it is returned as-is and no second upload is made.
 # The kickoff is best-effort: a failure here (e.g., the notebook is
-# still 'pending' from a previous run) is not fatal — the wait phase
-# retries by polling the existing row.
+# still 'pending' from a previous run) is not fatal. Notebook readiness is
+# awaited below; podcast generation remains asynchronous because it is
+# optional for publication.
 while IFS= read -r line; do
   [ -z "$line" ] && continue
   partition="${line%%:*}"
@@ -161,29 +162,21 @@ while IFS= read -r line; do
   fi
 done <<< "$PARTITION_LINES"
 
-# 3. Wait for each partition's notebook (and podcast, where applicable)
-# to be ready. --wait blocks on the NotebookLM API; this is the
-# wall-clock heavy step (~10-20 min per source typical). The wait
-# phase is fatal: a real failure here stops the script.
+# 3. Wait for each partition's notebook to be ready. --wait blocks on the
+# NotebookLM API; this is the wall-clock heavy step (~10-20 min per source
+# typical). Podcast generation is intentionally not waited on because it is
+# optional and must not delay or block the edition.
 while IFS= read -r line; do
   [ -z "$line" ] && continue
   partition="${line%%:*}"
-  tag="${line#*:}"
   run "wait notebook (partition=$partition)" \
     env PARTITION_CONFIG="${PARTITION_CONFIG:-}" \
     npm run digestive -- generate-notebook --date "$DATE" --partition "$partition" --wait
-  if [ "$tag" = "with_podcast" ]; then
-    # Podcast is optional — NotebookLM may rate-limit audio generation.
-    # A failure here is logged and the publication continues.
-    run_effort "wait podcast (partition=$partition)" \
-      env PARTITION_CONFIG="${PARTITION_CONFIG:-}" \
-      npm run digestive -- generate-podcast --date "$DATE" --partition "$partition" --wait
-  fi
 done <<< "$PARTITION_LINES"
 
-# 4. Email is rendered only after artifact waits complete so its Explore
-# section can link to every ready notebook and podcast. The command remains
-# idempotent: an already-sent edition is not delivered twice.
+# 4. Email is rendered after required notebook waits. The command remains
+# idempotent: an already-sent edition is not delivered twice. If a podcast
+# finishes later, it can be reflected by a deliberate email regeneration.
 run "generate-email" \
   npm run digestive -- generate-email --date "$DATE"
 

@@ -179,6 +179,7 @@ export function createAssignTopicsWorker(deps: AssignTopicsDeps): Worker {
         editionId,
         documentId,
         ENRICHMENT_TYPE,
+        chunkId,
       );
       return childJob ? { childJobs: [childJob] } : {};
     },

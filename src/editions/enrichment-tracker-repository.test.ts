@@ -22,8 +22,11 @@ import {
 } from "./enrichment-tracker-repository.js";
 
 const migrationSqlPaths = [
+  "../database/migrations/002_create_processing_jobs.sql",
   "../database/migrations/003_create_editions.sql",
   "../database/migrations/008_create_documents.sql",
+  "../database/migrations/009_create_document_sections.sql",
+  "../database/migrations/010_create_document_chunks.sql",
   "../database/migrations/018_create_document_enrichment_status.sql",
   "../database/migrations/019_add_cluster_stories_enqueued_at_to_editions.sql",
 ];
@@ -169,6 +172,59 @@ describe("EnrichmentTrackerRepository", () => {
     await tracker.markDone(doc.id, "embed_chunk");
     expect(await tracker.isDocumentFullyEnriched(doc.id)).toBe(false);
     await tracker.markDone(doc.id, "classify_quality");
+    expect(await tracker.isDocumentFullyEnriched(doc.id)).toBe(true);
+  });
+
+  it("does not trust a stale document-level row when a chunk job is incomplete", async () => {
+    const { ed, doc } = await makeEditionAndDoc("2026-01-11", "https://e.com/4b");
+    const section = await db
+      .insertInto("document_sections")
+      .values({
+        document_id: doc.id,
+        section_order: 0,
+        heading: null,
+        section_type: "paragraph",
+        content_markdown: "body",
+        content_text: "body",
+        metadata: {},
+      })
+      .returning("id")
+      .executeTakeFirstOrThrow();
+    const chunkId = `tracker-chunk-${randomUUID()}`;
+    await db.insertInto("document_chunks").values({
+      id: chunkId,
+      document_id: doc.id,
+      section_id: section.id,
+      chunk_sequence: 0,
+      content_text: "body",
+      token_count: 1,
+      start_offset: 0,
+      end_offset: 4,
+      paragraph_start: 0,
+      paragraph_end: 0,
+      timestamp_start: null,
+      timestamp_end: null,
+    }).execute();
+
+    for (const type of REQUIRED_ENRICHMENT_TYPES) await tracker.markDone(doc.id, type);
+    const job = await db
+      .insertInto("processing_jobs")
+      .values({
+        job_type: "summarize_chunk",
+        edition_id: ed.id,
+        target: JSON.stringify({ documentId: doc.id, chunkId }),
+        status: "pending",
+      })
+      .returning("id")
+      .executeTakeFirstOrThrow();
+
+    expect(await tracker.isDocumentFullyEnriched(doc.id)).toBe(false);
+
+    await db
+      .updateTable("processing_jobs")
+      .set({ status: "completed", completed_at: new Date() })
+      .where("id", "=", job.id)
+      .execute();
     expect(await tracker.isDocumentFullyEnriched(doc.id)).toBe(true);
   });
 

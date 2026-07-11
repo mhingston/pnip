@@ -223,6 +223,31 @@ describe("ExtractEntitiesWorker", () => {
     expect(outcome).toEqual({});
   });
 
+  it("suppresses duplicate entities returned for the same chunk", async () => {
+    const deps = makeDeps({
+      chunk: makeChunk(),
+      executorContent:
+        '{"entities": [' +
+        '{"name":"Apple Inc.","type":"organization","mention":"Apple"},' +
+        '{"name":"Apple Inc.","type":"organization","mention":"Apple Inc."}' +
+        ']}' ,
+    });
+    const worker = createExtractEntitiesWorker(deps);
+
+    await worker.execute(makeJob(), {
+      db: {} as any,
+      logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn(), child: vi.fn() } as any,
+    });
+
+    expect(deps.entityRepo.replaceForChunk).toHaveBeenCalledWith(
+      expect.objectContaining({
+        entities: [
+          { name: "Apple Inc.", entityType: "organization", mentionText: "Apple" },
+        ],
+      }),
+    );
+  });
+
   it("skips when chunk is not found for the document", async () => {
     const deps = makeDeps({ chunk: undefined });
     const worker = createExtractEntitiesWorker(deps);

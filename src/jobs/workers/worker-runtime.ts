@@ -172,6 +172,26 @@ export function createWorkerRuntime(
       }
       const durationMs = Date.now() - start;
 
+      if (outcome.deferUntil !== undefined) {
+        await db
+          .updateTable("processing_jobs")
+          .set({
+            status: "pending",
+            next_eligible_at: outcome.deferUntil,
+            locked_by: null,
+            locked_at: null,
+            updated_at: sql`now()`,
+          })
+          .where("id", "=", job.id)
+          .where("status", "=", "running")
+          .execute();
+        log.info("worker execution deferred", {
+          durationMs,
+          nextEligibleAt: outcome.deferUntil.toISOString(),
+        });
+        return true;
+      }
+
       await db.transaction().execute(async (trx) => {
         const txQueue = createProcessingJobQueue(trx);
         for (const c of outcome.childJobs ?? []) {
