@@ -86,7 +86,7 @@ export const CATEGORY_KEYWORDS: Record<
   "Interesting Reads": [],
 };
 
-interface DocumentSnapshot {
+export interface DocumentSnapshot {
   id: string;
   title: string;
   sourceUrl: string;
@@ -95,6 +95,7 @@ interface DocumentSnapshot {
   publisher: string | null;
   chunkIds: string[];
   metadata?: unknown;
+  createdAt?: Date;
   /** Ranking assigned while the edition's story clusters were built. */
   editionRank?: number;
   similarity?: number;
@@ -133,6 +134,8 @@ export interface MarkdownDigestService {
     stories: StorySnapshot[];
     /** All ranked edition stories, including stories hidden from the body. */
     sourceStories?: StorySnapshot[];
+    /** Every ingested edition document, including documents not yet clustered. */
+    sourceDocuments?: DocumentSnapshot[];
     previousStories?: ContinuityStoryIdentity[];
     suppressedStoryCount?: number;
     citationIndex: CitationIndex;
@@ -366,6 +369,43 @@ async function loadPreviousEditionStories(
   return [...byStory.values()];
 }
 
+async function collectEditionSourceDocuments(
+  docRepo: DocumentRepository,
+  editionId: string,
+  stories: StorySnapshot[],
+): Promise<DocumentSnapshot[]> {
+  const byId = new Map<string, DocumentSnapshot>();
+
+  // Keep the cluster-derived ranking and metadata for documents that already
+  // belong to a story.
+  for (const story of stories) {
+    for (const document of story.documents) {
+      if (!byId.has(document.id)) byId.set(document.id, document);
+    }
+  }
+
+  // Source coverage is an ingestion concern, not a clustering concern. Add
+  // every document in the edition, including a document that arrived after a
+  // cluster snapshot or has not yet received a story summary.
+  const documents = await docRepo.getByEdition(editionId);
+  for (const document of documents) {
+    if (byId.has(document.id)) continue;
+    byId.set(document.id, {
+      id: document.id,
+      title: document.title ?? "Untitled",
+      sourceUrl: document.source_url,
+      canonicalUrl: document.canonical_url,
+      sourceType: document.source_type,
+      publisher: document.publisher,
+      chunkIds: [],
+      metadata: document.metadata,
+      createdAt: document.created_at,
+    });
+  }
+
+  return [...byId.values()];
+}
+
 export function createMarkdownDigestService(
   deps: MarkdownDigestServiceDeps,
 ): MarkdownDigestService {
@@ -412,6 +452,11 @@ export function createMarkdownDigestService(
 
       const assembly = await deps.assembly.assemble(input.editionId);
       const stories = await this.collectStories(input.editionId);
+      const sourceDocuments = await collectEditionSourceDocuments(
+        deps.docRepo,
+        input.editionId,
+        stories,
+      );
 
       if (stories.length === 0) {
         throw new Error(
@@ -448,6 +493,7 @@ export function createMarkdownDigestService(
         assembly,
         stories: effectiveStories,
         sourceStories: stories,
+        sourceDocuments,
         previousStories,
         suppressedStoryCount:
           deps.biasEnabled && stories.length > effectiveStories.length
@@ -456,10 +502,7 @@ export function createMarkdownDigestService(
         citationIndex,
       });
 
-      const documentIds = new Set<string>();
-      for (const s of effectiveStories) {
-        for (const d of s.documents) documentIds.add(d.id);
-      }
+      const documentIds = new Set(sourceDocuments.map((document) => document.id));
 
       let row: MarkdownDigestRow;
       try {
@@ -555,6 +598,7 @@ export function createMarkdownDigestService(
             publisher: doc.publisher ?? null,
             chunkIds,
             metadata: doc.metadata,
+            createdAt: doc.created_at,
             similarity: m.similarity,
           });
         }
@@ -612,6 +656,7 @@ export function createMarkdownDigestService(
       assembly,
       stories,
       sourceStories = stories,
+      sourceDocuments,
       previousStories = [],
       suppressedStoryCount,
       citationIndex,
@@ -638,14 +683,14 @@ export function createMarkdownDigestService(
       const remainingStories = newStories.slice(topStoriesLimit);
 
       const allDocs = new Map<string, DocumentSnapshot>();
-      for (const s of sourceStories) {
-        for (const d of s.documents) {
-          if (!allDocs.has(d.id)) allDocs.set(d.id, d);
-        }
+      for (const d of sourceDocuments ?? sourceStories.flatMap((story) => story.documents)) {
+        if (!allDocs.has(d.id)) allDocs.set(d.id, d);
       }
       const sortedDocs = [...allDocs.values()].sort((a, b) =>
         (a.editionRank ?? Number.MAX_SAFE_INTEGER) -
           (b.editionRank ?? Number.MAX_SAFE_INTEGER) ||
+        (a.createdAt?.getTime() ?? Number.MAX_SAFE_INTEGER) -
+          (b.createdAt?.getTime() ?? Number.MAX_SAFE_INTEGER) ||
         a.sourceUrl.localeCompare(b.sourceUrl),
       );
 

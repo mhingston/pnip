@@ -85,7 +85,7 @@ Publication requires:
 - a ready master NotebookLM notebook; and
 - a ready NotebookLM notebook for each active non-master partition.
 
-Podcast generation is best-effort. A missing or failed podcast is logged but does not block publication, including configured partition podcasts.
+Podcast generation is best-effort. A missing or failed podcast is logged but does not block publication, including configured partition podcasts. The daily publisher waits for NotebookLM readiness before starting audio; the recurring podcast drain retries pending work and resumes a persisted audio artifact without issuing a duplicate generation request.
 
 Publishing transitions the edition through Publishing to Published and cancels remaining mutable processing jobs for that edition. Published editions are immutable; reruns are no-ops or status reads.
 
@@ -101,7 +101,7 @@ Expansion converts an ingested URL into a canonical document. Plugins currently 
 
 Canonical documents are split into ordered sections. Chunk IDs and lineage edges are deterministic, so downstream enrichment can be retried without losing provenance.
 
-The five enrichment workers produce chunk summaries, entities, topics, embeddings, and quality classifications. Embeddings drive clustering; quality labels and confidence are also used for NotebookLM source selection.
+The five enrichment workers produce chunk summaries, entities, topics, embeddings, and quality classifications. Embeddings drive clustering; quality labels and confidence are also used for NotebookLM source selection. The processing drain reconciles fully enriched mutable editions that still contain unclustered documents, covering the late-discovery race where a cluster job ran before all sources finished enrichment.
 
 Story clustering creates ordered story clusters. Story summaries contain a narrative summary plus key claims tied to source chunks. The Markdown renderer keeps the source links but deliberately omits numbered citation tokens from the reader-facing output.
 

@@ -275,6 +275,34 @@ describe("renderMarkdown", () => {
     expect(md).toContain("## Sources");
   });
 
+  it("lists ingested documents even when clustering did not assign them to a story", () => {
+    const story = makeStoryAt("clustered", 0, "Technology", "ai");
+    const unclustered = {
+      ...story.documents[0]!,
+      id: "doc-unclustered",
+      title: "Unclustered source",
+      sourceUrl: "https://example.com/unclustered",
+      canonicalUrl: "https://example.com/unclustered",
+      createdAt: new Date("2026-07-12T02:00:00Z"),
+    };
+    const md = svc.renderMarkdown({
+      edition: makeEdition(),
+      assembly: {
+        edition: makeEdition(),
+        stories: [],
+        ...DUMMY_ASSEMBLY,
+        totalDocuments: 2,
+      },
+      stories: [story],
+      sourceDocuments: [story.documents[0]!, unclustered],
+      citationIndex: buildCitationIndex([]),
+    });
+
+    expect(md).toContain("Unclustered source");
+    expect(md).toContain("https://example.com/unclustered");
+    expect(md).toContain("_Coverage: reviewed 2 sources; included 2 sources across 1 stories._");
+  });
+
   it("omits the Executive Summary and per-story Sources line", () => {
     const stories = makeNStories(2, "Technology", "ai");
     const idx = buildCitationIndex(stories.flatMap((s) => s.claims.map((c) => ({ chunkId: c.chunkId, claimText: c.text }))));

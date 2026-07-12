@@ -82,7 +82,7 @@ The recommended automated workflow is:
 scripts/cron-install.sh install
 ~~~
 
-This installs a Miniflux/processing drain every 10 minutes, a six-hour maintenance apply (including the 30-day retention purge), and a daily publication trigger. Use scripts/daily-publish.sh directly when you need a one-shot publication sequence. Set PNIP_PUBLISH_DATE to publish a specific edition and PNIP_DRY_RUN=1 to stop after the publication gate check.
+This installs a Miniflux/processing drain and a NotebookLM podcast-readiness drain every 10 minutes, a six-hour maintenance apply (including the 30-day retention purge), and a daily publication trigger. Use scripts/daily-publish.sh directly when you need a one-shot publication sequence. Set PNIP_PUBLISH_DATE to publish a specific edition and PNIP_DRY_RUN=1 to stop after the publication gate check.
 
 ## CLI reference
 
@@ -172,6 +172,8 @@ The complete schema is in .env.example. The main settings are:
 | PARTITION_CONFIG | Optional category-to-partition JSON |
 | DIGEST_BIAS_ENABLED | Enable feedback biasing |
 | DIGEST_TARGET_READING_MINUTES | Calibrate lead-story prominence |
+| DIGEST_SMALL_EDITION_MAX_DOCUMENTS | Document-count cutoff for the small-edition clustering threshold (default 24) |
+| DIGEST_SMALL_EDITION_SIMILARITY_THRESHOLD | Similarity threshold for small editions (default 0.55) |
 | DIGEST_QUIET_EDITION_REASON | Explicit low-significance/low-novelty framing |
 | YOUTUBE_FOCUS_CHANNELS | Comma-separated YouTube names/handles promoted and deeply analyzed |
 | DOCTOR_FAILED_THRESHOLD | Queue failure threshold (default 100) |

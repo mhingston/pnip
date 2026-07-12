@@ -13,12 +13,14 @@
 #
 # The default schedule:
 #   */10 * * * *   digest-drain          (drain Miniflux -> editions)
+#   */10 * * * *   podcast-drain        (resume ready NotebookLM podcasts)
 #   0 */6 * * *    maintenance apply    (queue + 30-day retention cleanup)
 #   0 6 * * *      daily-publish         (publication at 06:00 local)
 #
 # To customise the publication time:
 #   scripts/cron-install.sh install --schedule-publish "30 5 * * *"
 #   scripts/cron-install.sh install --schedule-drain "*/15 * * * *"
+#   scripts/cron-install.sh install --schedule-podcast "*/15 * * * *"
 #   scripts/cron-install.sh install --schedule-maintenance "0 */4 * * *"
 #
 # The script tags every line it adds with "# pnip-managed" so the
@@ -38,6 +40,7 @@ PNIP_TAG="# pnip-managed"
 
 # Defaults (overridable via flags)
 SCHEDULE_DRAIN="*/10 * * * *"
+SCHEDULE_PODCAST="*/10 * * * *"
 SCHEDULE_MAINTENANCE="0 */6 * * *"
 SCHEDULE_PUBLISH="0 6 * * *"
 ACTION=""
@@ -51,6 +54,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     install|remove|show|--help|-h) ACTION="${1#--}"; [ "$ACTION" = "help" ] && usage; shift ;;
     --schedule-drain) SCHEDULE_DRAIN="$2"; shift 2 ;;
+    --schedule-podcast) SCHEDULE_PODCAST="$2"; shift 2 ;;
     --schedule-maintenance) SCHEDULE_MAINTENANCE="$2"; shift 2 ;;
     --schedule-publish) SCHEDULE_PUBLISH="$2"; shift 2 ;;
     --project-dir) PROJECT_DIR="$2"; shift 2 ;;
@@ -61,6 +65,7 @@ done
 [ -z "$ACTION" ] && { echo "action required: install | remove | show" >&2; exit 1; }
 
 DRAIN_SCRIPT="$PROJECT_DIR/scripts/digest-drain.sh"
+PODCAST_SCRIPT="$PROJECT_DIR/scripts/podcast-drain.sh"
 PUBLISH_SCRIPT="$PROJECT_DIR/scripts/daily-publish.sh"
 
 # The crontab fragment. PARTITION_CONFIG and NOTEBOOKLM_MAX_SOURCES_PER_NOTEBOOK
@@ -89,6 +94,9 @@ PATH=/root/.local/bin:/home/mark/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/
 
 # Drain Miniflux -> editions. Idempotent. Tight interval.
 $SCHEDULE_DRAIN $DRAIN_SCRIPT >> $PROJECT_DIR/logs/digest-drain.log 2>&1
+
+# Resume NotebookLM podcasts only after their notebooks are ready.
+$SCHEDULE_PODCAST $PODCAST_SCRIPT >> $PROJECT_DIR/logs/podcast-drain.log 2>&1
 
 # Queue cleanup and 30-day data retention. The command is idempotent and
 # bounded by the CLI's --limit safety cap.

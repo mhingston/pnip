@@ -604,6 +604,37 @@ describe("generate — idempotency", () => {
     expect(readyCall).toBeDefined();
   });
 
+  it("resumes an existing generating artifact without issuing duplicate audio generation", async () => {
+    const existing = makePodcastRow({
+      id: "pod-in-progress",
+      status: "generating",
+      url: null,
+      artifact_external_id: "artifact-in-progress",
+    });
+    const notebookLm = makeFakeNotebookLmClient({
+      waitResult: {
+        status: "completed",
+        url: "https://cdn.example.com/resumed.mp3",
+        attempts: 1,
+      },
+    });
+    const { deps, mocks } = makeDeps({
+      existingPodcastRow: existing,
+      notebookLm,
+    });
+    const svc = createPodcastService(deps);
+    const result = await svc.generate({ editionId: "ed-1", wait: true });
+
+    expect(result.status).toBe("ready");
+    expect(result.url).toBe("https://cdn.example.com/resumed.mp3");
+    expect(mocks.notebookLm.generateAudio).not.toHaveBeenCalled();
+    expect(mocks.notebookLm.waitForArtifact).toHaveBeenCalledWith(
+      expect.objectContaining({
+        artifactExternalId: "artifact-in-progress",
+      }),
+    );
+  });
+
   it("continues and retries when the existing row is 'failed'", async () => {
     const existing = makePodcastRow({
       id: "pod-failed",
@@ -994,7 +1025,7 @@ describe("generate — fire-and-forget (default)", () => {
     expect(result.artifactExternalId).toBe("artifact-1");
     expect(
       mocks.notebookLm.generateAudio as ReturnType<typeof vi.fn>,
-    ).toHaveBeenCalledOnce();
+    ).not.toHaveBeenCalled();
   });
 
   it("does NOT short-circuit a 'ready' row even when wait is false", async () => {

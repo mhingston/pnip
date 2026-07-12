@@ -33,6 +33,13 @@ const configSchema = z.object({
   DOCTOR_FAILED_THRESHOLD: z.coerce.number().int().positive().optional(),
   DIGEST_BIAS_ENABLED: z.enum(["true", "false"]).optional(),
   DIGEST_TARGET_READING_MINUTES: z.coerce.number().int().positive().optional(),
+  DIGEST_SMALL_EDITION_MAX_DOCUMENTS: z.coerce.number().int().positive().optional(),
+  DIGEST_SMALL_EDITION_SIMILARITY_THRESHOLD: z
+    .coerce
+    .number()
+    .min(0)
+    .max(1)
+    .optional(),
   DIGEST_QUIET_EDITION_REASON: z
     .enum(["low_significance", "low_novelty"])
     .optional(),

@@ -12,6 +12,7 @@ import { createMinifluxClient } from "../discovery/miniflux-client.js";
 import { createEditionRepository } from "../editions/edition-repository.js";
 import { createEnrichmentTrackerRepository } from "../editions/enrichment-tracker-repository.js";
 import { createEnrichmentGateService } from "../editions/enrichment-gate-service.js";
+import { reconcileMissingClusterJobs } from "../editions/cluster-reconciliation.js";
 import { createDiscoveryRepository } from "../discovery/discovery-repository.js";
 import { createProcessingJobQueue } from "../jobs/queue/processing-job-queue.js";
 import { createDiscoveryService } from "../discovery/discovery-service.js";
@@ -329,6 +330,17 @@ async function main(): Promise<number> {
         sourceTrustRepo,
         enrichmentTracker: createEnrichmentTrackerRepository(db),
         youtubeFocusChannels,
+        options: {
+          ...(cfg.DIGEST_SMALL_EDITION_MAX_DOCUMENTS !== undefined
+            ? { smallEditionMaxDocuments: cfg.DIGEST_SMALL_EDITION_MAX_DOCUMENTS }
+            : {}),
+          ...(cfg.DIGEST_SMALL_EDITION_SIMILARITY_THRESHOLD !== undefined
+            ? {
+                smallEditionSimilarityThreshold:
+                  cfg.DIGEST_SMALL_EDITION_SIMILARITY_THRESHOLD,
+              }
+            : {}),
+        },
       });
 
       const summarizeStoryWorker = createSummarizeStoryWorker({
@@ -375,6 +387,13 @@ async function main(): Promise<number> {
         processLogger.info("recovered stale running jobs at start of drain", {
           recovered,
           thresholdMs: STALE_LOCK_THRESHOLD_MS,
+        });
+      }
+
+      const requeuedClusters = await reconcileMissingClusterJobs(db);
+      if (requeuedClusters > 0) {
+        processLogger.info("requeued cluster jobs for fully enriched editions with unclustered documents", {
+          editionCount: requeuedClusters,
         });
       }
 

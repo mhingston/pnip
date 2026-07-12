@@ -24,6 +24,10 @@ export interface ClusterOptions {
   similarityThreshold: number;
   minClusterSize: number;
   maxStories: number;
+  /** Editions at or below this document count use the small-edition threshold. */
+  smallEditionMaxDocuments?: number;
+  /** More permissive similarity threshold for small editions. */
+  smallEditionSimilarityThreshold?: number;
   /**
    * Fraction of documentCount that becomes the target story count when
    * the caller does not pin `targetStories` directly. Clamped to [4, 50].
@@ -57,8 +61,31 @@ export const DEFAULT_CLUSTER_OPTIONS: ClusterOptions = {
   similarityThreshold: 0.65,
   minClusterSize: 1,
   maxStories: 100,
+  smallEditionMaxDocuments: 24,
+  smallEditionSimilarityThreshold: 0.55,
   targetStoriesRatio: 0.6,
 };
+
+export function resolveSimilarityThreshold(
+  documentCount: number,
+  opts?: Partial<ClusterOptions>,
+): number {
+  // An explicit threshold always wins, which keeps callers/tests that need a
+  // fixed clustering policy deterministic.
+  if (opts?.similarityThreshold !== undefined) {
+    return opts.similarityThreshold;
+  }
+  const maxDocuments =
+    opts?.smallEditionMaxDocuments ??
+    DEFAULT_CLUSTER_OPTIONS.smallEditionMaxDocuments!;
+  if (documentCount > 0 && documentCount <= maxDocuments) {
+    return (
+      opts?.smallEditionSimilarityThreshold ??
+      DEFAULT_CLUSTER_OPTIONS.smallEditionSimilarityThreshold!
+    );
+  }
+  return DEFAULT_CLUSTER_OPTIONS.similarityThreshold;
+}
 
 function cosineSimilarity(a: number[], b: number[]): number {
   if (a.length !== b.length) {
@@ -188,8 +215,7 @@ export function clusterDocuments(
   opts?: Partial<ClusterOptions>,
   ranking?: ClusterRankingInput,
 ): ClusterOutput[] {
-  const similarityThreshold =
-    opts?.similarityThreshold ?? DEFAULT_CLUSTER_OPTIONS.similarityThreshold;
+  const similarityThreshold = resolveSimilarityThreshold(inputs.length, opts);
   const maxStories =
     opts?.maxStories ?? DEFAULT_CLUSTER_OPTIONS.maxStories;
   const targetStories = computeTargetStories(inputs.length, {

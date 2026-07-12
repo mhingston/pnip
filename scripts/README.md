@@ -32,14 +32,23 @@ Sequence:
 
 1. `digestive generate-digest --date <local-today>` (master)
 2. Resolve active partitions with the database-backed `enabled` +
-   `min_articles` rule, then fire-and-forget `generate-notebook` and (where `with_podcast: true`)
-   `generate-podcast` for every active partition.
-3. `--wait` on every active partition's notebook. Podcast generation remains
+   `min_articles` rule, then fire-and-forget `generate-notebook` for every
+   active partition.
+3. `--wait` on every active partition's notebook, then start podcasts only
+   after their corresponding notebooks are ready. Podcast generation remains
    asynchronous because podcasts are optional and must not block publication.
 4. `digestive generate-email --date <local-today>` after required notebook
    artifacts are ready.
 5. Evaluate edition readiness and run `publish-edition --dry-run` (gate check).
 6. `digestive publish-edition --date <local-today>` (real publish).
+
+### `podcast-drain.sh`
+
+Runs every 10 minutes by default. It resolves the active partitions for the
+local edition date and attempts `generate-podcast --wait`; the podcast service
+checks that the notebook status is `ready` before making any audio-generation
+request. A pending notebook is retried later; a generating podcast resumes its
+existing NotebookLM artifact rather than starting a duplicate.
 
 Environment overrides:
 - `PNIP_PUBLISH_DATE=YYYY-MM-DD` — publish a specific date instead of today
@@ -78,6 +87,7 @@ Default schedule:
 | Cron expression     | Script                  | Purpose                                  |
 | ------------------- | ----------------------- | ---------------------------------------- |
 | `*/10 * * * *`      | `digest-drain.sh`       | Drain Miniflux → editions                |
+| `*/10 * * * *`      | `podcast-drain.sh`      | Resume ready NotebookLM podcasts         |
 | `0 */6 * * *`       | (inline)                | Queue cleanup + 30-day retention purge   |
 | `0 6 * * *`         | `daily-publish.sh`      | Daily publication at 06:00 local         |
 

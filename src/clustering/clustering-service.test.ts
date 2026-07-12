@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   clusterDocuments,
   cosineSimilarityForTest,
+  resolveSimilarityThreshold,
   type DocumentClusterInput,
   type ClusterRankingInput,
 } from "./clustering-service.js";
@@ -51,6 +52,16 @@ describe("cosineSimilarity", () => {
 describe("clusterDocuments", () => {
   it("returns empty array for empty input", () => {
     expect(clusterDocuments([])).toEqual([]);
+  });
+
+  it("uses a more permissive threshold for small editions unless overridden", () => {
+    expect(resolveSimilarityThreshold(24)).toBeCloseTo(0.55);
+    expect(resolveSimilarityThreshold(25)).toBeCloseTo(0.65);
+    expect(
+      resolveSimilarityThreshold(12, {
+        similarityThreshold: 0.9,
+      }),
+    ).toBeCloseTo(0.9);
   });
 
   it("groups documents whose embedding similarity is above threshold", () => {

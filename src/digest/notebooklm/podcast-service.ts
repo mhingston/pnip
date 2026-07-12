@@ -14,6 +14,7 @@ import {
 import {
   NotebookLmError,
   type GenerateAudioInput,
+  type GenerateAudioResult,
   type NotebookLmClient,
 } from "./notebooklm-client.js";
 
@@ -252,6 +253,8 @@ export function createPodcastService(
     const wait = input.wait ?? false;
 
     let row: PodcastRow | null = existing ?? null;
+    let generation: GenerateAudioResult;
+    let resumingExistingArtifact = false;
 
     try {
       if (!row) {
@@ -294,48 +297,71 @@ export function createPodcastService(
         }
       }
 
-      const generateInput: GenerateAudioInput = {
-        notebookExternalId: notebook.notebook_external_id,
-        instructions,
-        format,
-        length,
-        wait,
-        timeoutSec: artifactWaitTimeoutSec,
-      };
-      if (language !== undefined) {
-        generateInput.language = language;
+      if (
+        row.status === "generating" &&
+        row.artifact_external_id !== PENDING_ARTIFACT_PLACEHOLDER
+      ) {
+        if (!wait) {
+          return rowToResult(row, edition, {
+            alreadyExisted: true,
+            failureReason:
+              "podcast generation already in progress; re-run with --wait to fetch the URL when ready",
+          });
+        }
+        // A retry must resume the provider artifact rather than issuing a
+        // second generate-audio request for the same notebook.
+        resumingExistingArtifact = true;
+        generation = {
+          taskId: row.artifact_external_id,
+          status: "pending",
+          url: null,
+        };
+      } else {
+        const generateInput: GenerateAudioInput = {
+          notebookExternalId: notebook.notebook_external_id,
+          instructions,
+          format,
+          length,
+          wait,
+          timeoutSec: artifactWaitTimeoutSec,
+        };
+        if (language !== undefined) {
+          generateInput.language = language;
+        }
+
+        generation = await deps.notebookLm.generateAudio(generateInput);
+
+        if (!wait) {
+          row = await deps.podcastRepo.updateDelivery(row.id, {
+            status: "generating",
+            artifactExternalId: generation.taskId,
+            startedAt: new Date(),
+            url: generation.url,
+            providerResponse: {
+              phase: "generating",
+              fireAndForget: true,
+              generation,
+            },
+          });
+
+          deps.logger?.info("podcast generation kicked off", {
+            editionId: input.editionId,
+            partitionKey,
+            notebookId: notebook.id,
+            podcastId: row.id,
+            artifactExternalId: row.artifact_external_id,
+          });
+
+          return rowToResult(row, edition, {
+            alreadyExisted: false,
+            failureReason: `fire-and-forget; re-run with --wait once the artifact is ready to fetch the URL and download the mp3`,
+          });
+        }
       }
 
-      const generation = await deps.notebookLm.generateAudio(generateInput);
-
-      if (!wait) {
-        row = await deps.podcastRepo.updateDelivery(row.id, {
-          status: "generating",
-          artifactExternalId: generation.taskId,
-          startedAt: new Date(),
-          url: generation.url,
-          providerResponse: {
-            phase: "generating",
-            fireAndForget: true,
-            generation,
-          },
-        });
-
-        deps.logger?.info("podcast generation kicked off", {
-          editionId: input.editionId,
-          partitionKey,
-          notebookId: notebook.id,
-          podcastId: row.id,
-          artifactExternalId: row.artifact_external_id,
-        });
-
-        return rowToResult(row, edition, {
-          alreadyExisted: false,
-          failureReason: `fire-and-forget; re-run with --wait once the artifact is ready to fetch the URL and download the mp3`,
-        });
-      }
-
-      let resolvedUrl: string | null = generation.url;
+      let resolvedUrl: string | null = resumingExistingArtifact
+        ? null
+        : generation.url;
       if (resolvedUrl === null) {
         const waited = await deps.notebookLm.waitForArtifact({
           notebookExternalId: notebook.notebook_external_id,

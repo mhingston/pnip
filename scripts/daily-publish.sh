@@ -19,13 +19,12 @@
 #   1. digestive generate-digest --date <date>     (master)
 #   2. for each active partition (master + configured):
 #        kick off generate-notebook --partition <key> in fire-and-forget
-#        kick off generate-podcast  --partition <key> in fire-and-forget (master and with_podcast partitions)
-#   3. for each active partition:
-#        wait on the notebook via --wait
-#        podcast generation remains asynchronous because it is optional
-#   4. digestive generate-email --date <date> (with artifact links)
-#   5. digestive publish-edition --date <date> --dry-run
-#   6. digestive publish-edition --date <date>
+#   3. for each active partition, wait on the notebook via --wait
+#   4. after each notebook is ready, kick off generate-podcast for master
+#      and configured with_podcast partitions
+#   5. digestive generate-email --date <date> (with artifact links)
+#   6. digestive publish-edition --date <date> --dry-run
+#   7. digestive publish-edition --date <date>
 #
 # Environment:
 #   PNIP_PUBLISH_DATE     override the edition date (default: today local)
@@ -81,11 +80,8 @@ log() {
 # run <description> <command...> — log + execute, abort on failure.
 #
 # The "best-effort" variant (`run_effort`) logs and continues on
-# failure. Use it for steps that are pure fire-and-forget kickoffs
-# (notebook/podcast upload starts) where a transient failure (e.g.,
-# the notebook is still in 'pending' from a previous run, so the
-# podcast can't be kicked off yet) should not abort the whole
-# sequence — the wait phase will retry.
+# failure. Use it for pure fire-and-forget kickoffs where a transient
+# provider failure should not abort the publication sequence.
 run() {
   local desc="$1"
   shift
@@ -140,32 +136,20 @@ done <<< "$PARTITION_LINES"
 run "generate-digest" \
   npm run digestive -- generate-digest --date "$DATE"
 
-# 2. Kick off per-partition notebook + podcast (fire-and-forget) so the
-# upload work happens in parallel with the master notebook. Each
-# generate-* call is idempotent: if a row already exists in the
-# requested state, it is returned as-is and no second upload is made.
-# The kickoff is best-effort: a failure here (e.g., the notebook is
-# still 'pending' from a previous run) is not fatal. Notebook readiness is
-# awaited below; podcast generation remains asynchronous because it is
-# optional for publication.
+# 2. Kick off each notebook (fire-and-forget). Do not attempt podcast
+# generation yet: NotebookLM audio requires a ready notebook, while this
+# upload call leaves the notebook pending as its sources are ingested.
 while IFS= read -r line; do
   [ -z "$line" ] && continue
   partition="${line%%:*}"
-  tag="${line#*:}"
   run_effort "kickoff notebook (partition=$partition)" \
     env PARTITION_CONFIG="${PARTITION_CONFIG:-}" \
     npm run digestive -- generate-notebook --date "$DATE" --partition "$partition"
-  if [ "$tag" = "with_podcast" ]; then
-    run_effort "kickoff podcast (partition=$partition)" \
-      env PARTITION_CONFIG="${PARTITION_CONFIG:-}" \
-      npm run digestive -- generate-podcast --date "$DATE" --partition "$partition"
-  fi
 done <<< "$PARTITION_LINES"
 
 # 3. Wait for each partition's notebook to be ready. --wait blocks on the
 # NotebookLM API; this is the wall-clock heavy step (~10-20 min per source
-# typical). Podcast generation is intentionally not waited on because it is
-# optional and must not delay or block the edition.
+# typical).
 while IFS= read -r line; do
   [ -z "$line" ] && continue
   partition="${line%%:*}"
@@ -174,13 +158,27 @@ while IFS= read -r line; do
     npm run digestive -- generate-notebook --date "$DATE" --partition "$partition" --wait
 done <<< "$PARTITION_LINES"
 
-# 4. Email is rendered after required notebook waits. The command remains
+# 4. Now that every notebook is ready, start the optional podcasts. This is
+# fire-and-forget; scripts/podcast-drain.sh resumes the provider artifact on
+# later cron runs without issuing a duplicate generation request.
+while IFS= read -r line; do
+  [ -z "$line" ] && continue
+  partition="${line%%:*}"
+  tag="${line#*:}"
+  if [ "$tag" = "with_podcast" ]; then
+    run_effort "kickoff podcast (partition=$partition)" \
+      env PARTITION_CONFIG="${PARTITION_CONFIG:-}" \
+      npm run digestive -- generate-podcast --date "$DATE" --partition "$partition"
+  fi
+done <<< "$PARTITION_LINES"
+
+# 5. Email is rendered after required notebook waits. The command remains
 # idempotent: an already-sent edition is not delivered twice. If a podcast
 # finishes later, it can be reflected by a deliberate email regeneration.
 run "generate-email" \
   npm run digestive -- generate-email --date "$DATE"
 
-# 5. Evaluate the building -> ready transition. The edition is in
+# 6. Evaluate the building -> ready transition. The edition is in
 # 'building' state once all 5 enrichers are done for every document
 # in the partition and the cluster_stories + summarize_story
 # workers have completed. generate-edition runs the readiness gate
@@ -189,7 +187,7 @@ run "generate-email" \
 run "generate-edition" \
   npm run digestive -- generate-edition --date "$DATE"
 
-# 6. Dry-run gate check. If the gate fails, the script aborts BEFORE
+# 7. Dry-run gate check. If the gate fails, the script aborts BEFORE
 # the real publish so the operator can investigate. The dry-run
 # output is logged for audit.
 run "publish-edition --dry-run" \
@@ -201,7 +199,7 @@ if [ -n "$DRY_RUN" ]; then
   exit 0
 fi
 
-# 7. Real publish
+# 8. Real publish
 run "publish-edition" \
   npm run digestive -- publish-edition --date "$DATE"
 
