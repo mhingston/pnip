@@ -227,7 +227,7 @@ describe("EditionAssemblyService", () => {
     expect(r.reason).toMatch(/0\/1 stories have summaries/);
   });
 
-  it("getReadiness reports ready only when every doc is enriched AND every story is summarized", async () => {
+  it("getReadiness reports ready only when every document is covered by a summarized story", async () => {
     const ed = await makeEdition("2026-03-04");
     const d1 = await makeDoc(ed.id, "https://e.com/4a");
     const d2 = await makeDoc(ed.id, "https://e.com/4b");
@@ -264,7 +264,40 @@ describe("EditionAssemblyService", () => {
     const r = await assembly.getReadiness(ed.id);
     expect(r.isReady).toBe(true);
     expect(r.storiesWithSummaries).toBe(2);
-    expect(r.reason).toMatch(/all documents fully enriched and all stories have summaries/);
+    expect(r.reason).toMatch(/represented by story clusters/);
+  });
+
+  it("getReadiness reports not-ready when a fully enriched document is unclustered", async () => {
+    const ed = await makeEdition("2026-03-11");
+    const d1 = await makeDoc(ed.id, "https://e.com/4c");
+    const d2 = await makeDoc(ed.id, "https://e.com/4d");
+    const c1 = await makeChunkForDoc(d1.id);
+    for (const t of REQUIRED_ENRICHMENT_TYPES) {
+      await tracker.markDone(d1.id, t);
+      await tracker.markDone(d2.id, t);
+    }
+    const replaced = await storyRepo.replaceForEdition({
+      editionId: ed.id,
+      stories: [{ label: "A", documentIds: [d1.id] }],
+    });
+    const prompt = await makePrompt("story_summary");
+    await storySummaryRepo.replaceForStory({
+      storyId: replaced.stories[0]!.story.id,
+      content: "summary",
+      promptId: prompt.id,
+      promptVersion: prompt.version,
+      model: "m",
+      provider: "p",
+      inputHash: "h",
+      claims: [{ text: "claim", chunkId: c1 }],
+    });
+
+    const r = await assembly.getReadiness(ed.id);
+    expect(r.isReady).toBe(false);
+    expect(r.totalDocuments).toBe(2);
+    expect(r.fullyEnrichedDocuments).toBe(2);
+    expect(r.storiesWithSummaries).toBe(1);
+    expect(r.reason).toMatch(/1\/2 documents represented by story clusters/);
   });
 
   it("isEditionReady is a thin alias for getReadiness().isReady", async () => {

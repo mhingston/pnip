@@ -17,6 +17,7 @@ function makeInput(
   vector: number[],
   publishedAt: Date | null = null,
   title?: string | null,
+  sourceIdentity?: string,
 ): DocumentClusterInput {
   return {
     documentId: id,
@@ -25,6 +26,7 @@ function makeInput(
     embedding: vector,
     publishedAt,
     title,
+    sourceIdentity,
   };
 }
 
@@ -94,6 +96,128 @@ describe("clusterDocuments", () => {
       random: () => 0,
     });
     expect(result).toHaveLength(2);
+  });
+
+  it("blocks an obvious cross-source, cross-topic merge in a small edition", () => {
+    const inputs = [
+      makeInput(
+        "workforce",
+        ["tech workforce", "burnout"],
+        [1, 0, 0],
+        null,
+        "Why the tech workforce is splitting in two",
+        "youtube.com/@lennysPodcast",
+      ),
+      makeInput(
+        "webhooks",
+        ["webhooks", "event driven architecture"],
+        [0.99, 0.01, 0],
+        null,
+        "Event-Driven Architecture and Webhook Chaos",
+        "youtube.com/@betterstack",
+      ),
+    ];
+
+    const result = clusterDocuments(inputs, {
+      similarityThreshold: 0.5,
+      targetStories: 1,
+    });
+
+    expect(result).toHaveLength(2);
+    expect(result.flatMap((cluster) => cluster.documentIds).sort()).toEqual([
+      "webhooks",
+      "workforce",
+    ]);
+  });
+
+  it("preserves a legitimate cross-source merge with shared story metadata", () => {
+    const inputs = [
+      makeInput(
+        "launch-report",
+        ["openai", "model release"],
+        [1, 0, 0],
+        null,
+        "OpenAI launches a new model",
+        "example.com/news",
+      ),
+      makeInput(
+        "launch-analysis",
+        ["openai", "model"],
+        [0.99, 0.01, 0],
+        null,
+        "OpenAI model release analysis",
+        "example.org/analysis",
+      ),
+    ];
+
+    const result = clusterDocuments(inputs, {
+      similarityThreshold: 0.5,
+      targetStories: 1,
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0]!.documentIds.sort()).toEqual([
+      "launch-analysis",
+      "launch-report",
+    ]);
+  });
+
+  it("allows disabling the small-edition coherence guard", () => {
+    const inputs = [
+      makeInput(
+        "a",
+        ["workforce"],
+        [1, 0],
+        null,
+        "Tech workforce survey",
+        "source-a",
+      ),
+      makeInput(
+        "b",
+        ["webhooks"],
+        [0.99, 0.01],
+        null,
+        "Webhook architecture",
+        "source-b",
+      ),
+    ];
+
+    const result = clusterDocuments(inputs, {
+      similarityThreshold: 0.5,
+      targetStories: 1,
+      smallEditionCoherenceGuard: false,
+    });
+
+    expect(result).toHaveLength(1);
+  });
+
+  it("does not apply the guard above the configured small-edition limit", () => {
+    const inputs = [
+      makeInput(
+        "a",
+        ["workforce"],
+        [1, 0],
+        null,
+        "Tech workforce survey",
+        "source-a",
+      ),
+      makeInput(
+        "b",
+        ["webhooks"],
+        [0.99, 0.01],
+        null,
+        "Webhook architecture",
+        "source-b",
+      ),
+    ];
+
+    const result = clusterDocuments(inputs, {
+      similarityThreshold: 0.5,
+      targetStories: 1,
+      smallEditionMaxDocuments: 1,
+    });
+
+    expect(result).toHaveLength(1);
   });
 
   it("places every document in exactly one cluster", () => {

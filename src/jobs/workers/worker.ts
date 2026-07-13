@@ -25,6 +25,11 @@ export interface WorkerOutcome {
 }
 
 export interface Worker {
+  /**
+   * Stable identity used in runtime logs. Factories that do not provide one
+   * are identified by the job type they support.
+   */
+  readonly name?: string;
   supports(jobType: string): boolean;
   execute(job: ProcessingJob, ctx: WorkerContext): Promise<WorkerOutcome>;
 }

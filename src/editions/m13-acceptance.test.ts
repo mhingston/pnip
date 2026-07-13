@@ -358,8 +358,8 @@ function fakeAiText(prompt: string): string {
     return JSON.stringify({
       summary: "Story summary text combining source documents.",
       claims: [
-        "Story claim referencing chunk one [chunk 1].",
-        "Another claim also from chunk one [chunk 1].",
+        "AI [chunk 1].",
+        "AI update [chunk 1].",
       ],
     });
   }
@@ -524,6 +524,19 @@ function makeProcessingJob(
     completed_at: null,
     depends_on: [],
   };
+}
+
+async function markJobRunning(env: TestEnv, jobId: string): Promise<void> {
+  await env.db
+    .updateTable("processing_jobs")
+    .set({
+      status: "running",
+      locked_by: "m13-test-worker",
+      locked_at: new Date(),
+      updated_at: new Date(),
+    })
+    .where("id", "=", jobId)
+    .execute();
 }
 
 interface PipelineState {
@@ -761,6 +774,7 @@ async function runEnrichmentStep(
         editionId: state.editionId,
         target: { chunkId, documentId: docId },
       });
+      await markJobRunning(env, job.id);
       const outcome = await workerByType[jobType]!.execute(
         job,
         { db: env.db, logger: silentLogger() },

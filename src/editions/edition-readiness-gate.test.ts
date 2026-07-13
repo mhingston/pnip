@@ -230,6 +230,37 @@ describe("EditionReadinessGate", () => {
     expect(r.reason).toMatch(/fully ready/);
   });
 
+  it("does not transition when a fully enriched document is not in a story cluster", async () => {
+    const ed = await editionRepo.create("2026-04-11");
+    const d1 = await docRepo.create({ editionId: ed.id, sourceType: "article", sourceUrl: "https://e.com/3c" });
+    const d2 = await docRepo.create({ editionId: ed.id, sourceType: "article", sourceUrl: "https://e.com/3d" });
+    const c1 = await makeChunkForDoc(d1.id);
+    for (const t of REQUIRED_ENRICHMENT_TYPES) {
+      await tracker.markDone(d1.id, t);
+      await tracker.markDone(d2.id, t);
+    }
+    const replaced = await storyRepo.replaceForEdition({
+      editionId: ed.id,
+      stories: [{ label: "A", documentIds: [d1.id] }],
+    });
+    const prompt = await makePrompt("story_summary");
+    await storySummaryRepo.replaceForStory({
+      storyId: replaced.stories[0]!.story.id,
+      content: "ok",
+      promptId: prompt.id,
+      promptVersion: prompt.version,
+      model: "m",
+      provider: "p",
+      inputHash: "h",
+      claims: [{ text: "claim", chunkId: c1 }],
+    });
+
+    const r = await gate.transitionToReadyIfReady(ed.id);
+    expect(r.transitioned).toBe(false);
+    expect(r.edition.status).toBe("building");
+    expect(r.reason).toMatch(/1\/2 documents represented by story clusters/);
+  });
+
   it("does not transition a non-building edition (skipping ready without modification)", async () => {
     const ed = await editionRepo.create("2026-04-04");
     await editionRepo.transition(ed.id, "ready");

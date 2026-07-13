@@ -50,6 +50,18 @@ export function serializeError(err: unknown): WorkerErrorPayload {
   return { type: "Error", message: String(err) };
 }
 
+/**
+ * Resolve the stable identity written to worker execution logs.
+ *
+ * Most existing factories return object-literal Workers and therefore do not
+ * have a useful constructor name. The job type is the runtime registration
+ * key, so it is a stable fallback until a factory supplies an explicit name.
+ */
+export function resolveWorkerIdentity(worker: Worker, jobType: string): string {
+  const name = worker.name?.trim();
+  return name || jobType;
+}
+
 export function createWorkerRuntime(
   deps: CreateWorkerRuntimeDeps,
 ): WorkerRuntime {
@@ -150,7 +162,9 @@ export function createWorkerRuntime(
         return true;
       }
 
-      const log = jobLog.child({ worker: worker.constructor.name });
+      const log = jobLog.child({
+        worker: resolveWorkerIdentity(worker, job.job_type),
+      });
       const ctx: WorkerContext = { db, logger: log };
       const start = Date.now();
       let outcome: WorkerOutcome;

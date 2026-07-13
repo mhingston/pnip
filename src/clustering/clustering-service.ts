@@ -29,6 +29,21 @@ export interface ClusterOptions {
   /** More permissive similarity threshold for small editions. */
   smallEditionSimilarityThreshold?: number;
   /**
+   * Require lightweight metadata coherence before merging documents from
+   * different known sources in small editions. Defaults to true.
+   */
+  smallEditionCoherenceGuard?: boolean;
+  /**
+   * Minimum overlap coefficient between the smaller topic set and the larger
+   * one for a cross-source merge to be considered coherent. Defaults to 0.1.
+   */
+  smallEditionTopicOverlapRatio?: number;
+  /**
+   * Minimum length for a shared title token to count as cross-source evidence.
+   * Defaults to 5; short generic tokens such as "ai" do not bridge stories.
+   */
+  smallEditionTitleTokenMinLength?: number;
+  /**
    * Fraction of documentCount that becomes the target story count when
    * the caller does not pin `targetStories` directly. Clamped to [4, 50].
    * `0.6` × 11 docs → 7 stories, `0.6` × 50 → 30 stories.
@@ -63,6 +78,9 @@ export const DEFAULT_CLUSTER_OPTIONS: ClusterOptions = {
   maxStories: 100,
   smallEditionMaxDocuments: 24,
   smallEditionSimilarityThreshold: 0.55,
+  smallEditionCoherenceGuard: true,
+  smallEditionTopicOverlapRatio: 0.1,
+  smallEditionTitleTokenMinLength: 5,
   targetStoriesRatio: 0.6,
 };
 
@@ -176,6 +194,20 @@ interface EmbeddingIndex {
   vectors: number[][];
 }
 
+interface IndexedDocument {
+  documentId: string;
+  title: string | null;
+  representativeTopic: string;
+  topics: Set<string>;
+  titleTokens: Set<string>;
+  sourceIdentity: string | null;
+}
+
+interface CoherencePolicy {
+  enabled: boolean;
+  topicOverlapRatio: number;
+}
+
 interface MergeCandidate {
   i: number;
   j: number;
@@ -210,6 +242,110 @@ function averageLink(
   return count === 0 ? 0 : sum / count;
 }
 
+function normalizeTopicSet(topics: readonly string[]): Set<string> {
+  return new Set(
+    topics
+      .map((topic) => topic.trim().toLowerCase())
+      .filter((topic) => topic.length > 0),
+  );
+}
+
+function tokenizeTitle(title: string | null | undefined, minLength: number): Set<string> {
+  if (!title) return new Set();
+  const tokens = title.toLocaleLowerCase().split(/[^\p{L}\p{N}]+/u);
+  return new Set(
+    tokens.filter((token) => token.length >= minLength),
+  );
+}
+
+function normalizeSourceIdentity(sourceIdentity?: string): string | null {
+  const normalized = sourceIdentity?.trim().toLowerCase();
+  return normalized && normalized.length > 0 ? normalized : null;
+}
+
+function overlapCoefficient(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 || b.size === 0) return 0;
+  const smaller = a.size <= b.size ? a : b;
+  const larger = a.size <= b.size ? b : a;
+  let intersection = 0;
+  for (const value of smaller) {
+    if (larger.has(value)) intersection += 1;
+  }
+  return intersection / smaller.size;
+}
+
+function hasSharedTitleToken(a: IndexedDocument, b: IndexedDocument): boolean {
+  const smaller =
+    a.titleTokens.size <= b.titleTokens.size ? a.titleTokens : b.titleTokens;
+  const larger =
+    a.titleTokens.size <= b.titleTokens.size ? b.titleTokens : a.titleTokens;
+  for (const token of smaller) {
+    if (larger.has(token)) return true;
+  }
+  return false;
+}
+
+function hasDocumentMetadataEvidence(
+  a: IndexedDocument,
+  b: IndexedDocument,
+  policy: CoherencePolicy,
+): boolean {
+  return (
+    overlapCoefficient(a.topics, b.topics) >= policy.topicOverlapRatio ||
+    hasSharedTitleToken(a, b)
+  );
+}
+
+function hasKnownCrossSource(
+  left: readonly number[],
+  right: readonly number[],
+  indexed: readonly IndexedDocument[],
+): boolean {
+  for (const leftIndex of left) {
+    const leftSource = indexed[leftIndex]!.sourceIdentity;
+    if (!leftSource) continue;
+    for (const rightIndex of right) {
+      const rightSource = indexed[rightIndex]!.sourceIdentity;
+      if (rightSource && leftSource !== rightSource) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Small editions use a deliberately permissive embedding threshold. When two
+ * known, different sources have no meaningful topic or title relationship,
+ * that permissiveness can turn adjacent-but-unrelated material into one
+ * story. Require evidence for that specific cross-source case; same-source
+ * and incomplete-source metadata remain on the existing embedding policy.
+ */
+function allowsCoherentMerge(
+  left: readonly number[],
+  right: readonly number[],
+  indexed: readonly IndexedDocument[],
+  policy: CoherencePolicy,
+): boolean {
+  if (!policy.enabled || !hasKnownCrossSource(left, right, indexed)) {
+    return true;
+  }
+
+  // Require every document in the smaller side to have a metadata connection
+  // to at least one document on the other side. This prevents a late, unrelated
+  // singleton from hitching onto an otherwise coherent cluster while still
+  // allowing a multi-source story to grow through its related documents.
+  const smaller = left.length <= right.length ? left : right;
+  const larger = left.length <= right.length ? right : left;
+  return smaller.every((smallIndex) =>
+    larger.some((largeIndex) =>
+      hasDocumentMetadataEvidence(
+        indexed[smallIndex]!,
+        indexed[largeIndex]!,
+        policy,
+      ),
+    ),
+  );
+}
+
 export function clusterDocuments(
   inputs: readonly DocumentClusterInput[],
   opts?: Partial<ClusterOptions>,
@@ -224,13 +360,39 @@ export function clusterDocuments(
       opts?.targetStoriesRatio ?? DEFAULT_CLUSTER_OPTIONS.targetStoriesRatio,
   });
   const rng = opts?.random;
+  const smallEditionMaxDocuments =
+    opts?.smallEditionMaxDocuments ?? DEFAULT_CLUSTER_OPTIONS.smallEditionMaxDocuments!;
+  const coherencePolicy: CoherencePolicy = {
+    enabled:
+      (opts?.smallEditionCoherenceGuard ??
+        DEFAULT_CLUSTER_OPTIONS.smallEditionCoherenceGuard!) &&
+      inputs.length <= smallEditionMaxDocuments,
+    topicOverlapRatio: Math.max(
+      0,
+      Math.min(
+        1,
+        opts?.smallEditionTopicOverlapRatio ??
+          DEFAULT_CLUSTER_OPTIONS.smallEditionTopicOverlapRatio!,
+      ),
+    ),
+  };
+  const titleTokenMinLength = Math.max(
+    1,
+    Math.floor(
+      opts?.smallEditionTitleTokenMinLength ??
+        DEFAULT_CLUSTER_OPTIONS.smallEditionTitleTokenMinLength!,
+    ),
+  );
 
   if (inputs.length === 0) return [];
 
-  const indexed = inputs.map((d) => ({
+  const indexed: IndexedDocument[] = inputs.map((d) => ({
     documentId: d.documentId,
     title: d.title ?? null,
     representativeTopic: pickRepresentativeTopic(d.topics, rng),
+    topics: normalizeTopicSet(d.topics),
+    titleTokens: tokenizeTitle(d.title, titleTokenMinLength),
+    sourceIdentity: normalizeSourceIdentity(d.sourceIdentity),
   }));
 
   const emb: EmbeddingIndex = {
@@ -253,6 +415,16 @@ export function clusterDocuments(
     if (rootI === rootJ) continue;
     const avg = averageLink(clusters[rootI]!, clusters[rootJ]!, emb);
     if (avg < similarityThreshold) continue;
+    if (
+      !allowsCoherentMerge(
+        clusters[rootI]!,
+        clusters[rootJ]!,
+        indexed,
+        coherencePolicy,
+      )
+    ) {
+      continue;
+    }
     if (clusters.length <= targetStories) break;
     const merged: number[] = clusters[rootI]!.concat(clusters[rootJ]!);
     const keepIdx = rootI < rootJ ? rootI : rootJ;

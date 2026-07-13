@@ -71,28 +71,51 @@ export function createEditionAssemblyService(
     },
 
     async getReadiness(editionId) {
-      const counts = await deps.enrichmentTracker.getDocumentCounts(editionId);
-      const stories = await deps.storyRepo.getByEdition(editionId);
+      const [counts, stories, documents] = await Promise.all([
+        deps.enrichmentTracker.getDocumentCounts(editionId),
+        deps.storyRepo.getByEdition(editionId),
+        deps.db
+          .selectFrom("documents")
+          .select("id")
+          .where("edition_id", "=", editionId)
+          .execute(),
+      ]);
       let storiesWithSummaries = 0;
       for (const s of stories) {
         const summary = await deps.storySummaryRepo.getByStoryId(s.story.id);
         if (summary !== undefined) storiesWithSummaries += 1;
       }
+      const clusteredDocumentIds = new Set(
+        stories.flatMap((s) => s.members.map((member) => member.document_id)),
+      );
+      const clusteredDocumentCount = documents.reduce(
+        (count, document) =>
+          count + (clusteredDocumentIds.has(document.id) ? 1 : 0),
+        0,
+      );
       const expectedCompletedTypeRows =
         counts.totalDocuments * REQUIRED_ENRICHMENT_TYPES.length;
       const everyDocumentFullyEnriched =
         counts.totalDocuments > 0 &&
         counts.fullyEnrichedDocuments === counts.totalDocuments;
+      const everyDocumentClustered =
+        documents.length > 0 && clusteredDocumentCount === documents.length;
       const everyStorySummarized =
         stories.length === 0 ? false : storiesWithSummaries === stories.length;
-      const isReady = everyDocumentFullyEnriched && everyStorySummarized;
+      const isReady =
+        everyDocumentFullyEnriched &&
+        everyDocumentClustered &&
+        everyStorySummarized;
       let reason: string;
       if (isReady) {
-        reason = "all documents fully enriched and all stories have summaries";
+        reason =
+          "all documents fully enriched, represented by story clusters, and all stories have summaries";
       } else if (counts.totalDocuments === 0) {
         reason = "no documents in edition";
       } else if (!everyDocumentFullyEnriched) {
         reason = `${counts.fullyEnrichedDocuments}/${counts.totalDocuments} documents fully enriched`;
+      } else if (!everyDocumentClustered) {
+        reason = `${clusteredDocumentCount}/${documents.length} documents represented by story clusters`;
       } else {
         reason = `${storiesWithSummaries}/${stories.length} stories have summaries`;
       }

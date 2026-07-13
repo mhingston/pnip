@@ -75,22 +75,62 @@ function clip(s: string, max: number): string {
 
 const CHUNK_REF_RE = /\[([^\]]*?)\]/g;
 const CHUNK_NUM_RE = /chunk\s+(\d+)/gi;
-
+const CHUNK_REF_CONTENT_RE = /^chunk\s+\d+(?:\s*,\s*chunk\s+\d+)*$/i;
 
 function extractChunkReferences(
   claim: string,
   totalChunks: number,
+  claimIndex: number,
 ): number[] {
+  if (claim.trim().length === 0) {
+    throw new Error(
+      `story summary claim ${claimIndex + 1} must not be empty`,
+    );
+  }
+
+  const matches = [...claim.matchAll(CHUNK_REF_RE)];
+  if (matches.length === 0) {
+    throw new Error(
+      `story summary claim ${claimIndex + 1} must include an explicit chunk reference like [chunk 1]`,
+    );
+  }
+
+  // Any square brackets left after removing reference groups are either an
+  // unmatched bracket or an unrelated citation format. Reject both so the
+  // persisted provenance can only come from the contract shown to the model.
+  const withoutReferences = claim.replace(CHUNK_REF_RE, "");
+  if (withoutReferences.includes("[") || withoutReferences.includes("]")) {
+    throw new Error(
+      `story summary claim ${claimIndex + 1} contains a malformed chunk reference; expected [chunk N] or [chunk N, chunk M]`,
+    );
+  }
+
   const out = new Set<number>();
-  for (const m of claim.matchAll(CHUNK_REF_RE)) {
-    const inner = m[1];
+  for (const m of matches) {
+    const inner = (m[1] ?? "").trim();
+    if (!CHUNK_REF_CONTENT_RE.test(inner)) {
+      throw new Error(
+        `story summary claim ${claimIndex + 1} contains malformed chunk reference '${m[0]}'`,
+      );
+    }
+
     for (const num of inner.matchAll(CHUNK_NUM_RE)) {
       const n = Number(num[1]);
-      if (Number.isFinite(n) && n >= 1 && n <= totalChunks) {
-        out.add(n - 1);
+      if (!Number.isFinite(n) || n < 1 || n > totalChunks) {
+        throw new Error(
+          `story summary claim ${claimIndex + 1} references chunk ${n}, but only chunks 1-${totalChunks} are available`,
+        );
       }
+      out.add(n - 1);
     }
   }
+
+  if (out.size === 0) {
+    throw new Error(
+      `story summary claim ${claimIndex + 1} must include at least one valid chunk reference`,
+    );
+  }
+
   return [...out].sort((a, b) => a - b);
 }
 
@@ -99,6 +139,86 @@ function stripReferences(claim: string): string {
     .replace(CHUNK_REF_RE, "")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function normalizeClaimText(claim: string): string {
+  return claim
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[.!?]+$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+const QUALITY_STOP_WORDS = new Set([
+  "about",
+  "after",
+  "also",
+  "and",
+  "are",
+  "because",
+  "been",
+  "being",
+  "but",
+  "for",
+  "from",
+  "has",
+  "have",
+  "into",
+  "its",
+  "more",
+  "not",
+  "of",
+  "on",
+  "only",
+  "that",
+  "the",
+  "their",
+  "there",
+  "these",
+  "they",
+  "this",
+  "those",
+  "through",
+  "was",
+  "were",
+  "which",
+  "with",
+  "would",
+]);
+
+function meaningfulTokens(text: string): Set<string> {
+  return new Set(
+    (text.normalize("NFKC").toLowerCase().match(/[\p{L}\p{N}]{3,}/gu) ?? [])
+      .filter((token) => !QUALITY_STOP_WORDS.has(token)),
+  );
+}
+
+function tokenOverlapCount(left: Set<string>, right: Set<string>): number {
+  let overlap = 0;
+  for (const token of left) {
+    if (right.has(token)) overlap += 1;
+  }
+  return overlap;
+}
+
+function claimRestatesSummary(claim: string, summary: string): boolean {
+  const claimTokens = meaningfulTokens(claim);
+  if (claimTokens.size < 4) return false;
+  const summaryTokens = meaningfulTokens(summary);
+  return (
+    tokenOverlapCount(claimTokens, summaryTokens) / claimTokens.size >= 0.8
+  );
+}
+
+function claimHasSourceOverlap(
+  claim: string,
+  citedChunks: readonly SourceChunk[],
+): boolean {
+  const claimTokens = meaningfulTokens(claim);
+  if (claimTokens.size < 3) return true;
+  const sourceTokens = meaningfulTokens(citedChunks.map((c) => c.text).join(" "));
+  return tokenOverlapCount(claimTokens, sourceTokens) > 0;
 }
 
 function selectEvenly<T>(items: readonly T[], maxItems: number): T[] {
@@ -244,9 +364,58 @@ export function createSummarizeStoryWorker(
           "story summary prompt JSON missing required fields: { summary: string, claims: string[] }",
         );
       }
+      if (summaryText.trim().length === 0) {
+        throw new Error("story summary prompt returned an empty summary");
+      }
       if (claims.length === 0) {
         throw new Error("story summary prompt returned empty claims array");
       }
+
+      const seenClaims = new Set<string>();
+      const parsedClaims = claims.map((raw, i) => {
+        const refs = extractChunkReferences(raw, sourceChunks.length, i);
+        const cleanText = stripReferences(raw);
+        if (cleanText.length === 0) {
+          throw new Error(
+            `story summary claim ${i + 1} must contain text in addition to its chunk reference`,
+          );
+        }
+
+        const normalized = normalizeClaimText(cleanText);
+        if (seenClaims.has(normalized)) {
+          throw new Error(
+            `story summary prompt returned duplicate claim at position ${i + 1}`,
+          );
+        }
+        seenClaims.add(normalized);
+
+        const citedChunks = refs.map((ref) => sourceChunks[ref]!).filter(Boolean);
+        if (!claimHasSourceOverlap(cleanText, citedChunks)) {
+          throw new Error(
+            `story summary claim ${i + 1} has no meaningful lexical overlap with its cited source chunks`,
+          );
+        }
+        if (
+          prompt.name === STORY_SUMMARY_PROMPT_NAME &&
+          prompt.version >= 2 &&
+          claimRestatesSummary(cleanText, summaryText)
+        ) {
+          throw new Error(
+            `story summary claim ${i + 1} substantially restates the summary`,
+          );
+        }
+
+        const primaryChunk = sourceChunks[refs[0]!];
+        if (!primaryChunk) {
+          throw new Error(
+            `story summary claim ${i + 1} references a chunk that is not available in the prompt`,
+          );
+        }
+        return {
+          text: cleanText,
+          chunkId: primaryChunk.chunkId,
+        };
+      });
 
       const { summary, citations } = await deps.storySummaryRepo.replaceForStory(
         {
@@ -257,16 +426,7 @@ export function createSummarizeStoryWorker(
           model: result.model,
           provider: result.provider,
           inputHash: result.inputHash,
-          claims: claims.map((raw, i) => {
-            const refs = extractChunkReferences(raw, sourceChunks.length);
-            const primaryIdx =
-              refs[0] ?? Math.min(i, sourceChunks.length - 1);
-            const cleanText = stripReferences(raw);
-            return {
-              text: cleanText.length > 0 ? cleanText : raw,
-              chunkId: sourceChunks[primaryIdx].chunkId,
-            };
-          }),
+          claims: parsedClaims,
         },
       );
 
