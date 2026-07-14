@@ -39,6 +39,32 @@ The NotebookLM notebook uploads the curated source URLs/files, not the Markdown 
 
 Fabric, MarkItDown, Resend, and NotebookLM are only required for the stages that use them. Tests can run with AI_PROVIDER=fake and mocked external services.
 
+## Miniflux Reddit polling
+
+Reddit RSS applies provider-side request limits and may reject the default
+Miniflux User-Agent when many subreddit feeds are polled together. For a
+Miniflux deployment with a Reddit-heavy collection, use a descriptive client
+identity, serialize requests to the Reddit host, and keep the polling batch
+small:
+
+~~~yaml
+environment:
+  - HTTP_CLIENT_USER_AGENT=PNIP RSS Reader/1.0 (+https://miniflux.example)
+  - POLLING_LIMIT_PER_HOST=1
+  - POLLING_FREQUENCY=2
+  - BATCH_SIZE=1
+dns:
+  - 1.1.1.1
+  - 8.8.8.8
+~~~
+
+The two-minute cadence trades freshness for reliability; a larger feed
+collection rotates over several hours, which is appropriate for a daily
+edition. A small number of subreddits may still be rejected by Reddit's bot
+protection. Those feeds should be disabled or replaced rather than retried
+aggressively. PNIP's discovery fill remains best-effort and prioritizes blogs
+and YouTube over Reddit when stronger sources are available.
+
 ## Setup
 
 1. Install dependencies and copy the environment template:
