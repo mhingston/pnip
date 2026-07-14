@@ -292,6 +292,51 @@ describe("runDoctorCommand", () => {
     expect(check?.detail).toContain("status=401");
   });
 
+  it("miniflux: fails when feed parsing errors are present despite /v1/me being healthy", async () => {
+    const miniflux = makeFakeMiniflux({ ok: true, status: 200 });
+    miniflux.feedHealthSummary = vi.fn().mockResolvedValue({
+      ok: false,
+      totalFeeds: 3,
+      feedsWithErrors: 0,
+      feedsWithParsingErrors: 2,
+      byCategory: {
+        Reddit: {
+          feeds: 2,
+          feedsWithErrors: 0,
+          feedsWithParsingErrors: 2,
+        },
+        Blogs: {
+          feeds: 1,
+          feedsWithErrors: 0,
+          feedsWithParsingErrors: 0,
+        },
+      },
+      failures: [
+        {
+          id: 1,
+          title: "Reddit /r/example",
+          category: { id: 1, title: "Reddit" },
+          errorCount: 0,
+          parsingErrorCount: 1,
+          errorMessage: null,
+          parsingErrorMessage: "too many requests",
+        },
+      ],
+    });
+
+    const r = await runDoctorCommand({
+      config: makeConfig(),
+      pool: makeFakePool({}),
+      queue: makeFakeQueue({}),
+      miniflux,
+      migrationsDir: goodMigrationsDir,
+    });
+    const check = r.report.checks.find((c) => c.name === "miniflux");
+    expect(check?.ok).toBe(false);
+    expect(check?.detail).toContain("parsing-error-feeds=2");
+    expect(check?.detail).toContain("Reddit /r/example: too many requests");
+  });
+
   it("miniflux: skipped (ok=true) when no client is provided", async () => {
     const r = await runDoctorCommand({
       config: makeConfig(),

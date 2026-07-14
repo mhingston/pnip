@@ -74,8 +74,20 @@ function entry(
 }
 
 interface FakeMinifluxCalls {
-  listUnread: Array<{ limit?: number; afterEntryId?: number; status?: string }>;
-  listEntries: Array<{ limit?: number; afterEntryId?: number; status?: string }>;
+  listUnread: Array<{
+    limit?: number;
+    afterEntryId?: number;
+    beforeEntryId?: number;
+    direction?: string;
+    status?: string;
+  }>;
+  listEntries: Array<{
+    limit?: number;
+    afterEntryId?: number;
+    beforeEntryId?: number;
+    direction?: string;
+    status?: string;
+  }>;
   markAllFeedsRead: number;
   markEntryRead: number[];
 }
@@ -105,11 +117,15 @@ function createFakeMiniflux(opts: {
       calls.listEntries.push({
         limit: listOpts?.limit,
         afterEntryId: listOpts?.afterEntryId,
+        beforeEntryId: listOpts?.beforeEntryId,
+        direction: listOpts?.direction,
         status: listOpts?.status,
       });
       calls.listUnread.push({
         limit: listOpts?.limit,
         afterEntryId: listOpts?.afterEntryId,
+        beforeEntryId: listOpts?.beforeEntryId,
+        direction: listOpts?.direction,
         status: listOpts?.status,
       });
       const page = opts.pages[pageIndex] ?? [];
@@ -366,6 +382,50 @@ describe("DiscoveryService", () => {
     expect(calls.markAllFeedsRead).toBe(1);
     expect(calls.listUnread.map((c) => c.limit)).toEqual([2, 2]);
     expect(calls.listUnread.map((c) => c.afterEntryId)).toEqual([undefined, 2]);
+  });
+
+  it("fills a short edition from recent unprocessed history without moving the cursor backward", async () => {
+    const { client, calls } = createFakeMiniflux({
+      pages: [
+        [entry(100, "https://www.youtube.com/watch?v=100"), entry(101, "https://www.youtube.com/watch?v=101")],
+        [
+          entry(90, "https://www.youtube.com/watch?v=90"),
+          entry(89, "https://www.reddit.com/r/example/89"),
+          entry(88, "https://blog.example.com/88"),
+        ],
+      ],
+    });
+    const service = createDiscoveryService({
+      db,
+      editionRepo,
+      discoveryRepo,
+      queue,
+      minimumEntries: 5,
+      lookbackDays: 7,
+      sourceBalance: true,
+    });
+
+    const result = await service.discover({
+      editionDate: "2026-01-10",
+      miniflux: client,
+    });
+
+    expect(result.created).toBe(5);
+    expect(result.enqueued).toBe(5);
+    expect(await discoveryRepo.countByEdition(result.editionId)).toBe(5);
+    const state = await db
+      .selectFrom("miniflux_ingestion_state")
+      .select("last_entry_id")
+      .executeTakeFirst();
+    expect(state?.last_entry_id).toBe("101");
+    expect(calls.listEntries[1]).toMatchObject({
+      beforeEntryId: 101,
+      direction: "desc",
+      status: "all",
+    });
+    expect(
+      JSON.stringify((await discoveryRepo.getByMinifluxEntryId(89))?.metadata),
+    ).toContain("reddit");
   });
 
   it("expand_document job shape: jobType, editionId, target{discoveryEventId,url}, status=pending", async () => {

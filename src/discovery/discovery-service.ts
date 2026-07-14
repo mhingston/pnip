@@ -6,11 +6,15 @@ import type { DiscoveryRepository } from "./discovery-repository.js";
 import { createProcessingJobQueue } from "../jobs/queue/processing-job-queue.js";
 import type { ProcessingJobQueue } from "../jobs/queue/processing-job-queue.js";
 import type { EditionRepository } from "../editions/edition-repository.js";
-import type { MinifluxClient } from "./miniflux-client.js";
+import type { MinifluxClient, MinifluxEntry } from "./miniflux-client.js";
 import type { Logger } from "../logging/logger.js";
 import type { PartitionConfig } from "../config/index.js";
 import { resolvePartitionKey } from "./partition-resolver.js";
 import { createMinifluxIngestionStateRepository } from "./miniflux-ingestion-state-repository.js";
+import {
+  classifyDiscoverySourceFamily,
+  selectBalancedEntries,
+} from "./source-coverage.js";
 
 export interface DiscoveryResult {
   editionId: string;
@@ -26,6 +30,12 @@ export interface DiscoveryService {
     editionDate: string | Date;
     miniflux: MinifluxClient;
     limit?: number;
+    /** Minimum discovery events to aim for in the mutable edition. */
+    minimumEntries?: number;
+    /** Historical window used only when the cursor has too few entries. */
+    lookbackDays?: number;
+    /** Prefer articles and YouTube over Reddit while filling the historical gap. */
+    sourceBalance?: boolean;
   }): Promise<DiscoveryResult>;
 }
 
@@ -104,6 +114,10 @@ export function createDiscoveryService(deps: {
   queue: ProcessingJobQueue;
   partitionConfig?: PartitionConfig;
   logger?: Logger;
+  /** Runtime target supplied by the CLI; omitted for legacy/test callers. */
+  minimumEntries?: number;
+  lookbackDays?: number;
+  sourceBalance?: boolean;
 }): DiscoveryService {
   return {
     async discover(input) {
@@ -126,6 +140,7 @@ export function createDiscoveryService(deps: {
       let enqueued = 0;
       let failed = 0;
       let afterEntryId: number | undefined;
+      let backfilled = 0;
       const ingestionState = createMinifluxIngestionStateRepository(deps.db);
       const savedState = await ingestionState.get();
       if (savedState) {
@@ -137,8 +152,79 @@ export function createDiscoveryService(deps: {
       }
       let runHadFailure = false;
 
+      const processEntry = async (
+        entry: MinifluxEntry,
+        advanceCursor: boolean,
+      ): Promise<"created" | "duplicate" | "failed"> => {
+        let outcome: "created" | "duplicate" = "duplicate";
+        try {
+          const partitionKey = resolvePartitionKey({
+            entry,
+            config: deps.partitionConfig,
+          });
+          await deps.db.transaction().execute(async (trx) => {
+            const dr = createDiscoveryRepository(trx);
+            const { event, created: c } = await dr.getOrCreate({
+              editionId: edition.id,
+              minifluxEntryId: entry.id,
+              feedId: entry.feedId,
+              title: entry.title,
+              url: entry.url,
+              hash: entry.hash,
+              publishedAt: entry.publishedAt,
+              metadata: {
+                title: entry.title,
+                feedId: entry.feedId,
+                sourceFamily: classifyDiscoverySourceFamily(entry.url),
+              },
+              partitionKey,
+            });
+            if (c) {
+              // A late discovery invalidates any cluster snapshot that was
+              // queued for this still-mutable edition. The cluster worker
+              // will defer until the new document is fully enriched.
+              await trx
+                .updateTable("editions")
+                .set({
+                  cluster_stories_enqueued_at: null,
+                  updated_at: sql<Date>`now()`,
+                })
+                .where("id", "=", edition.id)
+                .where("cluster_stories_enqueued_at", "is not", null)
+                .execute();
+              const q = createProcessingJobQueue(trx);
+              await q.enqueue({
+                jobType: "expand_document",
+                editionId: edition.id,
+                target: { discoveryEventId: event.id, url: entry.url, partitionKey },
+              });
+              outcome = "created";
+            }
+            // Historical fill candidates intentionally do not move the
+            // monotonic cursor backward. New entries advance it atomically
+            // with the event/job so a failed entry is retried next poll.
+            if (advanceCursor && !runHadFailure) {
+              await createMinifluxIngestionStateRepository(trx).set({
+                lastEntryId: entry.id,
+              });
+            }
+          });
+          return outcome;
+        } catch (err) {
+          runHadFailure = true;
+          editionLog?.error("discovery entry failed", {
+            error: err as Error,
+            minifluxEntryId: entry.id,
+            url: entry.url,
+            historicalFill: !advanceCursor,
+          });
+          failed++;
+          return "failed";
+        }
+      };
+
+      const listEntries = input.miniflux.listEntries ?? input.miniflux.listUnreadEntries;
       for (;;) {
-        const listEntries = input.miniflux.listEntries ?? input.miniflux.listUnreadEntries;
         const entries = await listEntries.call(input.miniflux, {
           status: "all",
           limit,
@@ -148,75 +234,89 @@ export function createDiscoveryService(deps: {
 
         for (const entry of entries) {
           total++;
-          let made = false;
-          try {
-            const partitionKey = resolvePartitionKey({
-              entry,
-              config: deps.partitionConfig,
-            });
-            await deps.db.transaction().execute(async (trx) => {
-              const dr = createDiscoveryRepository(trx);
-              const { event, created: c } = await dr.getOrCreate({
-                editionId: edition.id,
-                minifluxEntryId: entry.id,
-                feedId: entry.feedId,
-                title: entry.title,
-                url: entry.url,
-                hash: entry.hash,
-                publishedAt: entry.publishedAt,
-                metadata: { title: entry.title, feedId: entry.feedId },
-                partitionKey,
-              });
-              if (c) {
-                // A late discovery invalidates any cluster snapshot that was
-                // queued for this still-mutable edition. The cluster worker
-                // will defer until the new document is fully enriched.
-                await trx
-                  .updateTable("editions")
-                  .set({
-                    cluster_stories_enqueued_at: null,
-                    updated_at: sql<Date>`now()`,
-                  })
-                  .where("id", "=", edition.id)
-                  .where("cluster_stories_enqueued_at", "is not", null)
-                  .execute();
-                const q = createProcessingJobQueue(trx);
-                await q.enqueue({
-                  jobType: "expand_document",
-                  editionId: edition.id,
-                  target: { discoveryEventId: event.id, url: entry.url, partitionKey },
-                });
-                made = true;
-              }
-              // Advance the local cursor in the same transaction as the
-              // event/job. If an earlier entry failed, leave the cursor at
-              // the last contiguous success so that failed entries retry on
-              // the next poll rather than being skipped.
-              if (!runHadFailure) {
-                await createMinifluxIngestionStateRepository(trx).set({
-                  lastEntryId: entry.id,
-                });
-              }
-            });
-            if (made) {
-              created++;
-              enqueued++;
-            } else {
-              duplicates++;
-            }
-          } catch (err) {
-            failed++;
-            runHadFailure = true;
-            editionLog?.error("discovery entry failed", {
-              error: err as Error,
-              minifluxEntryId: entry.id,
-              url: entry.url,
-            });
+          const outcome = await processEntry(entry, true);
+          if (outcome === "created") {
+            created++;
+            enqueued++;
+          } else if (outcome === "duplicate") {
+            duplicates++;
           }
           afterEntryId = entry.id;
         }
 
         if (entries.length < limit) break;
+      }
+
+      const minimumEntries = Math.max(
+        0,
+        Math.floor(input.minimumEntries ?? deps.minimumEntries ?? 0),
+      );
+      const editionEntryCount = await deps.discoveryRepo.countByEdition(edition.id);
+      const needed = Math.max(0, minimumEntries - editionEntryCount);
+      const lookbackDays = Math.max(
+        0,
+        Math.floor(input.lookbackDays ?? deps.lookbackDays ?? 7),
+      );
+      if (needed > 0 && lookbackDays > 0) {
+        const historicalLimit = Math.min(
+          500,
+          Math.max(limit, needed * 4),
+        );
+        const cutoff = new Date(`${resolved.selectedDate}T00:00:00.000Z`);
+        cutoff.setUTCDate(cutoff.getUTCDate() - lookbackDays);
+        const unprocessed: MinifluxEntry[] = [];
+        let historicalBeforeEntryId = afterEntryId;
+        for (let page = 0; page < 5 && unprocessed.length < needed; page++) {
+          const historicalEntries = await listEntries.call(input.miniflux, {
+            status: "all",
+            limit: historicalLimit,
+            beforeEntryId: historicalBeforeEntryId,
+            direction: "desc",
+          });
+          if (historicalEntries.length === 0) break;
+          for (const entry of historicalEntries) {
+            const timestamp = entry.publishedAt ?? entry.createdAt;
+            if (timestamp && new Date(timestamp) < cutoff) continue;
+            if (await deps.discoveryRepo.getByMinifluxEntryId(entry.id)) continue;
+            unprocessed.push(entry);
+          }
+          const lowestEntryId = Math.min(...historicalEntries.map((entry) => entry.id));
+          if (!Number.isFinite(lowestEntryId)) break;
+          historicalBeforeEntryId = lowestEntryId;
+          if (historicalEntries.length < historicalLimit) break;
+        }
+        const candidates = selectBalancedEntries(
+          unprocessed,
+          needed,
+          input.sourceBalance ?? deps.sourceBalance ?? true,
+        );
+        editionLog?.info("filling edition from recent unprocessed entries", {
+          needed,
+          candidates: candidates.length,
+          lookbackDays,
+          sourceBalance: input.sourceBalance ?? deps.sourceBalance ?? true,
+        });
+        for (const entry of candidates) {
+          total++;
+          const outcome = await processEntry(entry, false);
+          if (outcome === "created") {
+            created++;
+            enqueued++;
+            backfilled++;
+          }
+        }
+      }
+
+      if (minimumEntries > 0) {
+        const finalEditionEntryCount = await deps.discoveryRepo.countByEdition(edition.id);
+        if (finalEditionEntryCount < minimumEntries) {
+          editionLog?.warn("edition is below the configured discovery target", {
+            targetEntries: minimumEntries,
+            discoveredEntries: finalEditionEntryCount,
+            shortfall: minimumEntries - finalEditionEntryCount,
+            lookbackDays,
+          });
+        }
       }
 
       if (!(await hasMinifluxReadReset(deps.db, edition.id))) {
@@ -242,6 +342,7 @@ export function createDiscoveryService(deps: {
         duplicates,
         enqueued,
         failed,
+        backfilled,
       });
       return { editionId: edition.id, total, created, duplicates, enqueued, failed };
     },

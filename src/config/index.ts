@@ -32,6 +32,9 @@ const configSchema = z.object({
   RETRY_MAX_ATTEMPTS: z.string().optional(),
   DOCTOR_FAILED_THRESHOLD: z.coerce.number().int().positive().optional(),
   DIGEST_BIAS_ENABLED: z.enum(["true", "false"]).optional(),
+  DIGEST_MIN_STORIES: z.coerce.number().int().positive().default(25),
+  DIGEST_DISCOVERY_LOOKBACK_DAYS: z.coerce.number().int().nonnegative().default(7),
+  DIGEST_SOURCE_BALANCE: z.enum(["true", "false"]).default("true"),
   DIGEST_TARGET_READING_MINUTES: z.coerce.number().int().positive().optional(),
   DIGEST_SMALL_EDITION_MAX_DOCUMENTS: z.coerce.number().int().positive().optional(),
   DIGEST_SMALL_EDITION_SIMILARITY_THRESHOLD: z

@@ -179,6 +179,9 @@ async function main(): Promise<number> {
         discoveryRepo,
         queue,
         partitionConfig,
+        minimumEntries: cfg.DIGEST_MIN_STORIES,
+        lookbackDays: cfg.DIGEST_DISCOVERY_LOOKBACK_DAYS,
+        sourceBalance: cfg.DIGEST_SOURCE_BALANCE !== "false",
         logger: createLogger({ baseFields: { worker: "discovery" } }),
       });
 
@@ -331,6 +334,7 @@ async function main(): Promise<number> {
         enrichmentTracker: createEnrichmentTrackerRepository(db),
         youtubeFocusChannels,
         options: {
+          minStories: cfg.DIGEST_MIN_STORIES,
           ...(cfg.DIGEST_SMALL_EDITION_MAX_DOCUMENTS !== undefined
             ? { smallEditionMaxDocuments: cfg.DIGEST_SMALL_EDITION_MAX_DOCUMENTS }
             : {}),

@@ -50,6 +50,12 @@ export interface ClusterOptions {
    */
   targetStoriesRatio?: number;
   /**
+   * Minimum number of story clusters to retain when enough documents are
+   * available. This is an editorial floor, not a promise to invent stories
+   * when enrichment or source volume is below the target.
+   */
+  minStories?: number;
+  /**
    * Optional explicit target story count. Overrides the ratio-based
    * computation when set. The greedy merge stops once cluster count <= this
    * value, so a value >= documentCount degenerates to one-doc-per-cluster.
@@ -125,7 +131,11 @@ function cosineSimilarity(a: number[], b: number[]): number {
 
 function computeTargetStories(
   docCount: number,
-  opts: { targetStories?: number; targetStoriesRatio?: number },
+  opts: {
+    targetStories?: number;
+    targetStoriesRatio?: number;
+    minStories?: number;
+  },
 ): number {
   if (opts.targetStories !== undefined) {
     return Math.max(1, Math.min(docCount, Math.floor(opts.targetStories)));
@@ -133,7 +143,8 @@ function computeTargetStories(
   const ratio = opts.targetStoriesRatio ?? DEFAULT_CLUSTER_OPTIONS.targetStoriesRatio!;
   const raw = Math.round(docCount * ratio);
   const clamped = Math.max(4, Math.min(50, raw));
-  return Math.max(1, Math.min(docCount, clamped));
+  const minimum = Math.max(1, Math.floor(opts.minStories ?? 1));
+  return Math.max(1, Math.min(docCount, Math.max(clamped, minimum)));
 }
 
 function pickRepresentativeTopic(
@@ -358,6 +369,7 @@ export function clusterDocuments(
     targetStories: opts?.targetStories,
     targetStoriesRatio:
       opts?.targetStoriesRatio ?? DEFAULT_CLUSTER_OPTIONS.targetStoriesRatio,
+    minStories: opts?.minStories,
   });
   const rng = opts?.random;
   const smallEditionMaxDocuments =

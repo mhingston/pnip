@@ -84,6 +84,26 @@ describe("miniflux-client", () => {
     expect(calls).toHaveLength(1);
   });
 
+  it("supports descending historical entry queries without changing the default", async () => {
+    const { fetch, calls } = makeFakeFetch(() => jsonResponse({ total: 0, entries: [] }));
+    const client = createMinifluxClient({
+      baseUrl: "http://127.0.0.1:8080",
+      token: TOKEN,
+      fetchImpl: fetch,
+    });
+
+    await client.listEntries!({
+      status: "all",
+      limit: 100,
+      beforeEntryId: 16309,
+      direction: "desc",
+    });
+
+    const u = new URL(calls[0].url);
+    expect(u.searchParams.get("direction")).toBe("desc");
+    expect(u.searchParams.get("before_entry_id")).toBe("16309");
+  });
+
   describe("listUnreadEntries", () => {
     it("GETs /v1/entries with status=unread, sends X-Auth-Token, maps snake→camelCase", async () => {
       const { fetch, calls } = makeFakeFetch(() => jsonResponse(TWO_RAW));
@@ -442,6 +462,56 @@ describe("miniflux-client", () => {
       expect(h.ok).toBe(false);
       expect(h.status).toBe(0);
       expect(h.body).toBe("network down");
+    });
+  });
+
+  describe("feedHealthSummary", () => {
+    it("surfaces parsing errors even when the ordinary feed error count is zero", async () => {
+      const { fetch, calls } = makeFakeFetch(() =>
+        jsonResponse([
+          {
+            id: 1,
+            title: "Reddit /r/example",
+            category: { id: 10, title: "Reddit" },
+            error_count: 0,
+            parsing_error_count: 3,
+            parsing_error_message: "too many requests",
+          },
+          {
+            id: 2,
+            title: "Example blog",
+            category: { id: 11, title: "Blogs" },
+            error_count: 1,
+            parsing_error_count: 0,
+            error_message: "DNS failure",
+          },
+          {
+            id: 3,
+            title: "Healthy YouTube",
+            category: { id: 12, title: "YouTube" },
+          },
+        ]),
+      );
+      const client = createMinifluxClient({
+        baseUrl: "http://127.0.0.1:8080",
+        token: TOKEN,
+        fetchImpl: fetch,
+      });
+
+      const summary = await client.feedHealthSummary!();
+
+      expect(calls).toHaveLength(1);
+      expect(new URL(calls[0].url).pathname).toBe("/v1/feeds");
+      expect(summary.ok).toBe(false);
+      expect(summary.totalFeeds).toBe(3);
+      expect(summary.feedsWithParsingErrors).toBe(1);
+      expect(summary.feedsWithErrors).toBe(1);
+      expect(summary.byCategory.Reddit).toEqual({
+        feeds: 1,
+        feedsWithErrors: 0,
+        feedsWithParsingErrors: 1,
+      });
+      expect(summary.failures[0]?.parsingErrorMessage).toBe("too many requests");
     });
   });
 });

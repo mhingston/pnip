@@ -21,7 +21,8 @@ The Markdown digest currently:
 - links each story title to its lead source;
 - has no numbered citation markers;
 - lists every ingested source, ordered by edition ranking; and
-- includes up to 50 lead stories by default, while retaining the complete story/source set.
+- includes all assembled stories, with up to 50 stories promoted to the lead section by default, while retaining the complete story/source set;
+- aims for at least 25 story clusters when enough recent, processable entries exist. If the cursor has too few entries, discovery searches a bounded recent Miniflux lookback and prioritizes blogs/articles and YouTube ahead of lower-signal Reddit threads while filling the edition. Configured YouTube focus channels also receive a ranking and analysis boost. The target is best-effort: feed failures, duplicates, failed expansion, and clustering cannot be papered over with synthetic items.
 
 The NotebookLM notebook uploads the curated source URLs/files, not the Markdown synthesis. A notebook is capped at 50 sources by default; overflow is recorded for audit and remains present in the Markdown digest.
 
@@ -171,6 +172,9 @@ The complete schema is in .env.example. The main settings are:
 | NOTEBOOKLM_MAX_SOURCES_PER_NOTEBOOK | Notebook source cap (default 50) |
 | PARTITION_CONFIG | Optional category-to-partition JSON |
 | DIGEST_BIAS_ENABLED | Enable feedback biasing |
+| DIGEST_MIN_STORIES | Minimum story-cluster target (default 25; best-effort) |
+| DIGEST_DISCOVERY_LOOKBACK_DAYS | Recent Miniflux history used to fill a short edition (default 7) |
+| DIGEST_SOURCE_BALANCE | Prefer articles and YouTube over Reddit during historical fill (default true) |
 | DIGEST_TARGET_READING_MINUTES | Calibrate lead-story prominence |
 | DIGEST_SMALL_EDITION_MAX_DOCUMENTS | Document-count cutoff for the small-edition clustering threshold (default 24) |
 | DIGEST_SMALL_EDITION_SIMILARITY_THRESHOLD | Similarity threshold for small editions (default 0.55) |

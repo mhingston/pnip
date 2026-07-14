@@ -562,6 +562,21 @@ describe("clusterDocuments", () => {
       expect(result.length).toBeLessThanOrEqual(8);
     });
 
+    it("minStories keeps a sufficiently large edition at or above the configured floor", () => {
+      const base = makeBaseVector(16);
+      const inputs = Array.from({ length: 30 }, (_, i) =>
+        makeInput(`d${i}`, ["ai"], perturb(base, 0.01, i)),
+      );
+      const result = clusterDocuments(inputs, {
+        similarityThreshold: 0.65,
+        targetStoriesRatio: 0.6,
+        minStories: 25,
+        random: () => 0,
+      });
+      expect(result.length).toBeGreaterThanOrEqual(25);
+      expect(result.length).toBeLessThanOrEqual(30);
+    });
+
     it("average-link: a high-similarity pair is NOT merged if it would drag the cluster's average below threshold", () => {
       const inputs = [
         makeInput("d0", ["x"], [1, 0]),

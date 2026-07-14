@@ -43,6 +43,9 @@ describe("config", () => {
     const config: Config = loadConfig();
     expect(config.DATABASE_URL).toBe("postgres://localhost/db");
     expect(config.LOG_LEVEL).toBe("info");
+    expect(config.DIGEST_MIN_STORIES).toBe(25);
+    expect(config.DIGEST_DISCOVERY_LOOKBACK_DAYS).toBe(7);
+    expect(config.DIGEST_SOURCE_BALANCE).toBe("true");
   });
 
   it("caches the config instance; resetConfigCache yields a fresh instance", () => {
@@ -124,6 +127,26 @@ describe("config", () => {
     const config = loadConfig();
     expect(config.DIGEST_SMALL_EDITION_MAX_DOCUMENTS).toBe(24);
     expect(config.DIGEST_SMALL_EDITION_SIMILARITY_THRESHOLD).toBeCloseTo(0.55);
+  });
+
+  it("parses the minimum story and discovery coverage settings", () => {
+    process.env.DATABASE_URL = "postgres://localhost/db";
+    process.env.DIGEST_MIN_STORIES = "30";
+    process.env.DIGEST_DISCOVERY_LOOKBACK_DAYS = "14";
+    process.env.DIGEST_SOURCE_BALANCE = "false";
+    const config = loadConfig();
+    expect(config.DIGEST_MIN_STORIES).toBe(30);
+    expect(config.DIGEST_DISCOVERY_LOOKBACK_DAYS).toBe(14);
+    expect(config.DIGEST_SOURCE_BALANCE).toBe("false");
+  });
+
+  it("rejects invalid minimum story settings", () => {
+    process.env.DATABASE_URL = "postgres://localhost/db";
+    process.env.DIGEST_MIN_STORIES = "0";
+    expect(() => loadConfig()).toThrow(/DIGEST_MIN_STORIES/);
+    process.env.DIGEST_MIN_STORIES = "25";
+    process.env.DIGEST_DISCOVERY_LOOKBACK_DAYS = "-1";
+    expect(() => loadConfig({ force: true })).toThrow(/DIGEST_DISCOVERY_LOOKBACK_DAYS/);
   });
 
   it("rejects a small-edition similarity threshold outside 0..1", () => {

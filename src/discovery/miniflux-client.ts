@@ -2,6 +2,31 @@ export type MinifluxCategory = { id: number; title: string };
 
 export type MinifluxFeed = { id: number; title: string };
 
+export interface MinifluxFeedHealth {
+  id: number;
+  title: string;
+  category: MinifluxCategory | null;
+  errorCount: number;
+  parsingErrorCount: number;
+  errorMessage: string | null;
+  parsingErrorMessage: string | null;
+}
+
+export interface MinifluxFeedHealthCategorySummary {
+  feeds: number;
+  feedsWithErrors: number;
+  feedsWithParsingErrors: number;
+}
+
+export interface MinifluxFeedHealthSummary {
+  ok: boolean;
+  totalFeeds: number;
+  feedsWithErrors: number;
+  feedsWithParsingErrors: number;
+  byCategory: Record<string, MinifluxFeedHealthCategorySummary>;
+  failures: MinifluxFeedHealth[];
+}
+
 export interface MinifluxEntry {
   id: number;
   feedId: number;
@@ -24,6 +49,8 @@ export interface ListMinifluxEntriesOptions {
   status?: MinifluxEntryStatus;
   limit?: number;
   afterEntryId?: number;
+  beforeEntryId?: number;
+  direction?: "asc" | "desc";
 }
 
 export interface MinifluxClient {
@@ -36,6 +63,8 @@ export interface MinifluxClient {
   markEntryRead(entryId: number): Promise<void>;
   markEntriesRead(entryIds: number[]): Promise<void>;
   health(): Promise<{ ok: boolean; status: number; body?: string }>;
+  /** Read-only feed-level health, including parsing failures. */
+  feedHealthSummary?(): Promise<MinifluxFeedHealthSummary>;
 }
 
 export class MinifluxApiError extends Error {
@@ -70,6 +99,11 @@ interface RawMinifluxEntry {
 interface RawMinifluxFeed {
   id: number;
   title: string;
+  category?: MinifluxCategory | null;
+  error_count?: number;
+  parsing_error_count?: number;
+  error_message?: string | null;
+  parsing_error_message?: string | null;
 }
 
 interface RawEntriesResponse {
@@ -119,9 +153,10 @@ export function createMinifluxClient(opts: {
         params.set("status", status);
       }
       params.set("order", "id");
-      params.set("direction", "asc");
+      params.set("direction", listOpts?.direction ?? "asc");
       if (listOpts?.limit !== undefined) params.set("limit", String(listOpts.limit));
       if (listOpts?.afterEntryId !== undefined) params.set("after_entry_id", String(listOpts.afterEntryId));
+      if (listOpts?.beforeEntryId !== undefined) params.set("before_entry_id", String(listOpts.beforeEntryId));
       const url = `${base}/v1/entries?${params.toString()}`;
 
       const res = await doFetch(url, {
@@ -177,6 +212,56 @@ export function createMinifluxClient(opts: {
         body: JSON.stringify({ entry_ids: entryIds, status: "read" }),
       });
       await ensureOk(res, url, "PUT");
+    },
+
+    async feedHealthSummary(): Promise<MinifluxFeedHealthSummary> {
+      const url = `${base}/v1/feeds`;
+      const res = await doFetch(url, {
+        method: "GET",
+        headers: { "X-Auth-Token": token, Accept: "application/json" },
+      });
+      await ensureOk(res, url, "GET");
+      const rawFeeds = (await res.json()) as RawMinifluxFeed[];
+      const feeds: MinifluxFeedHealth[] = rawFeeds.map((feed) => ({
+        id: feed.id,
+        title: feed.title,
+        category: feed.category ?? null,
+        errorCount: Number(feed.error_count ?? 0),
+        parsingErrorCount: Number(feed.parsing_error_count ?? 0),
+        errorMessage: feed.error_message ?? null,
+        parsingErrorMessage: feed.parsing_error_message ?? null,
+      }));
+
+      const byCategory: Record<string, MinifluxFeedHealthCategorySummary> = {};
+      for (const feed of feeds) {
+        const category = feed.category?.title?.trim() || "Uncategorized";
+        const summary = byCategory[category] ?? {
+          feeds: 0,
+          feedsWithErrors: 0,
+          feedsWithParsingErrors: 0,
+        };
+        summary.feeds += 1;
+        if (feed.errorCount > 0) summary.feedsWithErrors += 1;
+        if (feed.parsingErrorCount > 0) summary.feedsWithParsingErrors += 1;
+        byCategory[category] = summary;
+      }
+
+      const failures = feeds
+        .filter((feed) => feed.errorCount > 0 || feed.parsingErrorCount > 0)
+        .sort((a, b) =>
+          (b.parsingErrorCount + b.errorCount) -
+            (a.parsingErrorCount + a.errorCount) ||
+          a.title.localeCompare(b.title),
+        );
+
+      return {
+        ok: failures.length === 0,
+        totalFeeds: feeds.length,
+        feedsWithErrors: feeds.filter((feed) => feed.errorCount > 0).length,
+        feedsWithParsingErrors: feeds.filter((feed) => feed.parsingErrorCount > 0).length,
+        byCategory,
+        failures,
+      };
     },
 
     async health(): Promise<{ ok: boolean; status: number; body?: string }> {

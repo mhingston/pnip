@@ -55,6 +55,26 @@ interface ProbeResult {
   body?: string;
 }
 
+function formatMinifluxFeedHealth(
+  summary: Awaited<ReturnType<NonNullable<MinifluxClient["feedHealthSummary"]>>>,
+): string {
+  const categories = Object.entries(summary.byCategory)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(
+      ([category, value]) =>
+        `${category}=${value.feeds} feeds/${value.feedsWithParsingErrors} parsing-errors/${value.feedsWithErrors} errors`,
+    )
+    .join(", ");
+  const samples = summary.failures
+    .slice(0, 3)
+    .map((feed) => {
+      const reason = feed.parsingErrorMessage || feed.errorMessage || "no message";
+      return `${feed.title}: ${reason}`;
+    })
+    .join(" | ");
+  return `feeds=${summary.totalFeeds}; parsing-error-feeds=${summary.feedsWithParsingErrors}; error-feeds=${summary.feedsWithErrors}; categories=[${categories}]${samples ? `; samples=[${samples}]` : ""}`;
+}
+
 async function probeResend(
   apiKey: string,
   fetchImpl: typeof fetch,
@@ -140,10 +160,23 @@ export async function runDoctorCommand(
   if (deps.miniflux) {
     try {
       const h = await deps.miniflux.health();
+      let feedDetail = "";
+      let feedsOk = true;
+      if (deps.miniflux.feedHealthSummary) {
+        try {
+          const feedHealth = await deps.miniflux.feedHealthSummary();
+          feedsOk = feedHealth.ok;
+          feedDetail = `; ${formatMinifluxFeedHealth(feedHealth)}`;
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          feedsOk = false;
+          feedDetail = `; feed health failed: ${msg}`;
+        }
+      }
       checks.push({
         name: "miniflux",
-        ok: h.ok,
-        detail: `status=${h.status}${h.body ? ` body=${h.body}` : ""}`,
+        ok: h.ok && feedsOk,
+        detail: `status=${h.status}${h.body ? ` body=${h.body}` : ""}${feedDetail}`,
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -231,6 +264,7 @@ Checks (in order):
   queue          countByStatus() snapshot; fails when failed > threshold
                  (default 100, override via DOCTOR_FAILED_THRESHOLD)
   miniflux       /v1/me with X-Auth-Token (skipped if MINIFLUX_URL unset)
+                 and /v1/feeds parsing/error counters when available
   resend         GET /domains with the configured API key
                  (skipped if RESEND_API_KEY unset)
   notebooklm     authCheck via the notebooklm-py CLI
