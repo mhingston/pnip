@@ -1,66 +1,318 @@
 # PNIP — Personal News Intelligence Pipeline
 
-PNIP turns a Miniflux feed collection into a daily intelligence edition:
+> [!IMPORTANT]
+> PNIP is an open-source snapshot of a pipeline tailored to my personal setup, rather than a general-purpose hosted product.
+>
+> I run a self-hosted [Miniflux](https://miniflux.app/) server as the feed aggregator. My feeds are organised into three Miniflux categories. PNIP polls Miniflux, ingests and enriches the collected entries, assembles daily digests, then publishes them by email and to [NotebookLM](https://notebooklm.google/).
+>
+> The code is reusable, but it assumes a similar collection of services and reflects my editorial, scheduling, retention, and publication choices. Expect to adapt the category mapping, prompts, extraction tools, providers, and cron schedule for another deployment.
+
+PNIP turns a Miniflux feed collection into a daily, source-grounded news digest.
+
+It produces:
 
 - a canonical Markdown digest;
 - an HTML email delivered through Resend;
-- a source-grounded NotebookLM notebook; and
-- an optional NotebookLM-generated podcast.
+- a NotebookLM notebook populated with the curated source material; and
+- optional NotebookLM-generated audio overviews.
 
-It is a self-hosted TypeScript/Node application backed by PostgreSQL. Processing is queued, resumable, idempotent, and provenance-aware: generated stories can be traced back to source documents and chunks.
+PNIP is a self-hosted TypeScript/Node.js application backed by PostgreSQL and pgvector. Processing is queued, resumable, idempotent, and provenance-aware, so generated stories can be traced back to their source documents and chunks.
 
-## Current behavior
+## How it fits together
 
-Discovery requests both read and unread entries, advances a local ingestion checkpoint, and deduplicates by Miniflux entry ID. When a new daily edition boundary is first opened, PNIP marks all Miniflux feeds read once; this only resets the reader's unread badge. Manual reading remains available, and entries continue to be ingested regardless of their read state.
+```text
+Feeds, newsletters, YouTube, Reddit, podcasts, PDFs, ...
+                              │
+                              ▼
+                        Miniflux server
+                  aggregation + three categories
+                              │
+                              ▼
+                      PNIP discovery cursor
+                              │
+                              ▼
+            expand → chunk → enrich → embed → cluster
+                              │
+                              ▼
+                     daily edition assembly
+                         │              │
+                         ▼              ▼
+                  Markdown + email   NotebookLM
+                                         │
+                                         ▼
+                                  optional podcast
+```
 
-The scheduled drain uses separate discovery and processing locks. Processing can be scoped to one edition date and bounded per tick, so a slow provider or older backlog cannot prevent the next edition from being discovered. Transient provider failures are deferred without exhausting a job's retry budget, and malformed enrichment output uses grounded fallbacks where the source material permits it.
+Miniflux remains responsible for fetching and aggregating feeds. PNIP consumes the resulting entries and is responsible for content extraction, enrichment, clustering, digest generation, and publication.
 
-If discovery is asked to use an edition that is already ready, publishing, or published, it routes entries to the next open daily edition so an immutable digest is never changed by late arrivals.
+## Opinionated defaults
 
-The Markdown digest currently:
+The current implementation deliberately makes several choices that may not suit every deployment:
 
-- omits the redundant “Today in brief” section;
-- links each story title to its lead source;
-- has no numbered citation markers;
-- lists every ingested source, ordered by edition ranking; and
-- includes all assembled stories, with up to 50 stories promoted to the lead section by default, while retaining the complete story/source set;
-- aims for at least 25 story clusters when enough recent, processable entries exist. If the cursor has too few entries, discovery searches a bounded recent Miniflux lookback and prioritizes blogs/articles and YouTube ahead of lower-signal Reddit threads while filling the edition. Configured YouTube focus channels also receive a ranking and analysis boost. The target is best-effort: feed failures, duplicates, failed expansion, and clustering cannot be papered over with synthetic items.
-
-The NotebookLM notebook normally uploads the curated source URLs/files, not the Markdown synthesis. If URL ingestion fails and stored article Markdown/text is available, PNIP uploads that stored content as a fallback and records the source failure. A notebook is capped at 50 sources by default; overflow is recorded for audit and remains present in the Markdown digest.
-
-## Operational status
-
-Last verified on 2026-07-16 (Europe/London):
-
-- the 2026-07-16 edition is published with 25 documents and 25 stories;
-- the Markdown digest is complete and the email was sent;
-- the master NotebookLM notebook is ready with 25 sources; and
-- the optional podcast is generating asynchronously, so it does not block publication.
-
-All 961 processing jobs for that edition were complete with no pending, running, or failed jobs at publication time. This is a status snapshot; use `digestive doctor`, `digestive metrics`, and `digestive active-partitions --date YYYY-MM-DD` for a live check.
+- PNIP discovers both read and unread Miniflux entries and deduplicates them by Miniflux entry ID.
+- A local monotonic cursor prevents the full Miniflux history being replayed on every run.
+- When a new daily edition is opened, PNIP marks all Miniflux feeds as read once. This resets Miniflux's unread badge; it does not prevent manual reading or later ingestion.
+- If too few new entries are available, PNIP can fill an edition from a bounded recent lookback.
+- Historical fill prefers articles and YouTube over lower-signal Reddit entries by default.
+- Published editions are immutable. Late entries are routed to the next open edition.
+- The canonical Markdown digest retains the complete assembled story and source set.
+- NotebookLM notebooks have a configurable source cap. Sources excluded from NotebookLM remain in the Markdown digest and audit trail.
+- Podcast generation is optional and asynchronous; it does not block publication.
+- The supplied cron configuration applies a 30-day retention policy.
 
 ## Requirements
 
+### Core
+
 - Node.js 22 or newer
 - PostgreSQL 14 or newer with pgvector
-- Miniflux and an API token
-- An AI provider for enrichment (OpenAI, an OpenAI-compatible endpoint, or the deterministic fake provider)
+- A Miniflux server and API token
+
+### Integrations
+
+Use only the integrations needed by the stages you intend to run:
+
+- OpenAI, an OpenAI-compatible endpoint, or the deterministic fake provider for enrichment
 - Resend for email delivery
-- notebooklm-py for notebooks and podcasts
+- `notebooklm-py` for NotebookLM notebooks and audio overviews
 - Fabric for live article, YouTube, podcast, and Reddit extraction
 - MarkItDown for PDF extraction
 
-Fabric, MarkItDown, Resend, and NotebookLM are only required for the stages that use them. Tests can run with AI_PROVIDER=fake and mocked external services.
+Tests can run with `AI_PROVIDER=fake` and mocked external services.
 
-## Miniflux Reddit polling
+## Getting started
 
-Reddit RSS applies provider-side request limits and may reject the default
-Miniflux User-Agent when many subreddit feeds are polled together. For a
-Miniflux deployment with a Reddit-heavy collection, use a descriptive client
-identity, serialize requests to the Reddit host, and keep the polling batch
-small:
+### 1. Install dependencies
 
-~~~yaml
+```bash
+npm install
+cp .env.example .env
+```
+
+### 2. Configure the required services
+
+At minimum, set:
+
+```dotenv
+DATABASE_URL=postgres://user:password@127.0.0.1:5432/pnip
+MINIFLUX_URL=http://127.0.0.1:8080
+MINIFLUX_API_TOKEN=replace-me
+```
+
+Then configure the AI, email, and NotebookLM integrations you plan to use. The complete configuration reference is below.
+
+### 3. Map the Miniflux categories
+
+My deployment organises its feeds into three Miniflux categories. `PARTITION_CONFIG` maps those categories to named PNIP partitions, allowing selected categories to receive their own NotebookLM notebook and optional podcast.
+
+Replace the category names with the exact titles used by your Miniflux instance:
+
+```dotenv
+PARTITION_CONFIG={"articles":{"category":"Articles","min_articles":5,"enabled":true},"youtube":{"category":"YouTube","min_articles":5,"enabled":true,"with_podcast":true},"reddit":{"category":"Reddit","min_articles":3,"enabled":true}}
+```
+
+Every document is always included in the `master` partition. `PARTITION_CONFIG` controls additional partition routing and outputs; it is **not** an ingestion allow-list. Entries from unmatched Miniflux categories still enter the master edition.
+
+Leave `PARTITION_CONFIG` empty for a master-only deployment.
+
+### 4. Verify the installation
+
+```bash
+npm run digestive -- doctor
+```
+
+Every CLI invocation runs pending database migrations before executing the requested command.
+
+### 5. Run one edition manually
+
+```bash
+DATE=$(date +%F)
+
+npm run digestive -- discover --date "$DATE"
+npm run digestive -- process --date "$DATE" --max-jobs 10000
+npm run digestive -- generate-digest --date "$DATE"
+npm run digestive -- generate-notebook --date "$DATE" --wait
+npm run digestive -- generate-email --date "$DATE"
+npm run digestive -- generate-edition --date "$DATE"
+npm run digestive -- publish-edition --date "$DATE"
+```
+
+To create an audio overview after the notebook is ready:
+
+```bash
+npm run digestive -- generate-podcast --date "$DATE" --wait
+```
+
+The commands are idempotent. Re-running a completed stage resumes or returns the existing artifact rather than intentionally creating a duplicate.
+
+## Automated operation
+
+Install the recommended cron schedule with:
+
+```bash
+scripts/cron-install.sh install
+```
+
+The default schedule is:
+
+| Schedule | Action | Purpose |
+| --- | --- | --- |
+| `*/10 * * * *` | `digest-drain.sh` | Discover Miniflux entries and process a bounded queue batch |
+| `*/10 * * * *` | `podcast-drain.sh` | Resume NotebookLM audio generation when notebooks are ready |
+| `0 */6 * * *` | maintenance | Clean the queue and apply the 30-day retention policy |
+| `0 6 * * *` | `daily-publish.sh` | Assemble and publish the local day's edition |
+
+All schedules use the host's local timezone. Customise them during installation:
+
+```bash
+scripts/cron-install.sh install \
+  --schedule-drain "*/15 * * * *" \
+  --schedule-publish "30 5 * * *"
+```
+
+Other commands:
+
+```bash
+scripts/cron-install.sh show
+scripts/cron-install.sh remove
+```
+
+See [`scripts/README.md`](scripts/README.md) for the full operational sequence.
+
+## Configuration reference
+
+PNIP loads `.env` through `dotenv`. `DATABASE_URL` is the only globally required schema value; other credentials become required when their corresponding command is used.
+
+### Database, tests, and logging
+
+| Variable | Required | Default | Description |
+| --- | --- | --- | --- |
+| `DATABASE_URL` | Yes | — | PostgreSQL connection string. Must begin with `postgres`. |
+| `TEST_DATABASE_URL` | Tests | — | Separate PostgreSQL connection string used by integration tests. |
+| `LOG_LEVEL` | No | `info` | Logging verbosity: `debug`, `info`, `warn`, or `error`. |
+| `DOCTOR_FAILED_THRESHOLD` | No | internal default | Positive queue-failure threshold used by `digestive doctor`. |
+
+### Miniflux
+
+| Variable | Required | Default | Description |
+| --- | --- | --- | --- |
+| `MINIFLUX_URL` | For discovery | — | Base URL of the Miniflux server. |
+| `MINIFLUX_API_TOKEN` | For discovery | — | Miniflux API token. |
+| `PARTITION_CONFIG` | No | master only | JSON object mapping Miniflux categories to PNIP partitions. See [Partition configuration](#partition-configuration). |
+
+PNIP's discovery call reads all entries exposed by the configured Miniflux account. Limit the source collection in Miniflux itself when only specific categories or feeds should be available to PNIP.
+
+### AI and embeddings
+
+| Variable | Required | Default | Description |
+| --- | --- | --- | --- |
+| `AI_PROVIDER` | No | `openai` | `openai`, `openai-compatible`, or `fake`. |
+| `OPENAI_API_KEY` | For OpenAI providers | — | API key used by the OpenAI or OpenAI-compatible provider. |
+| `OPENAI_BASE_URL` | No | provider-dependent | Overrides the OpenAI-compatible API base URL. The local fallback for `openai-compatible` is `http://localhost:20128/v1`. |
+| `AI_TEXT_MODEL` | No | provider default | Overrides the model used for text enrichment and story summarisation. |
+| `EMBEDDING_MODEL` | No | `Xenova/all-MiniLM-L6-v2` | Hugging Face Transformers.js embedding model. The default produces 384-dimensional vectors. |
+| `EMBEDDING_CACHE_DIR` | No | library default | Local cache directory for the embedding model. |
+| `GOOGLE_GENERATIVE_AI_API_KEY` | No | — | Reserved in the current configuration schema. It is not used by the currently selectable AI providers. |
+
+`AI_PROVIDER=fake` uses deterministic text and embedding providers intended for development and tests.
+
+### Content extraction
+
+| Variable | Required | Default | Description |
+| --- | --- | --- | --- |
+| `FABRIC_BIN` | For supported live extraction | `fabric` | Path or command name for the Fabric CLI. |
+| `MARKITDOWN_BIN` | For PDF extraction | `markitdown` | Path or command name for the MarkItDown CLI. |
+| `REDDIT_REFRESH_STRATEGY` | No | — | Reserved configuration value. It is currently accepted by the schema but not read by the runtime. |
+
+### Email delivery
+
+| Variable | Required | Default | Description |
+| --- | --- | --- | --- |
+| `RESEND_API_KEY` | For email | — | Resend API key. |
+| `EMAIL_FROM` | For email | — | Sender address accepted by Resend, including an optional display name. |
+| `EMAIL_RECIPIENT` | For email delivery | empty list | One or more recipients separated by commas, semicolons, or whitespace. |
+
+`generate-email --dry-run` renders the email without sending it.
+
+### NotebookLM and podcasts
+
+| Variable | Required | Default | Description |
+| --- | --- | --- | --- |
+| `NOTEBOOKLM_OUTPUT_DIR` | No | `./notebooks` | Directory used for downloaded podcast files. |
+| `NOTEBOOKLM_HEADLESS` | No | tool default | Controls headless operation for the NotebookLM CLI integration. Use `true` or `false` according to the installed tool's expectations. |
+| `NOTEBOOKLM_MAX_SOURCES_PER_NOTEBOOK` | No | `50` | Positive maximum number of sources uploaded to one NotebookLM notebook. |
+
+The master NotebookLM notebook normally receives the curated source URLs or files rather than the generated Markdown synthesis. If URL ingestion fails and PNIP has stored article Markdown or text, it uploads that stored content as a fallback and records the source failure.
+
+### Digest and discovery behaviour
+
+| Variable | Required | Default | Description |
+| --- | --- | --- | --- |
+| `DIGEST_MIN_STORIES` | No | `25` | Best-effort minimum story-cluster target. It also drives discovery fill. |
+| `DIGEST_DISCOVERY_LOOKBACK_DAYS` | No | `7` | Number of recent days searched for unprocessed entries when the current cursor yields too few items. Set to `0` to disable historical fill. |
+| `DIGEST_SOURCE_BALANCE` | No | `true` | When `true`, historical fill prefers articles and YouTube over Reddit. |
+| `DIGEST_TARGET_READING_MINUTES` | No | — | Presentation calibration affecting lead-story prominence; it does not remove stories from the canonical digest. |
+| `DIGEST_SMALL_EDITION_MAX_DOCUMENTS` | No | internal default | Positive document-count cutoff for using the small-edition clustering policy. |
+| `DIGEST_SMALL_EDITION_SIMILARITY_THRESHOLD` | No | internal default | Similarity threshold from `0` to `1` used for small editions. |
+| `DIGEST_QUIET_EDITION_REASON` | No | — | Explicit editorial framing: `low_significance` or `low_novelty`. |
+| `DIGEST_BIAS_ENABLED` | No | `false` | Set to `true` to apply feedback-derived muted-source suppression and move down-rated stories later. |
+| `YOUTUBE_FOCUS_CHANNELS` | No | empty | Comma-separated channel names or handles that receive ranking and deeper transcript-analysis emphasis. |
+
+The minimum story count is a target, not a guarantee. Feed failures, duplicate entries, extraction failures, and clustering cannot be replaced with synthetic stories.
+
+### Queue and worker behaviour
+
+| Variable | Required | Default | Description |
+| --- | --- | --- | --- |
+| `WORKER_CONCURRENCY` | No | `4` | Number of concurrent processing workers. Invalid values fall back to `4`; values above `16` are capped at `16`. |
+| `RETRY_MAX_ATTEMPTS` | No | `5` | Maximum attempts for processing jobs. Invalid values fall back to `5`; values above `20` are capped at `20`. |
+| `PNIP_DRAIN_MAX_JOBS` | No | `100` | Maximum jobs processed by each `digest-drain.sh` tick. This is a script-level setting rather than part of the Zod application schema. |
+
+Transient provider deferrals do not consume a job's retry budget in the same way as permanent processing failures.
+
+### Scheduling and script overrides
+
+| Variable | Required | Default | Description |
+| --- | --- | --- | --- |
+| `PNIP_PUBLISH_DATE` | No | host's local date | Forces `daily-publish.sh` and the podcast drain to operate on `YYYY-MM-DD`. |
+| `PNIP_DRY_RUN` | No | unset | When set, `daily-publish.sh` stops after the publication gate's dry run. |
+| `PNIP_LOG_DIR` | No | `<project>/logs` | Overrides the directory used by the publication scripts. |
+| `EDITION_SCHEDULE` | No | — | Reserved configuration value. The current runtime does not schedule from it; use cron or another external scheduler. |
+
+## Partition configuration
+
+`PARTITION_CONFIG` is a JSON object keyed by a stable partition name:
+
+```json
+{
+  "youtube": {
+    "category": "YouTube",
+    "min_articles": 5,
+    "enabled": true,
+    "with_podcast": true
+  }
+}
+```
+
+Each partition supports:
+
+| Property | Required | Default | Description |
+| --- | --- | --- | --- |
+| `category` | One selector | — | Case-insensitive Miniflux category title. |
+| `category_id` | One selector | — | Positive Miniflux category ID; use instead of `category` when titles may change. |
+| `min_articles` | No | `5` | Minimum number of documents required for the partition to become active for an edition. May be `0`. |
+| `enabled` | No | `true` | Whether the partition is eligible to become active. |
+| `with_podcast` | No | `false` | Whether to generate an optional NotebookLM audio overview for the partition. |
+
+The `master` partition is always active and contains the complete edition. An additional partition becomes active only when it is enabled and reaches its `min_articles` threshold.
+
+Notebook source selection is deterministic and follows story cluster order, document quality, quality confidence, and document ID. Sources above `NOTEBOOKLM_MAX_SOURCES_PER_NOTEBOOK` are recorded as excluded from that notebook but remain part of the edition and Markdown digest.
+
+## Miniflux and Reddit polling
+
+Reddit RSS may reject Miniflux's default User-Agent or throttle a Reddit-heavy collection. A conservative Miniflux configuration is:
+
+```yaml
 environment:
   - HTTP_CLIENT_USER_AGENT=PNIP RSS Reader/1.0 (+https://miniflux.example)
   - POLLING_LIMIT_PER_HOST=1
@@ -69,178 +321,85 @@ environment:
 dns:
   - 1.1.1.1
   - 8.8.8.8
-~~~
+```
 
-The two-minute cadence trades freshness for reliability; a larger feed
-collection rotates over several hours, which is appropriate for a daily
-edition. A small number of subreddits may still be rejected by Reddit's bot
-protection. Those feeds should be disabled or replaced rather than retried
-aggressively. PNIP's discovery fill remains best-effort and prioritizes blogs
-and YouTube over Reddit when stronger sources are available.
-
-## Setup
-
-1. Install dependencies and copy the environment template:
-
-~~~bash
-npm install
-cp .env.example .env
-~~~
-
-2. Set at least DATABASE_URL, MINIFLUX_URL, and MINIFLUX_API_TOKEN. Add the credentials for the outputs you want to produce.
-
-3. Verify the installation:
-
-~~~bash
-npm run digestive -- doctor
-~~~
-
-Every CLI invocation runs pending database migrations before executing the command.
-
-## Daily workflow
-
-For a single edition, use:
-
-~~~bash
-DATE=$(date +%F)
-
-npm run digestive -- discover --date "$DATE"
-npm run digestive -- process --date "$DATE" --max-jobs 10000
-npm run digestive -- generate-digest --date "$DATE"
-npm run digestive -- generate-edition --date "$DATE"
-npm run digestive -- generate-notebook --date "$DATE" --wait
-npm run digestive -- generate-podcast --date "$DATE" --wait
-npm run digestive -- generate-email --date "$DATE"
-npm run digestive -- publish-edition --date "$DATE"
-~~~
-
-Podcast generation is best-effort and does not block publication. Notebook readiness, Markdown, email delivery, and any active partition notebooks are publication requirements. The publication command refuses to publish an edition until the readiness gate has moved it from Building to Ready.
-
-The recommended automated workflow is:
-
-~~~bash
-scripts/cron-install.sh install
-~~~
-
-This installs a Miniflux/processing drain and a NotebookLM podcast-readiness drain every 10 minutes, a six-hour maintenance apply (including the 30-day retention purge), and a daily publication trigger. The digest drain discovers the local date independently from its bounded processing batch; `PNIP_DRAIN_MAX_JOBS` controls that batch size and defaults to 100. Use scripts/daily-publish.sh directly when you need a one-shot publication sequence. Set PNIP_PUBLISH_DATE to publish a specific edition and PNIP_DRY_RUN=1 to stop after the publication gate check.
+The two-minute Miniflux cadence trades freshness for reliability. A large collection may rotate over several hours, which is usually acceptable for a daily digest. Feeds consistently rejected by Reddit's bot protection should be disabled or replaced rather than retried aggressively.
 
 ## CLI reference
 
-All commands support -h and --help. Dates default to today.
+All commands support `-h` and `--help`. Date arguments default to today where supported.
 
 ### Ingestion and publication
 
 | Command | Purpose |
 | --- | --- |
-| digestive discover | Ingest new read or unread Miniflux entries; reset Miniflux feed read state once per new edition boundary |
-| digestive process [--date YYYY-MM-DD] [--max-jobs N] | Drain the queue, optionally scoped to one edition and bounded to a batch size |
-| digestive generate-digest | Render the canonical Markdown digest |
-| digestive generate-edition | Evaluate the Building → Ready enrichment gate |
-| digestive generate-email | Render and send the HTML email; --dry-run skips sending |
-| digestive generate-notebook | Create/resume a NotebookLM notebook; --partition selects a partition; --wait waits for source ingestion |
-| digestive generate-podcast | Start/resume podcast generation; --partition selects a partition; --wait waits for the artifact |
-| digestive publish-edition | Gate-check and publish; --dry-run is read-only |
+| `digestive discover` | Ingest new read or unread Miniflux entries and reset Miniflux read state once per new edition boundary. |
+| `digestive process [--date YYYY-MM-DD] [--max-jobs N]` | Drain queued processing jobs, optionally scoped to one edition and bounded to a batch size. |
+| `digestive generate-digest` | Render the canonical Markdown digest. |
+| `digestive generate-notebook` | Create or resume a NotebookLM notebook. Use `--partition` and `--wait` as needed. |
+| `digestive generate-podcast` | Start or resume an optional NotebookLM audio overview. Use `--partition` and `--wait` as needed. |
+| `digestive generate-email` | Render and send the HTML email. `--dry-run` skips sending. |
+| `digestive generate-edition` | Evaluate the Building → Ready enrichment gate. |
+| `digestive publish-edition` | Gate-check and publish the edition. `--dry-run` is read-only. |
 
 ### Operations
 
 | Command | Purpose |
 | --- | --- |
-| digestive doctor | Check configuration, PostgreSQL, migrations, queue, workers, and configured integrations |
-| digestive metrics | Read-only queue, throughput, latency, edition, and partition metrics |
-| digestive partitions | Read-only document counts and recent per-partition activity |
-| digestive retry | List/requeue failed jobs; use --dry-run first |
-| digestive maintenance | Preview by default; `--apply` cleans the queue and purges edition-linked data older than 30 days |
-| digestive active-partitions --date YYYY-MM-DD | Print partitions active for an edition |
-
-Retry filters include edition ID, worker/job type, age, and limit. Maintenance supports archive-after, purge-after, retention-after, and limit durations using s, m, h, or d suffixes. The installed cron invokes `maintenance --apply --retention-after 30d`; edition-linked source data, chunks, enrichment rows, embeddings, artifact rows, discovery events, lineage, old jobs, and their NotebookLM notebooks are removed after 30 days. Archived queue rows use the same 30-day purge age; already-downloaded podcast files are outside PostgreSQL retention.
+| `digestive doctor` | Check configuration, PostgreSQL, migrations, queue health, workers, and configured integrations. |
+| `digestive metrics` | Show read-only queue, throughput, latency, edition, and partition metrics. |
+| `digestive partitions` | Show document counts and recent activity by partition. |
+| `digestive active-partitions --date YYYY-MM-DD` | Resolve active partitions for an edition. |
+| `digestive retry` | List or requeue failed jobs. Run with `--dry-run` first. |
+| `digestive maintenance` | Preview cleanup by default; `--apply` cleans the queue and removes retained edition data. |
 
 ### Feedback and source trust
 
-~~~bash
-digestive feedback rate <edition_id> <story_id> --up
-digestive feedback rate <edition_id> <story_id> --down
-digestive feedback hide <source_url>
-digestive feedback star <chunk_id>
+```bash
+npm run digestive -- feedback rate <edition_id> <story_id> --up
+npm run digestive -- feedback rate <edition_id> <story_id> --down
+npm run digestive -- feedback hide <source_url>
+npm run digestive -- feedback star <chunk_id>
 
-digestive source-trust set <source_identity> <tier> [--notes "..."]
-digestive source-trust get <source_identity>
-digestive source-trust list
-digestive source-trust delete <source_identity>
+npm run digestive -- source-trust set <source_identity> <tier> [--notes "..."]
+npm run digestive -- source-trust get <source_identity>
+npm run digestive -- source-trust list
+npm run digestive -- source-trust delete <source_identity>
 
-digestive feedback-summary [--edition YYYY-MM-DD]
-~~~
+npm run digestive -- feedback-summary [--edition YYYY-MM-DD]
+```
 
-Feedback is self-attributed. DIGEST_BIAS_ENABLED=true applies muted-source suppression and moves down-rated stories later in the digest. Source-trust tiers can be used by clustering to reorder stories.
+Feedback is self-attributed. With `DIGEST_BIAS_ENABLED=true`, muted sources are suppressed and down-rated stories are moved later in the digest. Source-trust tiers can influence clustering order.
 
-## Partitions
+## Retention and maintenance
 
-Every document belongs to the master partition. Master is always active and contains the complete edition. Optional partitions are selected from Miniflux categories by PARTITION_CONFIG.
+The installed cron invokes:
 
-~~~bash
-PARTITION_CONFIG='{"youtube":{"category":"YouTube","min_articles":5,"enabled":true,"with_podcast":true},"reddit":{"category":"Reddit","min_articles":3,"enabled":true}}'
-~~~
+```bash
+npm run digestive -- maintenance --apply --retention-after 30d
+```
 
-A non-master partition is active only when enabled and its document count meets min_articles (default 5). Active partitions get their own NotebookLM notebook; with_podcast=true also starts a partition podcast. The master notebook and Markdown digest are not reduced by partition caps.
+This removes edition-linked source data, chunks, enrichment rows, embeddings, generated-artifact rows, discovery events, lineage, old jobs, and associated NotebookLM notebooks after 30 days. Already-downloaded podcast files are outside PostgreSQL retention.
 
-Notebook source selection is deterministic:
-
-1. story cluster order;
-2. best per-document quality label;
-3. average quality confidence; and
-4. document ID.
-
-NOTEBOOKLM_MAX_SOURCES_PER_NOTEBOOK changes the per-notebook cap (default 50). Excluded notebook sources produce notebook_excluded signals but remain in the edition and digest.
-
-## Environment
-
-The complete schema is in .env.example. The main settings are:
-
-| Variable | Purpose |
-| --- | --- |
-| DATABASE_URL | PostgreSQL connection string |
-| TEST_DATABASE_URL | PostgreSQL connection string for integration tests |
-| MINIFLUX_URL / MINIFLUX_API_TOKEN | Miniflux discovery |
-| AI_PROVIDER | openai (default), openai-compatible, or fake |
-| OPENAI_API_KEY / OPENAI_BASE_URL | OpenAI or compatible provider credentials |
-| AI_TEXT_MODEL | Text model override |
-| EMBEDDING_MODEL / EMBEDDING_CACHE_DIR | Embedding model and local cache |
-| RESEND_API_KEY / EMAIL_FROM / EMAIL_RECIPIENT | Email delivery |
-| FABRIC_BIN / MARKITDOWN_BIN | Extraction CLI paths |
-| NOTEBOOKLM_OUTPUT_DIR | Podcast download directory (default ./notebooks) |
-| NOTEBOOKLM_HEADLESS | NotebookLM CLI mode |
-| NOTEBOOKLM_MAX_SOURCES_PER_NOTEBOOK | Notebook source cap (default 50) |
-| PNIP_DRAIN_MAX_JOBS | Processing jobs claimed per digest-drain tick (default 100) |
-| PARTITION_CONFIG | Optional category-to-partition JSON |
-| DIGEST_BIAS_ENABLED | Enable feedback biasing |
-| DIGEST_MIN_STORIES | Minimum story-cluster target (default 25; best-effort) |
-| DIGEST_DISCOVERY_LOOKBACK_DAYS | Recent Miniflux history used to fill a short edition (default 7) |
-| DIGEST_SOURCE_BALANCE | Prefer articles and YouTube over Reddit during historical fill (default true) |
-| DIGEST_TARGET_READING_MINUTES | Calibrate lead-story prominence |
-| DIGEST_SMALL_EDITION_MAX_DOCUMENTS | Document-count cutoff for the small-edition clustering threshold (default 24) |
-| DIGEST_SMALL_EDITION_SIMILARITY_THRESHOLD | Similarity threshold for small editions (default 0.55) |
-| DIGEST_QUIET_EDITION_REASON | Explicit low-significance/low-novelty framing |
-| YOUTUBE_FOCUS_CHANNELS | Comma-separated YouTube names/handles promoted and deeply analyzed |
-| DOCTOR_FAILED_THRESHOLD | Queue failure threshold (default 100) |
-| WORKER_CONCURRENCY / RETRY_MAX_ATTEMPTS | Worker and retry tuning |
-| LOG_LEVEL | debug, info, warn, or error |
+Review and customise this policy before using PNIP as a long-term archive.
 
 ## Development
 
-~~~bash
+```bash
 npm test
 npm run typecheck
 npm run test:watch
-~~~
+```
 
-Integration tests use TEST_DATABASE_URL and require PostgreSQL with pgvector. The project has no build step; the CLI runs through tsx.
+Integration tests require `TEST_DATABASE_URL` and PostgreSQL with pgvector. The project has no build step; the CLI runs through `tsx`.
 
 ## Project layout
 
-~~~text
+```text
 src/cli             Command-line surface
 src/config          Environment parsing and partition configuration
 src/database        PostgreSQL schema, migrations, and Kysely types
-src/discovery       Miniflux client, discovery, cursor, and partition routing
+src/discovery       Miniflux client, discovery cursor, and partition routing
 src/expansion       Article, YouTube, podcast, PDF, and Reddit plugins
 src/chunking        Deterministic chunks and provenance
 src/enrichment      Summaries, entities, topics, embeddings, and quality
@@ -249,9 +408,9 @@ src/editions        Edition lifecycle, readiness, and assembly
 src/digest          Markdown, email, NotebookLM, and podcast outputs
 src/publication     Publication gate and state transitions
 src/signals         Feedback, source identity, bias, and source trust
-src/retention       30-day edition/content and queue cleanup
+src/retention       Edition/content and queue cleanup
 scripts             Cron and daily-publication helpers
-ARCHITECTURE.md     Current design decisions and invariants
-~~~
+ARCHITECTURE.md     Design decisions and invariants
+```
 
-For implementation details and invariants, see [ARCHITECTURE.md](ARCHITECTURE.md).
+For implementation details and system invariants, see [`ARCHITECTURE.md`](ARCHITECTURE.md).
