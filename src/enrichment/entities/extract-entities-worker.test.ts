@@ -274,46 +274,52 @@ describe("ExtractEntitiesWorker", () => {
     ).rejects.toThrow(/no registered version/i);
   });
 
-  it("throws when AI returns non-JSON", async () => {
+  it("uses an empty entity fallback when AI returns non-JSON", async () => {
     const deps = makeDeps({
       chunk: makeChunk(),
       executorContent: "not json",
     });
     const worker = createExtractEntitiesWorker(deps);
 
-    await expect(
-      worker.execute(makeJob(), {
-        db: {} as any,
-        logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn(), child: vi.fn() } as any,
-      }),
-    ).rejects.toThrow(/non-JSON/);
+    await worker.execute(makeJob(), {
+      db: {} as any,
+      logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn(), child: vi.fn() } as any,
+    });
+
+    expect(deps.entityRepo.replaceForChunk).toHaveBeenCalledWith(
+      expect.objectContaining({ entities: [] }),
+    );
   });
 
-  it("throws when JSON missing entities field", async () => {
+  it("uses an empty entity fallback when JSON is missing entities", async () => {
     const deps = makeDeps({ chunk: makeChunk(), executorContent: '{"other": []}' });
     const worker = createExtractEntitiesWorker(deps);
 
-    await expect(
-      worker.execute(makeJob(), {
-        db: {} as any,
-        logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn(), child: vi.fn() } as any,
-      }),
-    ).rejects.toThrow(/missing required field/);
+    await worker.execute(makeJob(), {
+      db: {} as any,
+      logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn(), child: vi.fn() } as any,
+    });
+
+    expect(deps.entityRepo.replaceForChunk).toHaveBeenCalledWith(
+      expect.objectContaining({ entities: [] }),
+    );
   });
 
-  it("throws when entity entry missing name/type/mention strings", async () => {
+  it("omits invalid entity entries instead of failing the job", async () => {
     const deps = makeDeps({
       chunk: makeChunk(),
       executorContent: '{"entities": [{"name": "Apple", "type": "org"}]}',
     });
     const worker = createExtractEntitiesWorker(deps);
 
-    await expect(
-      worker.execute(makeJob(), {
-        db: {} as any,
-        logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn(), child: vi.fn() } as any,
-      }),
-    ).rejects.toThrow(/missing name\/type\/mention/);
+    await worker.execute(makeJob(), {
+      db: {} as any,
+      logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn(), child: vi.fn() } as any,
+    });
+
+    expect(deps.entityRepo.replaceForChunk).toHaveBeenCalledWith(
+      expect.objectContaining({ entities: [] }),
+    );
   });
 
   it("propagates prompt executor errors", async () => {

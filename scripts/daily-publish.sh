@@ -16,15 +16,16 @@
 #   PNIP_PUBLISH_DATE=YYYY-MM-DD in the environment.)
 #
 # Sequence:
-#   1. digestive generate-digest --date <date>     (master)
-#   2. for each active partition (master + configured):
+#   1. recover discovery if no edition exists for the date
+#   2. digestive generate-digest --date <date>     (master)
+#   3. for each active partition (master + configured):
 #        kick off generate-notebook --partition <key> in fire-and-forget
-#   3. for each active partition, wait on the notebook via --wait
-#   4. after each notebook is ready, kick off generate-podcast for master
+#   4. for each active partition, wait on the notebook via --wait
+#   5. after each notebook is ready, kick off generate-podcast for master
 #      and configured with_podcast partitions
-#   5. digestive generate-email --date <date> (with artifact links)
-#   6. digestive publish-edition --date <date> --dry-run
-#   7. digestive publish-edition --date <date>
+#   6. digestive generate-email --date <date> (with artifact links)
+#   7. digestive publish-edition --date <date> --dry-run
+#   8. digestive publish-edition --date <date>
 #
 # Environment:
 #   PNIP_PUBLISH_DATE     override the edition date (default: today local)
@@ -124,9 +125,17 @@ if [ -z "${DATABASE_URL:-}" ]; then
 fi
 
 # Resolve active partitions from the same database-backed rule used by the
-# publication gate. This applies enabled + min_articles consistently.
+# publication gate. This applies enabled + min_articles consistently. If the
+# drain was busy during the overnight boundary, discover the missing date
+# before continuing. The conditional is important: re-running publication for
+# an already-published date must not make discover advance to tomorrow.
 log "daily-publish starting (date=$DATE local)"
-PARTITION_LINES="$(npm run --silent digestive -- active-partitions --date "$DATE")"
+if ! PARTITION_LINES="$(npm run --silent digestive -- active-partitions --date "$DATE")"; then
+  log "no usable edition found for $DATE; recovering it through discovery"
+  run "discover missing edition" \
+    npm run digestive -- discover --date "$DATE"
+  PARTITION_LINES="$(npm run --silent digestive -- active-partitions --date "$DATE")"
+fi
 log "active partitions:"
 while IFS= read -r line; do
   log "  - $line"

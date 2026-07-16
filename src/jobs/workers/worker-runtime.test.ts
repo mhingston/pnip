@@ -337,6 +337,36 @@ describe("WorkerRuntime", () => {
     expect(job!.next_eligible_at.getTime()).toBe(deferUntil.getTime());
   });
 
+  it("defers transient provider failures without exhausting the retry budget", async () => {
+    const transientWorker: Worker = {
+      supports: (t) => t === "transient",
+      execute: async () => {
+        throw new Error("429 rate limit reached");
+      },
+    };
+    const runtime = createWorkerRuntime({
+      db,
+      queue,
+      workers: [transientWorker],
+      logger: silentLogger(),
+      retry: {
+        maxAttempts: 1,
+        schedule: [5_000],
+        jitter: false,
+      },
+    });
+
+    const enqueued = await queue.enqueue({ jobType: "transient" });
+    expect(await runtime.runOne("w1")).toBe(true);
+
+    const job = await queue.getJob(enqueued.id);
+    expect(job!.status).toBe("pending");
+    expect(job!.retry_count).toBe(0);
+    expect(job!.locked_by).toBeNull();
+    expect(job!.locked_at).toBeNull();
+    expect(job!.next_eligible_at.getTime()).toBeGreaterThan(Date.now() + 4_000);
+  });
+
   it("atomicity: children+complete roll back together if enqueue fails mid-transaction", async () => {
     const circular: Record<string, unknown> = {};
     circular.self = circular;

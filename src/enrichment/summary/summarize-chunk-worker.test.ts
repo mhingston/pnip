@@ -253,7 +253,7 @@ describe("SummarizeChunkWorker", () => {
     ).rejects.toThrow(/no registered version/i);
   });
 
-  it("throws when AI returns non-JSON", async () => {
+  it("uses a grounded fallback when AI returns non-JSON", async () => {
     const deps = makeDeps({
       chunk: makeChunk(),
       executorResult: {
@@ -268,16 +268,14 @@ describe("SummarizeChunkWorker", () => {
     });
     const worker = createSummarizeChunkWorker(deps);
 
-    await expect(
-      worker.execute(makeJob(), {
-        db: {} as any,
-        logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn(), child: vi.fn() } as any,
-      }),
-    ).rejects.toThrow(/non-JSON/);
-    expect(deps.summaryRepo.replaceForChunk).not.toHaveBeenCalled();
+    await worker.execute(makeJob(), {
+      db: {} as any,
+      logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn(), child: vi.fn() } as any,
+    });
+    expect(deps.summaryRepo.replaceForChunk).toHaveBeenCalledOnce();
   });
 
-  it("throws when AI returns JSON missing required fields", async () => {
+  it("uses a grounded fallback when AI returns JSON missing required fields", async () => {
     const deps = makeDeps({
       chunk: makeChunk(),
       executorResult: {
@@ -292,15 +290,14 @@ describe("SummarizeChunkWorker", () => {
     });
     const worker = createSummarizeChunkWorker(deps);
 
-    await expect(
-      worker.execute(makeJob(), {
-        db: {} as any,
-        logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn(), child: vi.fn() } as any,
-      }),
-    ).rejects.toThrow(/missing required fields/);
+    await worker.execute(makeJob(), {
+      db: {} as any,
+      logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn(), child: vi.fn() } as any,
+    });
+    expect(deps.summaryRepo.replaceForChunk).toHaveBeenCalledOnce();
   });
 
-  it("throws when claims array is empty", async () => {
+  it("uses a grounded fallback when claims array is empty", async () => {
     const deps = makeDeps({
       chunk: makeChunk(),
       executorResult: {
@@ -315,12 +312,11 @@ describe("SummarizeChunkWorker", () => {
     });
     const worker = createSummarizeChunkWorker(deps);
 
-    await expect(
-      worker.execute(makeJob(), {
-        db: {} as any,
-        logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn(), child: vi.fn() } as any,
-      }),
-    ).rejects.toThrow(/empty claims array/);
+    await worker.execute(makeJob(), {
+      db: {} as any,
+      logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn(), child: vi.fn() } as any,
+    });
+    expect(deps.summaryRepo.replaceForChunk).toHaveBeenCalledOnce();
   });
 
   it("propagates prompt executor errors", async () => {

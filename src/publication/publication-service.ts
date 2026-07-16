@@ -1,5 +1,5 @@
 import type { Kysely } from "kysely";
-import type { Database, Edition } from "../database/kysely.js";
+import type { Database, Edition, EditionStatus } from "../database/kysely.js";
 import type { Logger } from "../logging/logger.js";
 import {
   EditionNotFoundError,
@@ -25,6 +25,21 @@ export class PublicationGateFailedError extends Error {
     this.name = "PublicationGateFailedError";
     this.editionId = editionId;
     this.missingArtifacts = missingArtifacts;
+  }
+}
+
+export class PublicationStateError extends Error {
+  readonly editionId: string;
+  readonly status: EditionStatus;
+
+  constructor(editionId: string, status: EditionStatus) {
+    super(
+      `edition ${editionId} is in status '${status}'; ` +
+        "publication requires the edition to be ready",
+    );
+    this.name = "PublicationStateError";
+    this.editionId = editionId;
+    this.status = status;
   }
 }
 
@@ -227,6 +242,10 @@ export function createPublicationService(
         cancelledJobCount: 0,
         completion: emptyCompletion(),
       };
+    }
+
+    if (edition.status !== "ready") {
+      throw new PublicationStateError(input.editionId, edition.status);
     }
 
     const completion = await checkCompletion(input.editionId);

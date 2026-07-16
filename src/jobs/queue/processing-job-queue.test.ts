@@ -112,6 +112,25 @@ describe("ProcessingJobQueue", () => {
     expect(again).toBeNull();
   });
 
+  it("can scope claims to one edition without touching another edition's jobs", async () => {
+    const targetEdition = randomUUID();
+    const otherEdition = randomUUID();
+    const other = await queue.enqueue({
+      jobType: "other",
+      editionId: otherEdition,
+    });
+    const target = await queue.enqueue({
+      jobType: "target",
+      editionId: targetEdition,
+    });
+
+    const claimed = await queue.claim("w1", { editionId: targetEdition });
+
+    expect(claimed).not.toBeNull();
+    expect(claimed!.id).toBe(target.id);
+    expect((await queue.getJob(other.id))!.status).toBe("pending");
+  });
+
   it("completes a claimed job", async () => {
     const enqueued = await queue.enqueue({ jobType: "fetch" });
     const claimed = await queue.claim("w1");

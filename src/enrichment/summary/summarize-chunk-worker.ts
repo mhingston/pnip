@@ -50,6 +50,11 @@ function parseTarget(target: unknown): ChunkTarget {
   return { chunkId: t.chunkId, documentId: t.documentId };
 }
 
+function clip(s: string, max: number): string {
+  if (s.length <= max) return s;
+  return `${s.slice(0, max - 1)}…`;
+}
+
 function chunkToLineageSource(chunk: DocumentChunkRow): { sourceType: string; sourceId: string } {
   return { sourceType: "chunk", sourceId: chunk.id };
 }
@@ -103,22 +108,36 @@ export function createSummarizeChunkWorker(deps: SummarizeChunkDeps): Worker {
         },
       });
 
-      const extracted = extractJson<SummaryResponse>(result.content);
-      if (!extracted.ok) {
-        throw new Error(`summary prompt returned non-JSON: ${extracted.error}`);
-      }
+      let summaryText: string;
+      let claims: string[];
+      try {
+        const extracted = extractJson<SummaryResponse>(result.content);
+        if (!extracted.ok) {
+          throw new Error(`summary prompt returned non-JSON: ${extracted.error}`);
+        }
 
-      const summaryText =
-        typeof extracted.value.summary === "string" ? extracted.value.summary : null;
-      const claims = isStringArray(extracted.value.claims) ? extracted.value.claims : null;
-      if (summaryText === null || claims === null) {
-        throw new Error(
-          "summary prompt JSON missing required fields: { summary: string, claims: string[] }",
-        );
-      }
-
-      if (claims.length === 0) {
-        throw new Error("summary prompt returned empty claims array");
+        const candidateSummary =
+          typeof extracted.value.summary === "string"
+            ? extracted.value.summary.trim()
+            : "";
+        const candidateClaims = isStringArray(extracted.value.claims)
+          ? extracted.value.claims.filter((claim) => claim.trim().length > 0)
+          : [];
+        if (!candidateSummary || candidateClaims.length === 0) {
+          throw new Error(
+            "summary prompt JSON missing required fields: { summary: string, claims: string[] }",
+          );
+        }
+        summaryText = candidateSummary;
+        claims = candidateClaims;
+      } catch (err) {
+        summaryText = clip(found.content_text.replace(/\s+/g, " ").trim(), 1200);
+        claims = [summaryText];
+        ctx.logger.warn("chunk-summary model output invalid; using grounded fallback", {
+          chunkId,
+          documentId,
+          error: err as Error,
+        });
       }
 
       const { summary, citations } = await deps.summaryRepo.replaceForChunk({

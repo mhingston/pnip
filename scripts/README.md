@@ -12,10 +12,14 @@ installs the recommended schedule into the user's crontab in one step.
 ### `digest-drain.sh`
 
 Drains new Miniflux entries into PNIP and processes them. Designed to run
-on a tight cron (every 5–15 minutes) throughout the day. Both `discover`
-and `process` are idempotent, so overlapping or duplicate runs are safe.
+on a tight cron (every 5–15 minutes) throughout the day. Discovery and
+processing use separate locks, so a slow provider/backlog cannot stop the
+next edition from being discovered. Each tick processes a bounded batch for
+the current date, keeping old editions from starving today's edition.
 
 Logs to stdout; cron appends the output to `logs/digest-drain.log`.
+
+`PNIP_DRAIN_MAX_JOBS` overrides the per-tick processing limit (default: 100).
 
 ```bash
 */10 * * * *  /opt/pnip/scripts/digest-drain.sh >> /opt/pnip/logs/digest-drain.log 2>&1
@@ -30,17 +34,19 @@ master podcast) plus, for any configured partition that meets its
 
 Sequence:
 
-1. `digestive generate-digest --date <local-today>` (master)
-2. Resolve active partitions with the database-backed `enabled` +
+1. If no edition exists for the date, run `digestive discover --date <local-today>`
+   to recover the missed discovery (without advancing an already-published date).
+2. `digestive generate-digest --date <local-today>` (master)
+3. Resolve active partitions with the database-backed `enabled` +
    `min_articles` rule, then fire-and-forget `generate-notebook` for every
    active partition.
-3. `--wait` on every active partition's notebook, then start podcasts only
+4. `--wait` on every active partition's notebook, then start podcasts only
    after their corresponding notebooks are ready. Podcast generation remains
    asynchronous because podcasts are optional and must not block publication.
-4. `digestive generate-email --date <local-today>` after required notebook
+5. `digestive generate-email --date <local-today>` after required notebook
    artifacts are ready.
-5. Evaluate edition readiness and run `publish-edition --dry-run` (gate check).
-6. `digestive publish-edition --date <local-today>` (real publish).
+6. Evaluate edition readiness and run `publish-edition --dry-run` (gate check).
+7. `digestive publish-edition --date <local-today>` (real publish).
 
 ### `podcast-drain.sh`
 

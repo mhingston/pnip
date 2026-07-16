@@ -247,43 +247,49 @@ describe("AssignTopicsWorker", () => {
     ).rejects.toThrow(/no registered version/i);
   });
 
-  it("throws when AI returns non-JSON", async () => {
+  it("uses an empty topic fallback when AI returns non-JSON", async () => {
     const deps = makeDeps({ chunk: makeChunk(), executorContent: "garbage" });
     const worker = createAssignTopicsWorker(deps);
 
-    await expect(
-      worker.execute(makeJob(), {
-        db: {} as any,
-        logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn(), child: vi.fn() } as any,
-      }),
-    ).rejects.toThrow(/non-JSON/);
+    await worker.execute(makeJob(), {
+      db: {} as any,
+      logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn(), child: vi.fn() } as any,
+    });
+
+    expect(deps.topicRepo.replaceForChunk).toHaveBeenCalledWith(
+      expect.objectContaining({ topics: [] }),
+    );
   });
 
-  it("throws when JSON missing topics field", async () => {
+  it("uses an empty topic fallback when JSON is missing topics", async () => {
     const deps = makeDeps({ chunk: makeChunk(), executorContent: '{"other": []}' });
     const worker = createAssignTopicsWorker(deps);
 
-    await expect(
-      worker.execute(makeJob(), {
-        db: {} as any,
-        logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn(), child: vi.fn() } as any,
-      }),
-    ).rejects.toThrow(/missing required field/);
+    await worker.execute(makeJob(), {
+      db: {} as any,
+      logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn(), child: vi.fn() } as any,
+    });
+
+    expect(deps.topicRepo.replaceForChunk).toHaveBeenCalledWith(
+      expect.objectContaining({ topics: [] }),
+    );
   });
 
-  it("throws when topic entry has out-of-range confidence", async () => {
+  it("omits invalid topic entries instead of failing the job", async () => {
     const deps = makeDeps({
       chunk: makeChunk(),
       executorContent: '{"topics": [{"topic": "ai", "confidence": 1.5, "relevance": 0.5}]}',
     });
     const worker = createAssignTopicsWorker(deps);
 
-    await expect(
-      worker.execute(makeJob(), {
-        db: {} as any,
-        logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn(), child: vi.fn() } as any,
-      }),
-    ).rejects.toThrow(/confidence\/relevance/);
+    await worker.execute(makeJob(), {
+      db: {} as any,
+      logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn(), child: vi.fn() } as any,
+    });
+
+    expect(deps.topicRepo.replaceForChunk).toHaveBeenCalledWith(
+      expect.objectContaining({ topics: [] }),
+    );
   });
 
   it("propagates prompt executor errors", async () => {

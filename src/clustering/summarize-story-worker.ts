@@ -230,6 +230,40 @@ function selectEvenly<T>(items: readonly T[], maxItems: number): T[] {
   });
 }
 
+interface StoryClaim {
+  text: string;
+  chunkId: string;
+}
+
+function buildGroundedFallback(
+  storyLabel: string,
+  documentSummaries: readonly string[],
+  sourceChunks: readonly SourceChunk[],
+): { summary: string; claims: StoryClaim[] } {
+  const firstChunk = sourceChunks[0];
+  if (!firstChunk) {
+    throw new Error(`cannot build story-summary fallback for '${storyLabel}' without source chunks`);
+  }
+
+  const sourceText = firstChunk.text
+    .replace(/[\[\]]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const claimText = clip(sourceText || `The story concerns ${storyLabel}`, 500);
+  const summary = clip(
+    (documentSummaries[0] ?? claimText).replace(/\s+/g, " ").trim(),
+    1200,
+  );
+
+  return {
+    summary: summary || claimText,
+    claims: [{
+      text: `${claimText}${/[.!?]$/.test(claimText) ? "" : "."}`,
+      chunkId: firstChunk.chunkId,
+    }],
+  };
+}
+
 export function createSummarizeStoryWorker(
   deps: SummarizeStoryDeps,
 ): Worker {
@@ -346,76 +380,102 @@ export function createSummarizeStoryWorker(
         },
       });
 
-      const extracted = extractJson<StorySummaryResponse>(result.content);
-      if (!extracted.ok) {
-        throw new Error(
-          `story summary prompt returned non-JSON: ${extracted.error}`,
+      let summaryText: string;
+      let parsedClaims: StoryClaim[];
+      try {
+        const extracted = extractJson<StorySummaryResponse>(result.content);
+        if (!extracted.ok) {
+          throw new Error(
+            `story summary prompt returned non-JSON: ${extracted.error}`,
+          );
+        }
+        const candidateSummary =
+          typeof extracted.value.summary === "string"
+            ? extracted.value.summary.trim()
+            : "";
+        const claims = isStringArray(extracted.value.claims)
+          ? extracted.value.claims
+          : [];
+        if (!candidateSummary) {
+          throw new Error("story summary prompt returned an empty summary");
+        }
+        if (claims.length === 0) {
+          throw new Error("story summary prompt returned empty claims array");
+        }
+
+        const seenClaims = new Set<string>();
+        parsedClaims = [];
+        for (let i = 0; i < claims.length; i++) {
+          const raw = claims[i]!;
+          try {
+            const refs = extractChunkReferences(raw, sourceChunks.length, i);
+            const cleanText = stripReferences(raw);
+            if (cleanText.length === 0) {
+              throw new Error(
+                `story summary claim ${i + 1} must contain text in addition to its chunk reference`,
+              );
+            }
+
+            const normalized = normalizeClaimText(cleanText);
+            if (seenClaims.has(normalized)) {
+              throw new Error(
+                `story summary prompt returned duplicate claim at position ${i + 1}`,
+              );
+            }
+            seenClaims.add(normalized);
+
+            const citedChunks = refs.map((ref) => sourceChunks[ref]!).filter(Boolean);
+            if (!claimHasSourceOverlap(cleanText, citedChunks)) {
+              throw new Error(
+                `story summary claim ${i + 1} has no meaningful lexical overlap with its cited source chunks`,
+              );
+            }
+            if (
+              prompt.name === STORY_SUMMARY_PROMPT_NAME &&
+              prompt.version >= 2 &&
+              claimRestatesSummary(cleanText, candidateSummary)
+            ) {
+              throw new Error(
+                `story summary claim ${i + 1} substantially restates the summary`,
+              );
+            }
+
+            const primaryChunk = sourceChunks[refs[0]!];
+            if (!primaryChunk) {
+              throw new Error(
+                `story summary claim ${i + 1} references a chunk that is not available in the prompt`,
+              );
+            }
+            parsedClaims.push({
+              text: cleanText,
+              chunkId: primaryChunk.chunkId,
+            });
+          } catch (err) {
+            ctx.logger.warn("discarding invalid story-summary claim", {
+              storyId,
+              claimIndex: i + 1,
+              error: err as Error,
+            });
+          }
+        }
+
+        if (parsedClaims.length === 0) {
+          throw new Error("story summary prompt produced no usable grounded claims");
+        }
+        summaryText = candidateSummary;
+      } catch (err) {
+        const fallback = buildGroundedFallback(
+          story.label,
+          documentSummaries,
+          sourceChunks,
         );
+        summaryText = fallback.summary;
+        parsedClaims = fallback.claims;
+        ctx.logger.warn("story-summary model output invalid; using grounded fallback", {
+          storyId,
+          error: err as Error,
+        });
       }
-      const summaryText =
-        typeof extracted.value.summary === "string"
-          ? extracted.value.summary
-          : null;
-      const claims = isStringArray(extracted.value.claims)
-        ? extracted.value.claims
-        : null;
-      if (summaryText === null || claims === null) {
-        throw new Error(
-          "story summary prompt JSON missing required fields: { summary: string, claims: string[] }",
-        );
-      }
-      if (summaryText.trim().length === 0) {
-        throw new Error("story summary prompt returned an empty summary");
-      }
-      if (claims.length === 0) {
-        throw new Error("story summary prompt returned empty claims array");
-      }
-
-      const seenClaims = new Set<string>();
-      const parsedClaims = claims.map((raw, i) => {
-        const refs = extractChunkReferences(raw, sourceChunks.length, i);
-        const cleanText = stripReferences(raw);
-        if (cleanText.length === 0) {
-          throw new Error(
-            `story summary claim ${i + 1} must contain text in addition to its chunk reference`,
-          );
-        }
-
-        const normalized = normalizeClaimText(cleanText);
-        if (seenClaims.has(normalized)) {
-          throw new Error(
-            `story summary prompt returned duplicate claim at position ${i + 1}`,
-          );
-        }
-        seenClaims.add(normalized);
-
-        const citedChunks = refs.map((ref) => sourceChunks[ref]!).filter(Boolean);
-        if (!claimHasSourceOverlap(cleanText, citedChunks)) {
-          throw new Error(
-            `story summary claim ${i + 1} has no meaningful lexical overlap with its cited source chunks`,
-          );
-        }
-        if (
-          prompt.name === STORY_SUMMARY_PROMPT_NAME &&
-          prompt.version >= 2 &&
-          claimRestatesSummary(cleanText, summaryText)
-        ) {
-          throw new Error(
-            `story summary claim ${i + 1} substantially restates the summary`,
-          );
-        }
-
-        const primaryChunk = sourceChunks[refs[0]!];
-        if (!primaryChunk) {
-          throw new Error(
-            `story summary claim ${i + 1} references a chunk that is not available in the prompt`,
-          );
-        }
-        return {
-          text: cleanText,
-          chunkId: primaryChunk.chunkId,
-        };
-      });
 
       const { summary, citations } = await deps.storySummaryRepo.replaceForStory(
         {

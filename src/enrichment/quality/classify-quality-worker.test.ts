@@ -247,43 +247,53 @@ describe("ClassifyQualityWorker", () => {
     ).rejects.toThrow(/no registered version/i);
   });
 
-  it("throws when AI returns non-JSON", async () => {
+  it("uses a medium fallback when AI returns non-JSON", async () => {
     const deps = makeDeps({ chunk: makeChunk(), executorContent: "garbage" });
     const worker = createClassifyQualityWorker(deps);
 
-    await expect(
-      worker.execute(makeJob(), {
-        db: {} as any,
-        logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn(), child: vi.fn() } as any,
+    await worker.execute(makeJob(), {
+      db: {} as any,
+      logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn(), child: vi.fn() } as any,
+    });
+
+    expect(deps.qualityRepo.replaceForChunk).toHaveBeenCalledWith(
+      expect.objectContaining({
+        label: "medium",
+        confidence: 0,
+        reasoning: expect.stringContaining("defaulted to medium"),
       }),
-    ).rejects.toThrow(/non-JSON/);
+    );
   });
 
-  it("throws when JSON missing required fields", async () => {
+  it("uses a medium fallback when JSON is missing required fields", async () => {
     const deps = makeDeps({ chunk: makeChunk(), executorContent: '{"label": "high"}' });
     const worker = createClassifyQualityWorker(deps);
 
-    await expect(
-      worker.execute(makeJob(), {
-        db: {} as any,
-        logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn(), child: vi.fn() } as any,
-      }),
-    ).rejects.toThrow(/missing required fields/);
+    await worker.execute(makeJob(), {
+      db: {} as any,
+      logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn(), child: vi.fn() } as any,
+    });
+
+    expect(deps.qualityRepo.replaceForChunk).toHaveBeenCalledWith(
+      expect.objectContaining({ label: "medium", confidence: 0 }),
+    );
   });
 
-  it("throws when confidence out of range", async () => {
+  it("uses a medium fallback when confidence is out of range", async () => {
     const deps = makeDeps({
       chunk: makeChunk(),
       executorContent: '{"label": "high", "confidence": 1.5, "reasoning": null}',
     });
     const worker = createClassifyQualityWorker(deps);
 
-    await expect(
-      worker.execute(makeJob(), {
-        db: {} as any,
-        logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn(), child: vi.fn() } as any,
-      }),
-    ).rejects.toThrow(/missing required fields/);
+    await worker.execute(makeJob(), {
+      db: {} as any,
+      logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn(), child: vi.fn() } as any,
+    });
+
+    expect(deps.qualityRepo.replaceForChunk).toHaveBeenCalledWith(
+      expect.objectContaining({ label: "medium", confidence: 0 }),
+    );
   });
 
   it("propagates prompt executor errors", async () => {

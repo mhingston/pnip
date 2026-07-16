@@ -128,6 +128,10 @@ import {
   FEEDBACK_SUMMARY_HELP,
   runFeedbackSummaryCommand,
 } from "./feedback-summary.js";
+import {
+  PROCESS_HELP,
+  parseProcessFlags,
+} from "./process.js";
 
 const DEFAULT_WORKER_CONCURRENCY = 4;
 const MAX_WORKER_CONCURRENCY = 16;
@@ -196,6 +200,17 @@ async function main(): Promise<number> {
     }
 
     if (command === "process") {
+      const parsed = parseProcessFlags({ args: rest });
+      if (parsed.help) {
+        console.log(PROCESS_HELP);
+        return 0;
+      }
+      if (parsed.errors.length > 0) {
+        for (const e of parsed.errors) console.error(e);
+        console.log(PROCESS_HELP);
+        return 2;
+      }
+
       const logger = createLogger({ baseFields: { worker: "cli" } });
       const youtubeFocusChannels = parseYoutubeFocusChannels(
         cfg.YOUTUBE_FOCUS_CHANNELS,
@@ -206,6 +221,19 @@ async function main(): Promise<number> {
       const provenanceRepo = createProvenanceRepository(db);
       const promptRepo = createPromptRepository(db);
       const editionRepo = createEditionRepository(db);
+
+      let processEditionId: string | undefined;
+      if (parsed.editionDate) {
+        const edition = await editionRepo.getByDate(parsed.editionDate);
+        if (!edition) {
+          console.error(`no edition found for date ${parsed.editionDate}`);
+          return 1;
+        }
+        processEditionId = edition.id;
+      }
+      const claimOptions = processEditionId
+        ? { editionId: processEditionId }
+        : undefined;
 
       const seedSummary = await seedDefaultPrompts(promptRepo, logger);
       logger.info("prompt seeding complete", {
@@ -401,14 +429,22 @@ async function main(): Promise<number> {
         });
       }
 
+      let remainingJobs = parsed.maxJobs;
+      const workerIdPrefix = `cli-worker-${process.pid}`;
       const processedByWorker = await Promise.all(
         Array.from({ length: workerConcurrency }, async (_, index) => {
-          const workerId = `cli-worker-${index + 1}`;
+          const workerId = `${workerIdPrefix}-${index + 1}`;
           let processed = 0;
           let connectionRetries = 0;
           for (;;) {
             try {
-              while (await runtime.runOne(workerId)) {
+              while (remainingJobs === undefined || remainingJobs > 0) {
+                // JavaScript runs this synchronous check/decrement without
+                // interleaving another worker, so the batch limit is shared
+                // across all concurrent workers.
+                if (remainingJobs !== undefined) remainingJobs--;
+                const didProcess = await runtime.runOne(workerId, claimOptions);
+                if (!didProcess) break;
                 processed++;
               }
               return processed;
@@ -428,7 +464,13 @@ async function main(): Promise<number> {
         }),
       );
       const processed = processedByWorker.reduce((total, count) => total + count, 0);
-      console.log(`Processed ${processed} jobs. Queue is empty.`);
+      const scope = parsed.editionDate
+        ? ` for edition date ${parsed.editionDate}`
+        : "";
+      const limit = parsed.maxJobs === undefined
+        ? ""
+        : ` (limit=${parsed.maxJobs})`;
+      console.log(`Processed ${processed} jobs${scope}${limit}. No matching jobs remain or the batch limit was reached.`);
       return 0;
     }
 

@@ -3,6 +3,7 @@ import type { Database } from "../../database/kysely.js";
 import { createLogger, type Logger } from "../../logging/logger.js";
 import {
   createProcessingJobQueue,
+  type ClaimOptions,
   type ProcessingJobQueue,
 } from "../queue/processing-job-queue.js";
 import {
@@ -18,7 +19,7 @@ import type {
 } from "./worker.js";
 
 export interface WorkerRuntime {
-  runOne(workerId: string): Promise<boolean>;
+  runOne(workerId: string, opts?: ClaimOptions): Promise<boolean>;
 }
 
 export interface RetryConfig {
@@ -34,6 +35,9 @@ interface ResolvedRetryConfig {
   jitter: boolean;
   rng: () => number;
 }
+
+const TRANSIENT_FAILURE_RE =
+  /\b429\b|rate limit|too many requests|fetch failed|\b5\d\d\b|econnreset|etimedout|timed out|temporarily unavailable/i;
 
 export interface CreateWorkerRuntimeDeps {
   db: Kysely<Database>;
@@ -141,9 +145,40 @@ export function createWorkerRuntime(
     }
   }
 
+  async function deferTransientFailure(
+    job: { id: string; retry_count: number },
+    payload: WorkerErrorPayload,
+    log: Logger,
+  ): Promise<void> {
+    const delayMs = nextEligibleDelayMs(job.retry_count, {
+      schedule: retry.schedule,
+      jitter: retry.jitter,
+      rng: retry.rng,
+    });
+    await db
+      .updateTable("processing_jobs")
+      .set({
+        status: "pending",
+        next_eligible_at: sql`now() + (${delayMs} * interval '1 millisecond')`,
+        last_error: JSON.stringify(payload),
+        locked_by: null,
+        locked_at: null,
+        updated_at: sql`now()`,
+      })
+      .where("id", "=", job.id)
+      .where("status", "=", "running")
+      .execute();
+    log.warn("transient worker failure deferred without consuming a retry", {
+      delayMs,
+    });
+  }
+
   return {
-    async runOne(workerId: string): Promise<boolean> {
-      const job = await queue.claim(workerId);
+    async runOne(
+      workerId: string,
+      opts?: ClaimOptions,
+    ): Promise<boolean> {
+      const job = await queue.claim(workerId, opts);
       if (!job) return false;
 
       const jobLog = logger.child({
@@ -181,7 +216,11 @@ export function createWorkerRuntime(
             stack: payload.stack,
           },
         });
-        await scheduleRetryOrFail(job, payload, log);
+        if (TRANSIENT_FAILURE_RE.test(payload.message)) {
+          await deferTransientFailure(job, payload, log);
+        } else {
+          await scheduleRetryOrFail(job, payload, log);
+        }
         return true;
       }
       const durationMs = Date.now() - start;

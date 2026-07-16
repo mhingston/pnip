@@ -940,7 +940,7 @@ describe("generate — DB-row-first race serialization", () => {
     const createCalls = (
       mocks.notebookRepo.createForEdition as ReturnType<typeof vi.fn>
     ).mock.calls;
-    expect(createCalls).toHaveLength(2);
+    expect(createCalls).toHaveLength(1);
     expect(createCalls[0]![0]).toMatchObject({
       editionId: "ed-1",
       partitionKey: "master",
@@ -963,7 +963,7 @@ describe("generate — DB-row-first race serialization", () => {
     ).not.toHaveBeenCalled();
   });
 
-  it("addSource failure after NotebookLM creation leaves status='failed' and real external_id, with earlier uploads visible", async () => {
+  it("skips a failed source upload and keeps the notebook publishable", async () => {
     const realRow = makeNotebookRow({
       id: "nb-real",
       status: "pending",
@@ -1014,22 +1014,27 @@ describe("generate — DB-row-first race serialization", () => {
       },
     });
     const svc = createNotebookService(deps);
-    await expect(
-      svc.generate({ editionId: "ed-1", wait: true }),
-    ).rejects.toThrow(/add source failed on 3rd/);
+    const result = await svc.generate({ editionId: "ed-1", wait: true });
+    expect(result.status).toBe("ready");
+    expect(result.sourceCount).toBe(5);
 
     const updateCalls = (
       mocks.notebookRepo.updateDelivery as ReturnType<typeof vi.fn>
     ).mock.calls;
-    const failedUpdate = updateCalls.find(
-      ([, u]) => (u as { status?: string }).status === "failed",
+    const pendingUpdate = updateCalls.find(
+      ([, u]) =>
+        Array.isArray((u as { providerResponse?: { sourceFailures?: unknown[] } }).providerResponse?.sourceFailures),
     );
-    expect(failedUpdate).toBeDefined();
+    expect(pendingUpdate).toBeDefined();
+    expect(
+      (pendingUpdate![1] as { providerResponse: { sourceFailures: unknown[] } })
+        .providerResponse.sourceFailures,
+    ).toHaveLength(1);
 
     const addSourceCalls = (
       mocks.notebookLm.addSource as ReturnType<typeof vi.fn>
     ).mock.calls;
-    expect(addSourceCalls).toHaveLength(3);
+    expect(addSourceCalls).toHaveLength(6);
     for (const call of addSourceCalls) {
       expect(call[0]).toMatchObject({
         notebookExternalId: "nb-ext-1",

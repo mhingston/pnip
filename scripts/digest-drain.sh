@@ -30,21 +30,6 @@ log() {
   printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S %Z')" "$*"
 }
 
-# Serialize concurrent invocations via flock. Cron firing every 10
-# min can race with a previous run that's still draining a large
-# queue. flock --nonblock means a second invocation exits cleanly
-# (exit 0) when the first is still running, so the operator's cron
-# log doesn't fill up with "another drain is in progress" noise.
-# The lock is held on a file descriptor and released automatically
-# when the script exits.
-LOCK_FILE="/tmp/pnip-digest-drain.lock"
-exec 200>"$LOCK_FILE"
-if ! flock --nonblock 200; then
-  log "another drain is in progress (lock=$LOCK_FILE); exiting cleanly"
-  exit 0
-fi
-trap 'flock --unlock 200 2>/dev/null || true; rm -f "$LOCK_FILE"' EXIT
-
 if [ ! -f .env ]; then
   log "ERROR: .env not found at $PROJECT_DIR/.env"
   exit 1
@@ -59,10 +44,39 @@ if [ -z "${DATABASE_URL:-}" ]; then
   exit 1
 fi
 
-log "discover starting"
-npm run digestive -- discover
-log "discover complete"
+# Discovery and processing have separate locks. Processing can legitimately
+# take many hours when a provider is rate-limited; it must not prevent the
+# next cron tick from discovering the next day's edition.
+DISCOVER_LOCK_FILE="/tmp/pnip-digest-discover.lock"
+PROCESS_LOCK_FILE="/tmp/pnip-digest-process.lock"
+DRAIN_MAX_JOBS="${PNIP_DRAIN_MAX_JOBS:-100}"
+DRAIN_DATE="$(date +%F)"
 
-log "process starting"
-npm run digestive -- process
-log "process complete"
+run_discovery() (
+  exec 200>"$DISCOVER_LOCK_FILE"
+  if ! flock --nonblock 200; then
+    log "another discovery is in progress (lock=$DISCOVER_LOCK_FILE); skipping discovery"
+    exit 0
+  fi
+  trap 'flock --unlock 200 2>/dev/null || true; rm -f "$DISCOVER_LOCK_FILE"' EXIT
+
+  log "discover starting (date=$DRAIN_DATE)"
+  npm run digestive -- discover --date "$DRAIN_DATE"
+  log "discover complete (date=$DRAIN_DATE)"
+)
+
+run_process() (
+  exec 201>"$PROCESS_LOCK_FILE"
+  if ! flock --nonblock 201; then
+    log "another bounded process batch is in progress (lock=$PROCESS_LOCK_FILE); skipping processing"
+    exit 0
+  fi
+  trap 'flock --unlock 201 2>/dev/null || true; rm -f "$PROCESS_LOCK_FILE"' EXIT
+
+  log "process starting (date=$DRAIN_DATE, max_jobs=$DRAIN_MAX_JOBS)"
+  npm run digestive -- process --date "$DRAIN_DATE" --max-jobs "$DRAIN_MAX_JOBS"
+  log "process complete (date=$DRAIN_DATE)"
+)
+
+run_discovery
+run_process

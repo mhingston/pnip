@@ -22,9 +22,13 @@ export interface QueueMetrics {
   oldestPendingAgeMs: number | null;
 }
 
+export interface ClaimOptions {
+  editionId?: string;
+}
+
 export interface ProcessingJobQueue {
   enqueue(input: EnqueueInput): Promise<ProcessingJob>;
-  claim(workerId: string): Promise<ProcessingJob | null>;
+  claim(workerId: string, opts?: ClaimOptions): Promise<ProcessingJob | null>;
   complete(jobId: string): Promise<void>;
   getJob(jobId: string): Promise<ProcessingJob | undefined>;
   recoverStaleJobs(
@@ -164,16 +168,23 @@ export function createProcessingJobQueue(db: Kysely<Database>): ProcessingJobQue
       return row;
     },
 
-    async claim(workerId: string): Promise<ProcessingJob | null> {
+    async claim(
+      workerId: string,
+      opts?: ClaimOptions,
+    ): Promise<ProcessingJob | null> {
       return db.transaction().execute(async (trx) => {
-        const row = await trx
+        let query = trx
           .selectFrom("processing_jobs")
           .selectAll()
           .where("status", "=", "pending")
           .where(sql<SqlBool>`next_eligible_at <= now()`)
           .where(
             sql<SqlBool>`NOT EXISTS (SELECT 1 FROM unnest(depends_on) AS d(id) JOIN processing_jobs dep ON dep.id = d.id WHERE dep.status <> 'completed')`,
-          )
+          );
+        if (opts?.editionId) {
+          query = query.where("edition_id", "=", opts.editionId);
+        }
+        const row = await query
           .orderBy("next_eligible_at", "asc")
           .orderBy("created_at", "asc")
           .limit(1)

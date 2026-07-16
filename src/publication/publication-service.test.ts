@@ -3,6 +3,7 @@ import type { Kysely } from "kysely";
 import {
   createPublicationService,
   PublicationGateFailedError,
+  PublicationStateError,
   type PublicationServiceDeps,
 } from "./publication-service.js";
 import {
@@ -511,23 +512,32 @@ describe("publish — gate and transition", () => {
     expect(mocks.jobQueue.cancelForEdition).toHaveBeenCalledOnce();
   });
 
-  it("rethrows InvalidEditionTransitionError when 'failed' cannot transition to 'publishing'", async () => {
+  it("refuses to publish a building edition even when artifacts exist", async () => {
+    const { deps, mocks } = makeFakeDeps();
+    mocks.editionRepo.getById.mockResolvedValue(makeEdition({ status: "building" }));
+    stubAllArtifactsReady(mocks);
+    // Keep the edition building after the shared artifact setup.
+    mocks.editionRepo.getById.mockResolvedValue(makeEdition({ status: "building" }));
+
+    const svc = createPublicationService(deps);
+    await expect(svc.publish({ editionId: "ed-1" })).rejects.toBeInstanceOf(
+      PublicationStateError,
+    );
+    expect(mocks.markdownDigestRepo.getByEdition).not.toHaveBeenCalled();
+    expect(mocks.editionRepo.transition).not.toHaveBeenCalled();
+  });
+
+  it("refuses to publish a failed edition before checking artifacts", async () => {
     const { deps, mocks } = makeFakeDeps();
     mocks.editionRepo.getById.mockResolvedValue(
       makeEdition({ status: "failed" }),
     );
-    stubAllArtifactsReady(mocks);
-    mocks.editionRepo.transition.mockImplementation(async () => {
-      throw new InvalidEditionTransitionError("failed", "publishing");
-    });
 
     const svc = createPublicationService(deps);
-    await expect(svc.publish({ editionId: "ed-1" })).rejects.toBeInstanceOf(
-      InvalidEditionTransitionError,
-    );
+    await expect(svc.publish({ editionId: "ed-1" })).rejects.toBeInstanceOf(PublicationStateError);
 
-    expect(mocks.editionRepo.transition).toHaveBeenCalledTimes(1);
-    expect(mocks.editionRepo.transition.mock.calls[0]![1]).toBe("publishing");
+    expect(mocks.markdownDigestRepo.getByEdition).not.toHaveBeenCalled();
+    expect(mocks.editionRepo.transition).not.toHaveBeenCalled();
     expect(mocks.jobQueue.cancelForEdition).not.toHaveBeenCalled();
   });
 

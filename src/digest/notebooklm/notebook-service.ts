@@ -77,6 +77,11 @@ export interface NotebookProviderState {
   phase: "pending" | "ready" | "failed";
   createNotebook?: CreateNotebookResult;
   uploadedSources?: UploadedSource[];
+  sourceFailures?: {
+    displayName: string;
+    sourceUrl: string;
+    error: string;
+  }[];
   error?: string;
 }
 
@@ -158,10 +163,14 @@ function parseProviderState(raw: unknown): NotebookProviderState | null {
               : "Untitled",
         }))
       : [];
+  const sourceFailures = Array.isArray(r.sourceFailures)
+    ? r.sourceFailures
+    : undefined;
   return {
     phase: r.phase ?? "pending",
     createNotebook: r.createNotebook as CreateNotebookResult,
     uploadedSources: uploaded,
+    sourceFailures,
     error: r.error,
   };
 }
@@ -375,6 +384,7 @@ export function createNotebookService(
     });
 
     const uploadedSources: UploadedSource[] = [];
+    const sourceFailures: NonNullable<NotebookProviderState["sourceFailures"]> = [];
     for (const doc of uploadableDocs) {
       const localPath =
         doc.source_type === "pdf"
@@ -393,12 +403,65 @@ export function createNotebookService(
             url,
             displayName: doc.title ?? "Untitled",
           };
-      const src = await deps.notebookLm.addSource(sourceInput);
-      uploadedSources.push({
-        sourceExternalId: src.sourceExternalId,
-        docId: doc.id,
-        displayName: doc.title ?? "Untitled",
-      });
+      try {
+        const src = await deps.notebookLm.addSource(sourceInput);
+        uploadedSources.push({
+          sourceExternalId: src.sourceExternalId,
+          docId: doc.id,
+          displayName: doc.title ?? "Untitled",
+        });
+      } catch (err) {
+        const displayName = doc.title ?? "Untitled";
+        const localContent = doc.content_markdown?.trim() || doc.content_text?.trim();
+        if (localContent) {
+          try {
+            const fallback = await deps.notebookLm.addSource({
+              notebookExternalId: createNotebook.notebookExternalId,
+              markdownContent: `# ${displayName}\n\n${localContent}`,
+              displayName,
+            });
+            uploadedSources.push({
+              sourceExternalId: fallback.sourceExternalId,
+              docId: doc.id,
+              displayName,
+            });
+            deps.logger?.warn("notebook URL source failed; uploaded stored content fallback", {
+              editionId: input.editionId,
+              partitionKey: input.partitionKey,
+              displayName,
+              sourceUrl: url ?? localPath ?? "(unknown source)",
+              error: err as Error,
+            });
+            continue;
+          } catch (fallbackErr) {
+            deps.logger?.warn("stored content fallback also failed", {
+              editionId: input.editionId,
+              partitionKey: input.partitionKey,
+              displayName,
+              error: fallbackErr as Error,
+            });
+          }
+        }
+        const reason = failureReasonOf(err);
+        sourceFailures.push({
+          displayName,
+          sourceUrl: url ?? localPath ?? "(unknown source)",
+          error: reason,
+        });
+        deps.logger?.warn("notebook source upload failed; continuing", {
+          editionId: input.editionId,
+          partitionKey: input.partitionKey,
+          displayName,
+          sourceUrl: url ?? localPath ?? "(unknown source)",
+          error: err as Error,
+        });
+      }
+    }
+
+    if (uploadedSources.length === 0) {
+      throw new Error(
+        `NotebookLM accepted none of the ${uploadableDocs.length} curated sources`,
+      );
     }
 
     if (ranked.excluded.length > 0 && deps.signalRepo) {
@@ -418,6 +481,7 @@ export function createNotebookService(
         phase: "pending",
         createNotebook,
         uploadedSources,
+        sourceFailures,
       } satisfies NotebookProviderState,
     });
 
@@ -466,6 +530,8 @@ export function createNotebookService(
             createNotebook: parseProviderState(input.row.provider_response)
               ?.createNotebook,
             uploadedSources: input.uploadedSources,
+            sourceFailures: parseProviderState(input.row.provider_response)
+              ?.sourceFailures,
           } satisfies NotebookProviderState,
         });
       }
@@ -487,20 +553,23 @@ export function createNotebookService(
             createNotebook: parseProviderState(input.row.provider_response)
               ?.createNotebook,
             uploadedSources: input.uploadedSources,
+            sourceFailures: parseProviderState(input.row.provider_response)
+              ?.sourceFailures,
           } satisfies NotebookProviderState,
         });
       }
     }
 
+    const state = parseProviderState(input.row.provider_response);
     return deps.notebookRepo.updateDelivery(input.row.id, {
       status: "ready",
       sourceCount: input.row.source_count || input.uploadedSources.length,
       completedAt: new Date(),
       providerResponse: {
         phase: "ready",
-        createNotebook: parseProviderState(input.row.provider_response)
-          ?.createNotebook,
+        createNotebook: state?.createNotebook,
         uploadedSources: input.uploadedSources,
+        sourceFailures: state?.sourceFailures,
       } satisfies NotebookProviderState,
     });
   }
@@ -639,13 +708,26 @@ export function createNotebookService(
       }
     } catch (err) {
       const reason = failureReasonOf(err);
-      await markFailed({
-        row: refreshed ?? null,
-        createdResult: null,
-        editionId: input.editionId,
+      // A failed-row retry deletes the old row before creating a fresh one.
+      // If upload then fails, `refreshed` points at the deleted row; resolve
+      // the current row so the partial notebook cannot remain pending and
+      // block the next publication attempt.
+      const current = await deps.notebookRepo.getByEditionAndPartition(
+        input.editionId,
         partitionKey,
-        reason,
-      });
+      );
+      if (current?.status !== "ready") {
+        const providerState = current
+          ? parseProviderState(current.provider_response)
+          : null;
+        await markFailed({
+          row: current ?? null,
+          createdResult: providerState?.createNotebook ?? null,
+          editionId: input.editionId,
+          partitionKey,
+          reason,
+        });
+      }
       throw err;
     }
 

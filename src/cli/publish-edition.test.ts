@@ -175,6 +175,29 @@ describe("runPublishEditionCommand", () => {
     expect(logs.some((l) => l.includes("podcast=true"))).toBe(true);
   });
 
+  it("dry-run refuses to pass an edition that is still building", async () => {
+    const service = makeFakeService({
+      checkCompletion: vi.fn().mockResolvedValue(makeReadyCompletionReport()),
+    });
+    const lookup = makeFakeLookup({
+      getByDate: vi.fn().mockResolvedValue(makeEdition({ status: "building" })),
+    });
+    const logs: string[] = [];
+
+    const result = await runPublishEditionCommand({
+      service,
+      editionLookup: lookup,
+      editionDate: "2026-07-07",
+      dryRun: true,
+      log: (message) => logs.push(message),
+    });
+
+    expect(result.exitCode).toBe(1);
+    expect(service.checkCompletion).not.toHaveBeenCalled();
+    expect(logs.some((line) => line.includes("status=building"))).toBe(true);
+    expect(logs.some((line) => line.includes("building → ready"))).toBe(true);
+  });
+
   it("dry-run does not block when the optional podcast is not ready", async () => {
     const service = makeFakeService({
       checkCompletion: vi.fn().mockResolvedValue(

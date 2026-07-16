@@ -113,29 +113,44 @@ export function createAssignTopicsWorker(deps: AssignTopicsDeps): Worker {
         },
       });
 
+      const normalized: { topic: string; confidence: number; relevance: number }[] = [];
       const extracted = extractJson<TopicsResponse>(result.content);
       if (!extracted.ok) {
-        throw new Error(`topics prompt returned non-JSON: ${extracted.error}`);
-      }
-
-      if (!isTopicArray(extracted.value.topics)) {
-        throw new Error(
-          "topics prompt JSON missing required field: { topics: [{ topic, confidence, relevance }] }",
-        );
-      }
-
-      const normalized: { topic: string; confidence: number; relevance: number }[] = [];
-      for (const raw of extracted.value.topics) {
-        if (!isString(raw.topic) || !isUnitInterval(raw.confidence) || !isUnitInterval(raw.relevance)) {
-          throw new Error(
-            "topics prompt JSON has topic missing topic string or confidence/relevance in [0,1]",
-          );
-        }
-        normalized.push({
-          topic: raw.topic,
-          confidence: raw.confidence,
-          relevance: raw.relevance,
+        ctx.logger.warn("topics prompt returned unusable JSON; using empty topic fallback", {
+          chunkId,
+          documentId,
+          details: extracted.error,
         });
+      } else if (!isTopicArray(extracted.value.topics)) {
+        ctx.logger.warn("topics prompt omitted its topic array; using empty topic fallback", {
+          chunkId,
+          documentId,
+        });
+      } else {
+        let invalidCount = 0;
+        for (const raw of extracted.value.topics) {
+          if (
+            !isString(raw.topic) ||
+            raw.topic.trim().length === 0 ||
+            !isUnitInterval(raw.confidence) ||
+            !isUnitInterval(raw.relevance)
+          ) {
+            invalidCount++;
+            continue;
+          }
+          normalized.push({
+            topic: raw.topic.trim(),
+            confidence: raw.confidence,
+            relevance: raw.relevance,
+          });
+        }
+        if (invalidCount > 0) {
+          ctx.logger.warn("invalid topics omitted from enrichment result", {
+            chunkId,
+            documentId,
+            invalidCount,
+          });
+        }
       }
 
       const { topics, assignments } = await deps.topicRepo.replaceForChunk({

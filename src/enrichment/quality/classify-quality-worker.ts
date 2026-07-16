@@ -110,26 +110,36 @@ export function createClassifyQualityWorker(deps: ClassifyQualityDeps): Worker {
       });
 
       const extracted = extractJson<QualityResponse>(result.content);
-      if (!extracted.ok) {
-        throw new Error(`quality prompt returned non-JSON: ${extracted.error}`);
-      }
-
+      let label: string;
+      let confidence: number;
+      let reasoning: string | null;
       if (
-        !isString(extracted.value.label) ||
-        !isUnitInterval(extracted.value.confidence) ||
-        !isStringOrNull(extracted.value.reasoning)
+        extracted.ok &&
+        isString(extracted.value.label) &&
+        extracted.value.label.trim().length > 0 &&
+        isUnitInterval(extracted.value.confidence) &&
+        isStringOrNull(extracted.value.reasoning)
       ) {
-        throw new Error(
-          "quality prompt JSON missing required fields: { label: string, confidence: number in [0,1], reasoning: string | null }",
-        );
+        label = extracted.value.label.trim();
+        confidence = extracted.value.confidence;
+        reasoning = extracted.value.reasoning;
+      } else {
+        ctx.logger.warn("quality prompt returned unusable output; using medium fallback", {
+          chunkId,
+          documentId,
+          details: extracted.ok ? undefined : extracted.error,
+        });
+        label = "medium";
+        confidence = 0;
+        reasoning = "AI quality classification unavailable; defaulted to medium.";
       }
 
       const row = await deps.qualityRepo.replaceForChunk({
         chunkId,
         documentId,
-        label: extracted.value.label,
-        confidence: extracted.value.confidence,
-        reasoning: extracted.value.reasoning,
+        label,
+        confidence,
+        reasoning,
         promptId: result.promptId,
         promptVersion: result.promptVersion,
         model: result.model,

@@ -109,41 +109,54 @@ export function createExtractEntitiesWorker(deps: ExtractEntitiesDeps): Worker {
         },
       });
 
-      const extracted = extractJson<EntitiesResponse>(result.content);
-      if (!extracted.ok) {
-        throw new Error(`entities prompt returned non-JSON: ${extracted.error}`);
-      }
-
-      if (!isEntityArray(extracted.value.entities)) {
-        throw new Error(
-          "entities prompt JSON missing required field: { entities: [{ name, type, mention }] }",
-        );
-      }
-
       const normalized: { name: string; entityType: string; mentionText: string }[] = [];
       const seen = new Set<string>();
       let duplicateCount = 0;
-      for (const raw of extracted.value.entities) {
-        if (!isString(raw.name) || !isString(raw.type) || !isString(raw.mention)) {
-          throw new Error("entities prompt JSON has entity missing name/type/mention strings");
-        }
-        const name = raw.name.trim();
-        const entityType = raw.type.trim();
-        const mentionText = raw.mention.trim();
-        if (!name || !entityType || !mentionText) {
-          throw new Error("entities prompt JSON has entity with blank name/type/mention");
-        }
-        const key = `${name}\u0000${entityType}`;
-        if (seen.has(key)) {
-          duplicateCount++;
-          continue;
-        }
-        seen.add(key);
-        normalized.push({
-          name,
-          entityType,
-          mentionText,
+      const extracted = extractJson<EntitiesResponse>(result.content);
+      if (!extracted.ok) {
+        ctx.logger.warn("entities prompt returned unusable JSON; using empty entity fallback", {
+          chunkId,
+          documentId,
+          details: extracted.error,
         });
+      } else if (!isEntityArray(extracted.value.entities)) {
+        ctx.logger.warn("entities prompt omitted its entity array; using empty entity fallback", {
+          chunkId,
+          documentId,
+        });
+      } else {
+        let invalidCount = 0;
+        for (const raw of extracted.value.entities) {
+          if (!isString(raw.name) || !isString(raw.type) || !isString(raw.mention)) {
+            invalidCount++;
+            continue;
+          }
+          const name = raw.name.trim();
+          const entityType = raw.type.trim();
+          const mentionText = raw.mention.trim();
+          if (!name || !entityType || !mentionText) {
+            invalidCount++;
+            continue;
+          }
+          const key = `${name}\u0000${entityType}`;
+          if (seen.has(key)) {
+            duplicateCount++;
+            continue;
+          }
+          seen.add(key);
+          normalized.push({
+            name,
+            entityType,
+            mentionText,
+          });
+        }
+        if (invalidCount > 0) {
+          ctx.logger.warn("invalid entities omitted from enrichment result", {
+            chunkId,
+            documentId,
+            invalidCount,
+          });
+        }
       }
 
       if (duplicateCount > 0) {

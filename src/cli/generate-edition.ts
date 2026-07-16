@@ -38,7 +38,12 @@ export async function runGenerateEditionCommand(
   );
 
   const exitCode =
-    updated.status === "building" || updated.status === "ready" ? 0 : 1;
+    updated.status === "building" ||
+    updated.status === "ready" ||
+    updated.status === "publishing" ||
+    updated.status === "published"
+      ? 0
+      : 1;
   return { exitCode, editionId: updated.id, transitioned: result.transitioned, status: updated.status };
 }
 
@@ -102,7 +107,7 @@ Flags:
   -h, --help             show this help
 
 Exit codes:
-  0   edition is in 'building' or 'ready' status after the gate ran
+  0   edition is in 'building', 'ready', 'publishing', or 'published' status
   1   readiness gate transitioned the edition to 'failed', or another error
 
 This is a small helper to inspect / advance the building → ready transition

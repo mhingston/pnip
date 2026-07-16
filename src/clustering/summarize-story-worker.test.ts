@@ -415,7 +415,7 @@ describe("SummarizeStoryWorker", () => {
     expect(callArg.variables.source_chunks).toContain("source=Fed raises rates");
   });
 
-  it("rejects a claim when it has no explicit chunk reference", async () => {
+  it("uses a grounded fallback when claims have no explicit chunk reference", async () => {
     const docs = new Map([["doc-1", makeDoc()]]);
     const chunks = new Map([["doc-1", [makeChunk({ id: "chunk-1" }), makeChunk({ id: "chunk-2", chunk_sequence: 1, content_text: "Other text.", start_offset: 29, end_offset: 40 })]]]);
     const summaries = new Map([["doc-1", [makeSummary("doc-1", "S")]]]);
@@ -431,16 +431,16 @@ describe("SummarizeStoryWorker", () => {
     });
     const worker = createSummarizeStoryWorker(deps);
 
-    await expect(
-      worker.execute(makeJob(), { db: {} as any, logger: silentLogger() }),
-    ).rejects.toThrow(/claim 1.*explicit chunk reference/i);
-    expect(deps.storySummaryRepo.replaceForStory).not.toHaveBeenCalled();
+    await worker.execute(makeJob(), { db: {} as any, logger: silentLogger() });
+    const persistArg = (deps.storySummaryRepo.replaceForStory as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(persistArg.claims).toHaveLength(1);
+    expect(persistArg.claims[0].chunkId).toBe("chunk-1");
   });
 
   it.each([
     ["chunk 0", /references chunk 0/],
     ["chunk 3", /references chunk 3.*only chunks 1-2/],
-  ])("rejects an out-of-range %s reference", async (reference, error) => {
+  ])("uses a grounded fallback for an out-of-range %s reference", async (reference) => {
     const docs = new Map([["doc-1", makeDoc()]]);
     const chunks = new Map([
       [
@@ -469,13 +469,11 @@ describe("SummarizeStoryWorker", () => {
     });
     const worker = createSummarizeStoryWorker(deps);
 
-    await expect(
-      worker.execute(makeJob(), { db: {} as any, logger: silentLogger() }),
-    ).rejects.toThrow(error);
-    expect(deps.storySummaryRepo.replaceForStory).not.toHaveBeenCalled();
+    await worker.execute(makeJob(), { db: {} as any, logger: silentLogger() });
+    expect(deps.storySummaryRepo.replaceForStory).toHaveBeenCalledOnce();
   });
 
-  it("rejects malformed chunk references", async () => {
+  it("uses a grounded fallback for malformed chunk references", async () => {
     const docs = new Map([["doc-1", makeDoc()]]);
     const chunks = new Map([["doc-1", [makeChunk({ id: "chunk-1" })]]]);
     const summaries = new Map([["doc-1", [makeSummary("doc-1", "S")]]]);
@@ -490,13 +488,11 @@ describe("SummarizeStoryWorker", () => {
     });
     const worker = createSummarizeStoryWorker(deps);
 
-    await expect(
-      worker.execute(makeJob(), { db: {} as any, logger: silentLogger() }),
-    ).rejects.toThrow(/claim 1.*malformed chunk reference/i);
-    expect(deps.storySummaryRepo.replaceForStory).not.toHaveBeenCalled();
+    await worker.execute(makeJob(), { db: {} as any, logger: silentLogger() });
+    expect(deps.storySummaryRepo.replaceForStory).toHaveBeenCalledOnce();
   });
 
-  it("rejects claims that contain only a chunk reference", async () => {
+  it("uses a grounded fallback for claims that contain only a chunk reference", async () => {
     const docs = new Map([["doc-1", makeDoc()]]);
     const chunks = new Map([["doc-1", [makeChunk({ id: "chunk-1" })]]]);
     const summaries = new Map([["doc-1", [makeSummary("doc-1", "S")]]]);
@@ -511,13 +507,11 @@ describe("SummarizeStoryWorker", () => {
     });
     const worker = createSummarizeStoryWorker(deps);
 
-    await expect(
-      worker.execute(makeJob(), { db: {} as any, logger: silentLogger() }),
-    ).rejects.toThrow(/claim 1.*must contain text/i);
-    expect(deps.storySummaryRepo.replaceForStory).not.toHaveBeenCalled();
+    await worker.execute(makeJob(), { db: {} as any, logger: silentLogger() });
+    expect(deps.storySummaryRepo.replaceForStory).toHaveBeenCalledOnce();
   });
 
-  it("rejects duplicate claims after removing references", async () => {
+  it("discards duplicate claims after removing references", async () => {
     const docs = new Map([["doc-1", makeDoc()]]);
     const chunks = new Map([
       [
@@ -541,13 +535,12 @@ describe("SummarizeStoryWorker", () => {
     });
     const worker = createSummarizeStoryWorker(deps);
 
-    await expect(
-      worker.execute(makeJob(), { db: {} as any, logger: silentLogger() }),
-    ).rejects.toThrow(/duplicate claim at position 2/i);
-    expect(deps.storySummaryRepo.replaceForStory).not.toHaveBeenCalled();
+    await worker.execute(makeJob(), { db: {} as any, logger: silentLogger() });
+    const persistArg = (deps.storySummaryRepo.replaceForStory as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(persistArg.claims).toHaveLength(1);
   });
 
-  it("rejects a claim with no meaningful overlap with its cited source", async () => {
+  it("uses a grounded fallback when a claim has no source overlap", async () => {
     const deps = makeDeps({
       members: [{ document_id: "doc-1" }],
       documents: new Map([["doc-1", makeDoc()]]),
@@ -565,13 +558,13 @@ describe("SummarizeStoryWorker", () => {
     });
     const worker = createSummarizeStoryWorker(deps);
 
-    await expect(
-      worker.execute(makeJob(), { db: {} as any, logger: silentLogger() }),
-    ).rejects.toThrow(/no meaningful lexical overlap/i);
-    expect(deps.storySummaryRepo.replaceForStory).not.toHaveBeenCalled();
+    await worker.execute(makeJob(), { db: {} as any, logger: silentLogger() });
+    const persistArg = (deps.storySummaryRepo.replaceForStory as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(persistArg.claims[0].chunkId).toBe("chunk-1");
+    expect(persistArg.claims[0].text).toContain("weather");
   });
 
-  it("rejects a summary restatement for the abstractive story prompt", async () => {
+  it("uses a grounded fallback for a summary restatement", async () => {
     const deps = makeDeps({
       prompt: { ...makePromptVersion(), version: 3 },
       members: [{ document_id: "doc-1" }],
@@ -590,10 +583,9 @@ describe("SummarizeStoryWorker", () => {
     });
     const worker = createSummarizeStoryWorker(deps);
 
-    await expect(
-      worker.execute(makeJob(), { db: {} as any, logger: silentLogger() }),
-    ).rejects.toThrow(/substantially restates the summary/i);
-    expect(deps.storySummaryRepo.replaceForStory).not.toHaveBeenCalled();
+    await worker.execute(makeJob(), { db: {} as any, logger: silentLogger() });
+    const persistArg = (deps.storySummaryRepo.replaceForStory as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(persistArg.claims[0].chunkId).toBe("chunk-1");
   });
 
   it("uses the referenced chunk for claims with chunk references", async () => {
@@ -646,7 +638,7 @@ describe("SummarizeStoryWorker", () => {
     ).rejects.toThrow(/no registered version/i);
   });
 
-  it("throws when AI returns non-JSON", async () => {
+  it("uses a grounded fallback when AI returns non-JSON", async () => {
     const docs = new Map([["doc-1", makeDoc()]]);
     const chunks = new Map([["doc-1", [makeChunk()]]]);
     const summaries = new Map([["doc-1", [makeSummary("doc-1", "S")]]]);
@@ -660,9 +652,8 @@ describe("SummarizeStoryWorker", () => {
     });
     const worker = createSummarizeStoryWorker(deps);
 
-    await expect(
-      worker.execute(makeJob(), { db: {} as any, logger: silentLogger() }),
-    ).rejects.toThrow(/non-JSON/);
+    await worker.execute(makeJob(), { db: {} as any, logger: silentLogger() });
+    expect(deps.storySummaryRepo.replaceForStory).toHaveBeenCalledOnce();
   });
 
   it("throws on invalid target", async () => {

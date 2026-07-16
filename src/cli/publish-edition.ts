@@ -1,6 +1,7 @@
 import type { Kysely } from "kysely";
 import {
   PublicationGateFailedError,
+  PublicationStateError,
   type CompletionReport,
   type PublicationService,
   type PublicationServiceResult,
@@ -140,6 +141,19 @@ export async function runPublishEditionCommand(
       return { exitCode: 1 };
     }
 
+    if (
+      edition.status !== "ready" &&
+      edition.status !== "publishing" &&
+      edition.status !== "published"
+    ) {
+      log(
+        `publish-edition --dry-run blocked for edition ${edition.id} ` +
+          `(date=${String(editionDate)}): status=${edition.status}; ` +
+          "the readiness gate must transition building → ready before publication",
+      );
+      return { exitCode: 1 };
+    }
+
     const report = await deps.service.checkCompletion(edition.id);
 
     log(
@@ -218,6 +232,10 @@ export async function runPublishEditionCommand(
       for (const m of err.missingArtifacts) {
         log(`  - ${m}`);
       }
+      return { exitCode: 1 };
+    }
+    if (err instanceof PublicationStateError) {
+      log(`publish-edition blocked: ${err.message}`);
       return { exitCode: 1 };
     }
     const msg = err instanceof Error ? err.message : String(err);
