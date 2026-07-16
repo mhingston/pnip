@@ -22,6 +22,17 @@ describe("buildEmailTemplate", () => {
     expect(t.html).toContain("</body>");
   });
 
+  it("uses a fluid shell and responsive mobile typography", () => {
+    const t = buildEmailTemplate(baseInput);
+    expect(t.html).toContain('class="email-shell"');
+    expect(t.html).toContain('width="100%" style="width:100%;max-width:600px;');
+    expect(t.html).not.toContain('width="600"');
+    expect(t.html).toContain('@media only screen and (max-width: 600px)');
+    expect(t.html).toContain("font-size:16px");
+    expect(t.html).toContain("overflow-wrap:anywhere");
+    expect(t.html).toContain("padding-right: 20px !important");
+  });
+
   it("embeds the rendered Markdown body inside the email content area", () => {
     const t = buildEmailTemplate(baseInput);
     expect(t.html).toContain("<p>Body content here.</p>");
@@ -60,6 +71,16 @@ describe("buildEmailTemplate", () => {
     expect(t.html).toContain("notebooklm.example/n/abc");
     expect(t.html).toContain("podcasts.example/p/abc.mp3");
     expect(t.html.match(/<li>/g)?.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("renders supplementary links as full-width tappable links", () => {
+    const t = buildEmailTemplate({
+      ...baseInput,
+      notebookUrl: "https://notebooklm.example/n/abc",
+    });
+    expect(t.html).toContain('class="email-artifact-link"');
+    expect(t.html).toContain("display:block;padding:12px 14px");
+    expect(t.html).toContain('class="email-artifact-list"');
   });
 
   it("renders a typed list of master and partition artifacts with descriptive labels", () => {
