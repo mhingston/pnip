@@ -13,6 +13,8 @@ It is a self-hosted TypeScript/Node application backed by PostgreSQL. Processing
 
 Discovery requests both read and unread entries, advances a local ingestion checkpoint, and deduplicates by Miniflux entry ID. When a new daily edition boundary is first opened, PNIP marks all Miniflux feeds read once; this only resets the reader's unread badge. Manual reading remains available, and entries continue to be ingested regardless of their read state.
 
+The scheduled drain uses separate discovery and processing locks. Processing can be scoped to one edition date and bounded per tick, so a slow provider or older backlog cannot prevent the next edition from being discovered. Transient provider failures are deferred without exhausting a job's retry budget, and malformed enrichment output uses grounded fallbacks where the source material permits it.
+
 If discovery is asked to use an edition that is already ready, publishing, or published, it routes entries to the next open daily edition so an immutable digest is never changed by late arrivals.
 
 The Markdown digest currently:
@@ -24,7 +26,18 @@ The Markdown digest currently:
 - includes all assembled stories, with up to 50 stories promoted to the lead section by default, while retaining the complete story/source set;
 - aims for at least 25 story clusters when enough recent, processable entries exist. If the cursor has too few entries, discovery searches a bounded recent Miniflux lookback and prioritizes blogs/articles and YouTube ahead of lower-signal Reddit threads while filling the edition. Configured YouTube focus channels also receive a ranking and analysis boost. The target is best-effort: feed failures, duplicates, failed expansion, and clustering cannot be papered over with synthetic items.
 
-The NotebookLM notebook uploads the curated source URLs/files, not the Markdown synthesis. A notebook is capped at 50 sources by default; overflow is recorded for audit and remains present in the Markdown digest.
+The NotebookLM notebook normally uploads the curated source URLs/files, not the Markdown synthesis. If URL ingestion fails and stored article Markdown/text is available, PNIP uploads that stored content as a fallback and records the source failure. A notebook is capped at 50 sources by default; overflow is recorded for audit and remains present in the Markdown digest.
+
+## Operational status
+
+Last verified on 2026-07-16 (Europe/London):
+
+- the 2026-07-16 edition is published with 25 documents and 25 stories;
+- the Markdown digest is complete and the email was sent;
+- the master NotebookLM notebook is ready with 25 sources; and
+- the optional podcast is generating asynchronously, so it does not block publication.
+
+All 961 processing jobs for that edition were complete with no pending, running, or failed jobs at publication time. This is a status snapshot; use `digestive doctor`, `digestive metrics`, and `digestive active-partitions --date YYYY-MM-DD` for a live check.
 
 ## Requirements
 
@@ -92,7 +105,7 @@ For a single edition, use:
 DATE=$(date +%F)
 
 npm run digestive -- discover --date "$DATE"
-npm run digestive -- process
+npm run digestive -- process --date "$DATE" --max-jobs 10000
 npm run digestive -- generate-digest --date "$DATE"
 npm run digestive -- generate-edition --date "$DATE"
 npm run digestive -- generate-notebook --date "$DATE" --wait
@@ -101,7 +114,7 @@ npm run digestive -- generate-email --date "$DATE"
 npm run digestive -- publish-edition --date "$DATE"
 ~~~
 
-Podcast generation is best-effort and does not block publication. Notebook readiness, Markdown, email delivery, and any active partition notebooks are publication requirements.
+Podcast generation is best-effort and does not block publication. Notebook readiness, Markdown, email delivery, and any active partition notebooks are publication requirements. The publication command refuses to publish an edition until the readiness gate has moved it from Building to Ready.
 
 The recommended automated workflow is:
 
@@ -109,7 +122,7 @@ The recommended automated workflow is:
 scripts/cron-install.sh install
 ~~~
 
-This installs a Miniflux/processing drain and a NotebookLM podcast-readiness drain every 10 minutes, a six-hour maintenance apply (including the 30-day retention purge), and a daily publication trigger. Use scripts/daily-publish.sh directly when you need a one-shot publication sequence. Set PNIP_PUBLISH_DATE to publish a specific edition and PNIP_DRY_RUN=1 to stop after the publication gate check.
+This installs a Miniflux/processing drain and a NotebookLM podcast-readiness drain every 10 minutes, a six-hour maintenance apply (including the 30-day retention purge), and a daily publication trigger. The digest drain discovers the local date independently from its bounded processing batch; `PNIP_DRAIN_MAX_JOBS` controls that batch size and defaults to 100. Use scripts/daily-publish.sh directly when you need a one-shot publication sequence. Set PNIP_PUBLISH_DATE to publish a specific edition and PNIP_DRY_RUN=1 to stop after the publication gate check.
 
 ## CLI reference
 
@@ -120,7 +133,7 @@ All commands support -h and --help. Dates default to today.
 | Command | Purpose |
 | --- | --- |
 | digestive discover | Ingest new read or unread Miniflux entries; reset Miniflux feed read state once per new edition boundary |
-| digestive process | Drain the processing queue until it is empty |
+| digestive process [--date YYYY-MM-DD] [--max-jobs N] | Drain the queue, optionally scoped to one edition and bounded to a batch size |
 | digestive generate-digest | Render the canonical Markdown digest |
 | digestive generate-edition | Evaluate the Building → Ready enrichment gate |
 | digestive generate-email | Render and send the HTML email; --dry-run skips sending |
@@ -196,6 +209,7 @@ The complete schema is in .env.example. The main settings are:
 | NOTEBOOKLM_OUTPUT_DIR | Podcast download directory (default ./notebooks) |
 | NOTEBOOKLM_HEADLESS | NotebookLM CLI mode |
 | NOTEBOOKLM_MAX_SOURCES_PER_NOTEBOOK | Notebook source cap (default 50) |
+| PNIP_DRAIN_MAX_JOBS | Processing jobs claimed per digest-drain tick (default 100) |
 | PARTITION_CONFIG | Optional category-to-partition JSON |
 | DIGEST_BIAS_ENABLED | Enable feedback biasing |
 | DIGEST_MIN_STORIES | Minimum story-cluster target (default 25; best-effort) |
