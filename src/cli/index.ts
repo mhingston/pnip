@@ -363,6 +363,7 @@ async function main(): Promise<number> {
         youtubeFocusChannels,
         options: {
           minStories: cfg.DIGEST_MIN_STORIES,
+          targetStories: cfg.DIGEST_MAX_STORIES,
           ...(cfg.DIGEST_SMALL_EDITION_MAX_DOCUMENTS !== undefined
             ? { smallEditionMaxDocuments: cfg.DIGEST_SMALL_EDITION_MAX_DOCUMENTS }
             : {}),
@@ -537,6 +538,9 @@ async function main(): Promise<number> {
         presentation: {
           targetReadingMinutes: cfg.DIGEST_TARGET_READING_MINUTES,
           quietEditionReason: cfg.DIGEST_QUIET_EDITION_REASON,
+          maxStories: cfg.DIGEST_MAX_STORIES,
+          maxStoriesPerSource: cfg.DIGEST_MAX_STORIES_PER_SOURCE,
+          maxDocumentsPerSource: cfg.DIGEST_MAX_DOCUMENTS_PER_SOURCE,
         },
         logger,
       });

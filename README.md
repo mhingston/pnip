@@ -249,9 +249,12 @@ The master NotebookLM notebook normally receives the curated source URLs or file
 | Variable | Required | Default | Description |
 | --- | --- | --- | --- |
 | `DIGEST_MIN_STORIES` | No | `25` | Best-effort minimum story-cluster target. It also drives discovery fill. |
+| `DIGEST_MAX_STORIES` | No | `25` | Hard maximum number of stories rendered in the canonical digest; also the target story-cluster count when clustering can merge enough related documents. |
+| `DIGEST_MAX_STORIES_PER_SOURCE` | No | `8` | Maximum number of rendered stories led by one source identity; later stories from other sources are preferred. |
+| `DIGEST_MAX_DOCUMENTS_PER_SOURCE` | No | `12` | Maximum number of source links shown for one source identity in the digest. |
 | `DIGEST_DISCOVERY_LOOKBACK_DAYS` | No | `7` | Number of recent days searched for unprocessed entries when the current cursor yields too few items. Set to `0` to disable historical fill. |
 | `DIGEST_SOURCE_BALANCE` | No | `true` | When `true`, historical fill prefers articles and YouTube over Reddit. |
-| `DIGEST_TARGET_READING_MINUTES` | No | — | Presentation calibration affecting lead-story prominence; it does not remove stories from the canonical digest. |
+| `DIGEST_TARGET_READING_MINUTES` | No | — | Presentation calibration affecting lead-story prominence. |
 | `DIGEST_SMALL_EDITION_MAX_DOCUMENTS` | No | internal default | Positive document-count cutoff for using the small-edition clustering policy. |
 | `DIGEST_SMALL_EDITION_SIMILARITY_THRESHOLD` | No | internal default | Similarity threshold from `0` to `1` used for small editions. |
 | `DIGEST_QUIET_EDITION_REASON` | No | — | Explicit editorial framing: `low_significance` or `low_novelty`. |

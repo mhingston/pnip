@@ -467,6 +467,41 @@ describe("renderMarkdown", () => {
     expect(top.match(/^### /gm)).toHaveLength(6);
   });
 
+  it("caps stories and promotes other sources when one source dominates", () => {
+    const stories = [
+      ...Array.from({ length: 6 }, (_, i) =>
+        makeStoryAt(`gh-${i + 1}`, i, "Technology", "ai", {
+          url: `https://githubnext.com/story-${i + 1}`,
+        }),
+      ),
+      ...Array.from({ length: 6 }, (_, i) =>
+        makeStoryAt(`other-${i + 1}`, i + 6, "Technology", "ai", {
+          url: `https://other-source-${i + 1}.example/story`,
+        }),
+      ),
+    ];
+    const limited = createMarkdownDigestService({
+      ...baseDeps(),
+      presentation: {
+        maxStories: 6,
+        maxStoriesPerSource: 2,
+        maxDocumentsPerSource: 2,
+      },
+    });
+    const md = limited.renderMarkdown({
+      edition: makeEdition(),
+      assembly: { edition: makeEdition(), stories: [], ...DUMMY_ASSEMBLY, totalDocuments: 12 },
+      stories,
+      citationIndex: buildCitationIndex([]),
+    });
+
+    expect(md.match(/^### /gm)).toHaveLength(6);
+    expect(md).not.toContain("gh-3");
+    expect(md).toContain("other-1");
+    expect(md.match(/^- \[/gm)).toHaveLength(8);
+    expect(md).toContain("_Coverage: reviewed 12 sources; included 8 sources across 6 stories; suppressed 6 stories._");
+  });
+
   it("frames a quiet edition only when an explicit significance or novelty assessment exists", () => {
     const story = makeNStories(1, "Technology", "ai");
     const ordinary = svc.renderMarkdown({ edition: makeEdition(), assembly: { edition: makeEdition(), stories: [], ...DUMMY_ASSEMBLY }, stories: story, citationIndex: buildCitationIndex([]) });
@@ -494,6 +529,73 @@ describe("renderMarkdown", () => {
 });
 
 describe("generate", () => {
+  it("refuses to generate while the edition is still building", async () => {
+    const digestRepo = {
+      createForEdition: vi.fn(),
+      getByEdition: vi.fn(),
+      deleteByEdition: vi.fn(),
+    };
+    const editionRepo = {
+      getById: vi.fn().mockResolvedValue(makeEdition({ status: "building" })),
+      getByDate: vi.fn(),
+    };
+    const svc = createMarkdownDigestService({
+      db: {} as never,
+      editionRepo: editionRepo as never,
+      assembly: {} as never,
+      storySummaryRepo: {} as never,
+      docRepo: {} as never,
+      chunkRepo: {} as never,
+      topicRepo: {} as never,
+      digestRepo: digestRepo as never,
+      signalRepo: {} as never,
+      logger: silentLogger(),
+    });
+
+    await expect(svc.generate({ editionId: "ed-1" })).rejects.toThrow(
+      /edition ed-1 is not ready/,
+    );
+    expect(digestRepo.getByEdition).not.toHaveBeenCalled();
+  });
+
+  it("refuses to generate when assembly readiness checks are incomplete", async () => {
+    const digestRepo = {
+      createForEdition: vi.fn(),
+      getByEdition: vi.fn().mockResolvedValue(undefined),
+      deleteByEdition: vi.fn(),
+    };
+    const editionRepo = {
+      getById: vi.fn().mockResolvedValue(makeEdition()),
+      getByDate: vi.fn(),
+    };
+    const assembly = {
+      assemble: vi.fn().mockResolvedValue({
+        edition: makeEdition(),
+        stories: [],
+        ...DUMMY_ASSEMBLY,
+        isReady: false,
+        reason: "2/3 stories have summaries",
+      }),
+    };
+    const svc = createMarkdownDigestService({
+      db: {} as never,
+      editionRepo: editionRepo as never,
+      assembly: assembly as never,
+      storySummaryRepo: {} as never,
+      docRepo: {} as never,
+      chunkRepo: {} as never,
+      topicRepo: {} as never,
+      digestRepo: digestRepo as never,
+      signalRepo: {} as never,
+      logger: silentLogger(),
+    });
+
+    await expect(svc.generate({ editionId: "ed-1" })).rejects.toThrow(
+      /2\/3 stories have summaries/,
+    );
+    expect(digestRepo.createForEdition).not.toHaveBeenCalled();
+  });
+
   it("returns alreadyExisted=true when a digest already exists", async () => {
     const existing = {
       id: "md-1",

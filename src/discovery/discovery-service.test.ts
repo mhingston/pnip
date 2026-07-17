@@ -716,9 +716,11 @@ describe("DiscoveryService", () => {
     const target = jobs[0].target as {
       discoveryEventId: string;
       url: string;
+      title: string;
       partitionKey: string;
     };
     expect(target.partitionKey).toBe("youtube");
     expect(target.url).toBe("https://x/1");
+    expect(target.title).toBe("Entry 1");
   });
 });

@@ -21,7 +21,7 @@ function silentLogger(): Logger {
   } as unknown as Logger;
 }
 
-function makeEdition(): Edition {
+function makeEdition(overrides: Partial<Edition> = {}): Edition {
   return {
     id: "ed-1",
     publication_date: new Date("2026-07-07T00:00:00Z"),
@@ -34,6 +34,7 @@ function makeEdition(): Edition {
     cluster_stories_enqueued_at: null,
     metadata: null,
     partition_key: "master",
+    ...overrides,
   };
 }
 
@@ -92,6 +93,7 @@ const failureResult: ResendEmailResult = {
 };
 
 interface DepsOverrides {
+  edition?: Partial<Edition>;
   resend?: ResendClient;
   markdownRow?: MarkdownDigestRow;
   existingEmailRow?: EmailDigestRow | undefined;
@@ -106,8 +108,8 @@ function makeDeps(overrides: DepsOverrides = {}) {
   const resend = overrides.resend ?? makeFakeResend(successResult);
 
   const editionRepo = {
-    getById: vi.fn().mockResolvedValue(makeEdition()),
-    getByDate: vi.fn().mockResolvedValue(makeEdition()),
+    getById: vi.fn().mockResolvedValue(makeEdition(overrides.edition)),
+    getByDate: vi.fn().mockResolvedValue(makeEdition(overrides.edition)),
   };
   const markdownDigestRepo = {
     getByEdition: vi.fn().mockResolvedValue(markdownRow),
@@ -209,6 +211,19 @@ describe("send — failure path", () => {
     expect(result.failureReason).toMatch(/HTTP 422/);
     expect(result.providerMessageId).toBeNull();
     expect(mocks.emailDigestRepo.updateDelivery).toHaveBeenCalledOnce();
+  });
+});
+
+describe("send — readiness", () => {
+  it("does not send an email while the edition is still building", async () => {
+    const { deps, mocks } = makeDeps({ edition: { status: "building" } });
+    const svc = createEmailDigestService(deps);
+
+    await expect(svc.send({ editionId: "ed-1" })).rejects.toThrow(
+      /not ready for email delivery/,
+    );
+    expect(mocks.markdownDigestRepo.getByEdition).toHaveBeenCalledOnce();
+    expect(mocks.resend.sendEmail).not.toHaveBeenCalled();
   });
 });
 

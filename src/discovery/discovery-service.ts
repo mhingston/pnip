@@ -196,7 +196,12 @@ export function createDiscoveryService(deps: {
               await q.enqueue({
                 jobType: "expand_document",
                 editionId: edition.id,
-                target: { discoveryEventId: event.id, url: entry.url, partitionKey },
+                target: {
+                  discoveryEventId: event.id,
+                  url: entry.url,
+                  title: entry.title,
+                  partitionKey,
+                },
               });
               outcome = "created";
             }

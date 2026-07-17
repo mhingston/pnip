@@ -2,6 +2,8 @@ export interface ExpandContext {
   url: string;
   editionId: string;
   discoveryEventId: string;
+  /** The title supplied by Miniflux, used when page extraction has no title. */
+  title?: string;
 }
 
 export interface SectionData {

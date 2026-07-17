@@ -11,6 +11,7 @@ import { RedditRateLimitError } from "./reddit-rate-limiter.js";
 interface ExpandTarget {
   discoveryEventId: string;
   url: string;
+  title?: string;
   partitionKey?: string;
 }
 
@@ -36,6 +37,9 @@ function parseTarget(target: unknown): ExpandTarget {
   return {
     discoveryEventId: t.discoveryEventId,
     url: t.url,
+    title: typeof t.title === "string" && t.title.trim().length > 0
+      ? t.title.trim()
+      : undefined,
     partitionKey: typeof t.partitionKey === "string" ? t.partitionKey : undefined,
   };
 }
@@ -53,7 +57,7 @@ export function createExpandDocumentWorker(deps: {
     },
 
     async execute(job: ProcessingJob, ctx: WorkerContext): Promise<WorkerOutcome> {
-      const { discoveryEventId, url, partitionKey } = parseTarget(job.target);
+      const { discoveryEventId, url, title, partitionKey } = parseTarget(job.target);
 
       const plugin = deps.pluginRegistry.select(url);
       if (!plugin) {
@@ -66,6 +70,7 @@ export function createExpandDocumentWorker(deps: {
             url,
             editionId: job.edition_id!,
             discoveryEventId,
+            title,
           });
         } catch (err) {
           if (err instanceof RedditRateLimitError) {
@@ -76,7 +81,7 @@ export function createExpandDocumentWorker(deps: {
             await deps.queue.enqueue({
               jobType: "expand_document",
               editionId: job.edition_id ?? undefined,
-              target: { discoveryEventId, url, partitionKey },
+              target: { discoveryEventId, url, title, partitionKey },
               nextEligibleAt: new Date(Date.now() + err.resetSeconds * 1000),
             });
             return null;

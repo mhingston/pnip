@@ -23,9 +23,10 @@
 #   4. for each active partition, wait on the notebook via --wait
 #   5. after each notebook is ready, kick off generate-podcast for master
 #      and configured with_podcast partitions
-#   6. digestive generate-email --date <date> (with artifact links)
-#   7. digestive publish-edition --date <date> --dry-run
-#   8. digestive publish-edition --date <date>
+#   6. digestive generate-edition --date <date>
+#   7. digestive generate-email --date <date> (with artifact links)
+#   8. digestive publish-edition --date <date> --dry-run
+#   9. digestive publish-edition --date <date>
 #
 # Environment:
 #   PNIP_PUBLISH_DATE     override the edition date (default: today local)
@@ -181,13 +182,8 @@ while IFS= read -r line; do
   fi
 done <<< "$PARTITION_LINES"
 
-# 5. Email is rendered after required notebook waits. The command remains
-# idempotent: an already-sent edition is not delivered twice. If a podcast
-# finishes later, it can be reflected by a deliberate email regeneration.
-run "generate-email" \
-  npm run digestive -- generate-email --date "$DATE"
-
-# 6. Evaluate the building -> ready transition. The edition is in
+# 5. Evaluate the building -> ready transition before rendering or sending
+# email. The edition is in
 # 'building' state once all 5 enrichers are done for every document
 # in the partition and the cluster_stories + summarize_story
 # workers have completed. generate-edition runs the readiness gate
@@ -195,6 +191,13 @@ run "generate-email" \
 # 'building' if the gate is not yet met).
 run "generate-edition" \
   npm run digestive -- generate-edition --date "$DATE"
+
+# 6. Email is rendered after the readiness gate and required notebook waits.
+# The command remains idempotent: an already-sent edition is not delivered
+# twice. If a podcast finishes later, it can be reflected by a deliberate
+# email regeneration.
+run "generate-email" \
+  npm run digestive -- generate-email --date "$DATE"
 
 # 7. Dry-run gate check. If the gate fails, the script aborts BEFORE
 # the real publish so the operator can investigate. The dry-run

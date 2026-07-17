@@ -105,6 +105,14 @@ export function createEmailDigestService(
     return `${y}-${m}-${d}`;
   }
 
+  function assertEditionReadyForDelivery(edition: Edition): void {
+    if (edition.status === "building" || edition.status === "failed") {
+      throw new Error(
+        `edition ${edition.id} is not ready for email delivery (status=${edition.status})`,
+      );
+    }
+  }
+
   async function renderForEdition(
     edition: Edition,
     markdown: MarkdownDigestRow,
@@ -217,6 +225,7 @@ export function createEmailDigestService(
             `run "digestive generate-digest --date ${formatPublicationDate(edition.publication_date)}" first`,
         );
       }
+      assertEditionReadyForDelivery(edition);
       const rendered = await renderForEdition(edition, markdown);
       return {
         edition,
@@ -266,6 +275,7 @@ export function createEmailDigestService(
             `run "digestive generate-digest --date ${formatPublicationDate(edition.publication_date)}" first`,
         );
       }
+      assertEditionReadyForDelivery(edition);
       const rendered = await renderForEdition(edition, markdown);
 
       let row: EmailDigestRow;

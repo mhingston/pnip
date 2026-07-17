@@ -161,7 +161,13 @@ export interface MarkdownDigestServiceDeps {
 }
 
 export interface DigestPresentationConfig {
-  /** Calibrates story prominence only; never removes stories or sources. */
+  /** Maximum number of stories rendered in the digest. */
+  maxStories?: number;
+  /** Maximum number of rendered stories led by one source identity. */
+  maxStoriesPerSource?: number;
+  /** Maximum number of source links shown for one source identity. */
+  maxDocumentsPerSource?: number;
+  /** Calibrates story prominence within the selected story set. */
   targetReadingMinutes?: number;
   /** Must come from an explicit upstream editorial assessment. */
   quietEditionReason?: "low_significance" | "low_novelty";
@@ -209,7 +215,7 @@ async function writeClaimedInTopSignals(
   const topStoriesLimit = presentation?.targetReadingMinutes === undefined
     ? DIGEST_TOP_STORIES_LIMIT
     : Math.max(1, Math.round(presentation.targetReadingMinutes / 2));
-  const topStories = stories
+  const topStories = limitStoriesForDigest(stories, presentation)
     .filter((story) => classifyStoryContinuity(
       {
         label: story.storyLabel,
@@ -246,6 +252,74 @@ function storyDocumentIdentities(story: StorySnapshot): (string | null)[] {
       metadata: d.metadata ?? null,
     }),
   );
+}
+
+function normalizePositiveLimit(value: number | undefined): number | undefined {
+  if (value === undefined || !Number.isFinite(value)) return undefined;
+  const limit = Math.floor(value);
+  return limit > 0 ? limit : undefined;
+}
+
+/**
+ * Keep the ranked order while preventing one source from consuming the whole
+ * edition. A story is attributed to its lead document's source identity;
+ * multi-source stories therefore remain intact rather than being split.
+ */
+function limitStoriesForDigest(
+  stories: StorySnapshot[],
+  presentation?: DigestPresentationConfig,
+): StorySnapshot[] {
+  const maxStories = normalizePositiveLimit(presentation?.maxStories);
+  const maxStoriesPerSource = normalizePositiveLimit(
+    presentation?.maxStoriesPerSource,
+  );
+  if (maxStories === undefined && maxStoriesPerSource === undefined) {
+    return stories;
+  }
+
+  const counts = new Map<string, number>();
+  const selected: StorySnapshot[] = [];
+  for (const story of stories) {
+    if (maxStories !== undefined && selected.length >= maxStories) break;
+    const sourceIdentity = storyDocumentIdentities(story)[0] ?? null;
+    if (
+      sourceIdentity !== null &&
+      maxStoriesPerSource !== undefined &&
+      (counts.get(sourceIdentity) ?? 0) >= maxStoriesPerSource
+    ) {
+      continue;
+    }
+    selected.push(story);
+    if (sourceIdentity !== null) {
+      counts.set(sourceIdentity, (counts.get(sourceIdentity) ?? 0) + 1);
+    }
+  }
+  return selected;
+}
+
+function limitDocumentsForDigest(
+  documents: DocumentSnapshot[],
+  presentation?: DigestPresentationConfig,
+): DocumentSnapshot[] {
+  const maxDocumentsPerSource = normalizePositiveLimit(
+    presentation?.maxDocumentsPerSource,
+  );
+  if (maxDocumentsPerSource === undefined) return documents;
+
+  const counts = new Map<string, number>();
+  return documents.filter((document) => {
+    const sourceIdentity = deriveSourceIdentity({
+      sourceUrl: document.sourceUrl,
+      sourceType: document.sourceType,
+      publisher: document.publisher,
+      metadata: document.metadata ?? null,
+    });
+    if (sourceIdentity === null) return true;
+    const count = counts.get(sourceIdentity) ?? 0;
+    if (count >= maxDocumentsPerSource) return false;
+    counts.set(sourceIdentity, count + 1);
+    return true;
+  });
 }
 
 function applyBiasToStories(
@@ -416,6 +490,12 @@ export function createMarkdownDigestService(
         throw new Error(`edition not found: ${input.editionId}`);
       }
 
+      if (edition.status === "building" || edition.status === "failed") {
+        throw new Error(
+          `edition ${input.editionId} is not ready; wait for enrichment, clustering, and story summaries to complete`,
+        );
+      }
+
       const existing = await deps.digestRepo.getByEdition(input.editionId);
       if (existing) {
         deps.logger?.info("markdown digest already exists for edition; skipping", {
@@ -451,6 +531,11 @@ export function createMarkdownDigestService(
       }
 
       const assembly = await deps.assembly.assemble(input.editionId);
+      if (!assembly.isReady) {
+        throw new Error(
+          `edition ${input.editionId} is not ready: ${assembly.reason}`,
+        );
+      }
       const stories = await this.collectStories(input.editionId);
       const sourceDocuments = await collectEditionSourceDocuments(
         deps.docRepo,
@@ -470,8 +555,19 @@ export function createMarkdownDigestService(
         const biasView = await getBiasView(deps.db, input.editionId);
         effectiveStories = applyBiasToStories(stories, biasView);
       }
+      const selectedStories = limitStoriesForDigest(
+        effectiveStories,
+        deps.presentation,
+      );
+      const suppressedCount =
+        (stories.length > effectiveStories.length
+          ? stories.length - effectiveStories.length
+          : 0) +
+        (effectiveStories.length > selectedStories.length
+          ? effectiveStories.length - selectedStories.length
+          : 0);
 
-      const allCitations = effectiveStories.flatMap((s) =>
+      const allCitations = selectedStories.flatMap((s) =>
         s.claims.map((c) => {
           const doc = s.documents.find((d) =>
             d.chunkIds.includes(c.chunkId),
@@ -491,25 +587,26 @@ export function createMarkdownDigestService(
       const markdown = this.renderMarkdown({
         edition,
         assembly,
-        stories: effectiveStories,
+        stories: selectedStories,
         sourceStories: stories,
         sourceDocuments,
         previousStories,
-        suppressedStoryCount:
-          deps.biasEnabled && stories.length > effectiveStories.length
-            ? stories.length - effectiveStories.length
-            : undefined,
+        suppressedStoryCount: suppressedCount > 0 ? suppressedCount : undefined,
         citationIndex,
       });
 
-      const documentIds = new Set(sourceDocuments.map((document) => document.id));
+      const documentIds = new Set(
+        limitDocumentsForDigest(sourceDocuments, deps.presentation).map(
+          (document) => document.id,
+        ),
+      );
 
       let row: MarkdownDigestRow;
       try {
         row = await deps.digestRepo.createForEdition({
           editionId: input.editionId,
           content: markdown,
-          storyCount: effectiveStories.length,
+          storyCount: selectedStories.length,
           documentCount: documentIds.size,
           citationCount: citationIndex.entries.length,
         });
@@ -527,7 +624,7 @@ export function createMarkdownDigestService(
             await writeClaimedInTopSignals(
               deps,
               input.editionId,
-              effectiveStories,
+              selectedStories,
               previousStories,
               deps.presentation,
             );
@@ -547,7 +644,7 @@ export function createMarkdownDigestService(
       deps.logger?.info("markdown digest created", {
         editionId: edition.id,
         digestId: row.id,
-        storyCount: effectiveStories.length,
+        storyCount: selectedStories.length,
         documentCount: documentIds.size,
         citationCount: citationIndex.entries.length,
       });
@@ -555,7 +652,7 @@ export function createMarkdownDigestService(
       await writeClaimedInTopSignals(
         deps,
         input.editionId,
-        effectiveStories,
+        selectedStories,
         previousStories,
         deps.presentation,
       );
@@ -563,7 +660,7 @@ export function createMarkdownDigestService(
       return {
         digestId: row.id,
         edition,
-        storyCount: effectiveStories.length,
+        storyCount: selectedStories.length,
         documentCount: documentIds.size,
         citationCount: citationIndex.entries.length,
         alreadyExisted: false,
@@ -663,7 +760,7 @@ export function createMarkdownDigestService(
     }) {
       const publicationDate = formatPublicationDate(edition.publication_date);
 
-      const renderedStories = stories;
+      const renderedStories = limitStoriesForDigest(stories, deps.presentation);
       const withContinuity = renderedStories.map((story) => ({
         story,
         continuity: classifyStoryContinuity(
@@ -686,12 +783,15 @@ export function createMarkdownDigestService(
       for (const d of sourceDocuments ?? sourceStories.flatMap((story) => story.documents)) {
         if (!allDocs.has(d.id)) allDocs.set(d.id, d);
       }
-      const sortedDocs = [...allDocs.values()].sort((a, b) =>
+      const sortedDocs = limitDocumentsForDigest(
+        [...allDocs.values()].sort((a, b) =>
         (a.editionRank ?? Number.MAX_SAFE_INTEGER) -
           (b.editionRank ?? Number.MAX_SAFE_INTEGER) ||
         (a.createdAt?.getTime() ?? Number.MAX_SAFE_INTEGER) -
           (b.createdAt?.getTime() ?? Number.MAX_SAFE_INTEGER) ||
         a.sourceUrl.localeCompare(b.sourceUrl),
+        ),
+        deps.presentation,
       );
 
       const lines: string[] = [];
@@ -705,8 +805,11 @@ export function createMarkdownDigestService(
       const repeatedReceipt = continuingStories.length > 0
         ? `; repeated ${continuingStories.length} ${continuingStories.length === 1 ? "story" : "stories"}`
         : "";
-      const suppressedReceipt = suppressedStoryCount !== undefined && suppressedStoryCount > 0
-        ? `; suppressed ${suppressedStoryCount} ${suppressedStoryCount === 1 ? "story" : "stories"}`
+      const totalSuppressedStoryCount =
+        (suppressedStoryCount ?? 0) +
+        (stories.length - renderedStories.length);
+      const suppressedReceipt = totalSuppressedStoryCount > 0
+        ? `; suppressed ${totalSuppressedStoryCount} ${totalSuppressedStoryCount === 1 ? "story" : "stories"}`
         : "";
       lines.push(
         `_Coverage: reviewed ${assembly.totalDocuments} sources; included ${sortedDocs.length} sources across ${renderedStories.length} stories${repeatedReceipt}${suppressedReceipt}._`,

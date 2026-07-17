@@ -51,6 +51,12 @@ function extractTitle(content: string): string | undefined {
   return match ? match[1].trim() : undefined;
 }
 
+function usableTitle(candidate: string | undefined, url: string): string | undefined {
+  const trimmed = candidate?.trim();
+  if (!trimmed || trimmed === url) return undefined;
+  return trimmed;
+}
+
 function parseSections(content: string): SectionData[] {
   const lines = content.split("\n");
   const sections: SectionData[] = [];
@@ -138,7 +144,11 @@ export function createArticlePlugin(opts?: {
         .replace(/#{1,6}\s+/g, "")
         .replace(/\n{3,}/g, "\n\n")
         .trim();
-      const title = parsed.title ?? extractTitle(content) ?? context.url;
+      const title =
+        usableTitle(parsed.title, context.url) ??
+        usableTitle(extractTitle(content), context.url) ??
+        usableTitle(context.title, context.url) ??
+        context.url;
       const sections = parseSections(content);
       const titleSection = sections.find((s) => s.section_type === "title");
       const remainingSections = sections.filter((s) => s.section_type !== "title");

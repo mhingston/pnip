@@ -44,6 +44,9 @@ describe("config", () => {
     expect(config.DATABASE_URL).toBe("postgres://localhost/db");
     expect(config.LOG_LEVEL).toBe("info");
     expect(config.DIGEST_MIN_STORIES).toBe(25);
+    expect(config.DIGEST_MAX_STORIES).toBe(25);
+    expect(config.DIGEST_MAX_STORIES_PER_SOURCE).toBe(8);
+    expect(config.DIGEST_MAX_DOCUMENTS_PER_SOURCE).toBe(12);
     expect(config.DIGEST_DISCOVERY_LOOKBACK_DAYS).toBe(7);
     expect(config.DIGEST_SOURCE_BALANCE).toBe("true");
   });
@@ -140,6 +143,17 @@ describe("config", () => {
     expect(config.DIGEST_SOURCE_BALANCE).toBe("false");
   });
 
+  it("parses digest story and source limits", () => {
+    process.env.DATABASE_URL = "postgres://localhost/db";
+    process.env.DIGEST_MAX_STORIES = "18";
+    process.env.DIGEST_MAX_STORIES_PER_SOURCE = "5";
+    process.env.DIGEST_MAX_DOCUMENTS_PER_SOURCE = "9";
+    const config = loadConfig();
+    expect(config.DIGEST_MAX_STORIES).toBe(18);
+    expect(config.DIGEST_MAX_STORIES_PER_SOURCE).toBe(5);
+    expect(config.DIGEST_MAX_DOCUMENTS_PER_SOURCE).toBe(9);
+  });
+
   it("rejects invalid minimum story settings", () => {
     process.env.DATABASE_URL = "postgres://localhost/db";
     process.env.DIGEST_MIN_STORIES = "0";
@@ -147,6 +161,18 @@ describe("config", () => {
     process.env.DIGEST_MIN_STORIES = "25";
     process.env.DIGEST_DISCOVERY_LOOKBACK_DAYS = "-1";
     expect(() => loadConfig({ force: true })).toThrow(/DIGEST_DISCOVERY_LOOKBACK_DAYS/);
+  });
+
+  it("rejects non-positive digest story and source limits", () => {
+    process.env.DATABASE_URL = "postgres://localhost/db";
+    process.env.DIGEST_MAX_STORIES = "0";
+    expect(() => loadConfig()).toThrow(/DIGEST_MAX_STORIES/);
+    process.env.DIGEST_MAX_STORIES = "25";
+    process.env.DIGEST_MAX_STORIES_PER_SOURCE = "0";
+    expect(() => loadConfig({ force: true })).toThrow(/DIGEST_MAX_STORIES_PER_SOURCE/);
+    process.env.DIGEST_MAX_STORIES_PER_SOURCE = "8";
+    process.env.DIGEST_MAX_DOCUMENTS_PER_SOURCE = "0";
+    expect(() => loadConfig({ force: true })).toThrow(/DIGEST_MAX_DOCUMENTS_PER_SOURCE/);
   });
 
   it("rejects a small-edition similarity threshold outside 0..1", () => {

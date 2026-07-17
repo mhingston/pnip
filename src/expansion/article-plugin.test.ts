@@ -120,6 +120,35 @@ describe("ArticlePlugin", () => {
     expect(result.content).toBe("Just plain text without any heading.");
   });
 
+  it("falls back to the Miniflux title before using the URL", async () => {
+    const fetchContent = vi.fn().mockResolvedValue(
+      "Title: \n\nURL Source: https://example.com/no-page-title\n\nMarkdown Content:\nPlain text without a heading.",
+    );
+    const plugin = createArticlePlugin({ fetchContent });
+
+    const result = await plugin.expand({
+      ...ctx,
+      title: "A useful title from the feed",
+    });
+
+    expect(result.title).toBe("A useful title from the feed");
+  });
+
+  it("does not treat the page URL as a useful extracted title", async () => {
+    const fetchContent = vi.fn().mockResolvedValue(
+      "Title: https://example.com/raw\n\nURL Source: https://example.com/raw\n\nMarkdown Content:\nPlain text.",
+    );
+    const plugin = createArticlePlugin({ fetchContent });
+
+    const result = await plugin.expand({
+      ...ctx,
+      url: "https://example.com/raw",
+      title: "Feed title",
+    });
+
+    expect(result.title).toBe("Feed title");
+  });
+
   it("ignores Warning lines in Fabric output", async () => {
     const raw =
       "Title: Warned\n\n" +

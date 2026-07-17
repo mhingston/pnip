@@ -120,13 +120,21 @@ describe("ExpandDocumentWorker", () => {
       queue,
     });
 
-    const outcome = await worker.execute(makeJob(), {
+    const outcome = await worker.execute(makeJob({
+      target: {
+        discoveryEventId: "event-1",
+        url: "https://example.com/article",
+        title: "Feed-provided title",
+      },
+    }), {
       db: {} as any,
       logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn(), child: vi.fn() } as any,
     });
 
     expect(pluginRegistry.select).toHaveBeenCalledWith("https://example.com/article");
-    expect(plugin.expand).toHaveBeenCalled();
+    expect(plugin.expand).toHaveBeenCalledWith(
+      expect.objectContaining({ title: "Feed-provided title" }),
+    );
     expect(docRepo.create).toHaveBeenCalledWith(
       expect.objectContaining({
         editionId: "edition-1",

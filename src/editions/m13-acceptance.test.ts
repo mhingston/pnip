@@ -877,6 +877,8 @@ async function runDigestStep(
   env: TestEnv,
   state: PipelineState,
 ): Promise<void> {
+  const ready = await env.readinessGate.transitionToReadyIfReady(state.editionId);
+  expect(ready.edition.status).toBe("ready");
   await env.markdownService.generate({ editionId: state.editionId });
 }
 
