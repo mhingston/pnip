@@ -36,17 +36,19 @@ Sequence:
 
 1. If no edition exists for the date, run `digestive discover --date <local-today>`
    to recover the missed discovery (without advancing an already-published date).
-2. `digestive generate-digest --date <local-today>` (master)
-3. Resolve active partitions with the database-backed `enabled` +
+2. `digestive generate-edition --date <local-today>` to transition a fully
+   enriched edition from `building` to `ready`.
+3. `digestive generate-digest --date <local-today>` (master)
+4. Resolve active partitions with the database-backed `enabled` +
    `min_articles` rule, then fire-and-forget `generate-notebook` for every
    active partition.
-4. `--wait` on every active partition's notebook, then start podcasts only
+5. `--wait` on every active partition's notebook, then start podcasts only
    after their corresponding notebooks are ready. Podcast generation remains
    asynchronous because podcasts are optional and must not block publication.
-5. `digestive generate-email --date <local-today>` after required notebook
+6. `digestive generate-email --date <local-today>` after required notebook
    artifacts are ready.
-6. Evaluate edition readiness and run `publish-edition --dry-run` (gate check).
-7. `digestive publish-edition --date <local-today>` (real publish).
+7. Run `publish-edition --dry-run` (gate check).
+8. `digestive publish-edition --date <local-today>` (real publish).
 
 ### `podcast-drain.sh`
 

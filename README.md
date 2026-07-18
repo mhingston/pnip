@@ -130,10 +130,10 @@ DATE=$(date +%F)
 
 npm run digestive -- discover --date "$DATE"
 npm run digestive -- process --date "$DATE" --max-jobs 10000
+npm run digestive -- generate-edition --date "$DATE"
 npm run digestive -- generate-digest --date "$DATE"
 npm run digestive -- generate-notebook --date "$DATE" --wait
 npm run digestive -- generate-email --date "$DATE"
-npm run digestive -- generate-edition --date "$DATE"
 npm run digestive -- publish-edition --date "$DATE"
 ```
 

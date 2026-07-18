@@ -17,13 +17,13 @@
 #
 # Sequence:
 #   1. recover discovery if no edition exists for the date
-#   2. digestive generate-digest --date <date>     (master)
-#   3. for each active partition (master + configured):
+#   2. digestive generate-edition --date <date>   (building -> ready)
+#   3. digestive generate-digest --date <date>     (master)
+#   4. for each active partition (master + configured):
 #        kick off generate-notebook --partition <key> in fire-and-forget
-#   4. for each active partition, wait on the notebook via --wait
-#   5. after each notebook is ready, kick off generate-podcast for master
+#   5. for each active partition, wait on the notebook via --wait
+#   6. after each notebook is ready, kick off generate-podcast for master
 #      and configured with_podcast partitions
-#   6. digestive generate-edition --date <date>
 #   7. digestive generate-email --date <date> (with artifact links)
 #   8. digestive publish-edition --date <date> --dry-run
 #   9. digestive publish-edition --date <date>
@@ -142,11 +142,18 @@ while IFS= read -r line; do
   log "  - $line"
 done <<< "$PARTITION_LINES"
 
-# 1. Markdown digest (master)
+# 1. Evaluate the building -> ready transition before rendering the digest.
+# The Markdown service intentionally refuses to render a building edition, so
+# this gate must run before generate-digest. It is idempotent for ready and
+# published editions.
+run "generate-edition" \
+  npm run digestive -- generate-edition --date "$DATE"
+
+# 2. Markdown digest (master)
 run "generate-digest" \
   npm run digestive -- generate-digest --date "$DATE"
 
-# 2. Kick off each notebook (fire-and-forget). Do not attempt podcast
+# 3. Kick off each notebook (fire-and-forget). Do not attempt podcast
 # generation yet: NotebookLM audio requires a ready notebook, while this
 # upload call leaves the notebook pending as its sources are ingested.
 while IFS= read -r line; do
@@ -157,7 +164,7 @@ while IFS= read -r line; do
     npm run digestive -- generate-notebook --date "$DATE" --partition "$partition"
 done <<< "$PARTITION_LINES"
 
-# 3. Wait for each partition's notebook to be ready. --wait blocks on the
+# 4. Wait for each partition's notebook to be ready. --wait blocks on the
 # NotebookLM API; this is the wall-clock heavy step (~10-20 min per source
 # typical).
 while IFS= read -r line; do
@@ -168,7 +175,7 @@ while IFS= read -r line; do
     npm run digestive -- generate-notebook --date "$DATE" --partition "$partition" --wait
 done <<< "$PARTITION_LINES"
 
-# 4. Now that every notebook is ready, start the optional podcasts. This is
+# 5. Now that every notebook is ready, start the optional podcasts. This is
 # fire-and-forget; scripts/podcast-drain.sh resumes the provider artifact on
 # later cron runs without issuing a duplicate generation request.
 while IFS= read -r line; do
@@ -181,16 +188,6 @@ while IFS= read -r line; do
       npm run digestive -- generate-podcast --date "$DATE" --partition "$partition"
   fi
 done <<< "$PARTITION_LINES"
-
-# 5. Evaluate the building -> ready transition before rendering or sending
-# email. The edition is in
-# 'building' state once all 5 enrichers are done for every document
-# in the partition and the cluster_stories + summarize_story
-# workers have completed. generate-edition runs the readiness gate
-# and transitions the edition to 'ready' (or leaves it in
-# 'building' if the gate is not yet met).
-run "generate-edition" \
-  npm run digestive -- generate-edition --date "$DATE"
 
 # 6. Email is rendered after the readiness gate and required notebook waits.
 # The command remains idempotent: an already-sent edition is not delivered
