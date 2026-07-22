@@ -74,6 +74,7 @@ describe("migration runner", () => {
       "027_add_notebook_podcast_partition.sql",
       "028_create_miniflux_ingestion_state.sql",
       "029_add_miniflux_read_reset_at.sql",
+      "030_add_processing_jobs_target_lookup_idx.sql",
     ]);
     expect(res.skipped).toEqual([]);
 
@@ -107,6 +108,7 @@ describe("migration runner", () => {
       "027_add_notebook_podcast_partition.sql",
       "028_create_miniflux_ingestion_state.sql",
       "029_add_miniflux_read_reset_at.sql",
+      "030_add_processing_jobs_target_lookup_idx.sql",
     ]);
 
     const r = await pool.query("SELECT to_regclass('__smoke') AS exists");
@@ -172,6 +174,7 @@ describe("migration runner", () => {
       "027_add_notebook_podcast_partition.sql",
       "028_create_miniflux_ingestion_state.sql",
       "029_add_miniflux_read_reset_at.sql",
+      "030_add_processing_jobs_target_lookup_idx.sql",
     ]);
 
     expect(await getAppliedMigrations(pool)).toEqual([
@@ -204,6 +207,7 @@ describe("migration runner", () => {
       "027_add_notebook_podcast_partition.sql",
       "028_create_miniflux_ingestion_state.sql",
       "029_add_miniflux_read_reset_at.sql",
+      "030_add_processing_jobs_target_lookup_idx.sql",
     ]);
   });
 

@@ -1,7 +1,7 @@
 import { sql, type Kysely, type Transaction } from "kysely";
 import type { Database } from "../database/kysely.js";
 import {
-  getDocumentEnrichmentCompletion,
+  getDocumentEnrichmentCompletionsForEdition,
   REQUIRED_ENRICHMENT_TYPES,
 } from "./enrichment-tracker-repository.js";
 
@@ -28,15 +28,13 @@ async function isEditionFullyEnriched(
   db: DatabaseExecutor,
   editionId: string,
 ): Promise<boolean> {
-  const documents = await db
-    .selectFrom("documents")
-    .select("id")
-    .where("edition_id", "=", editionId)
-    .execute();
-  if (documents.length === 0) return false;
+  const completions = await getDocumentEnrichmentCompletionsForEdition(
+    db,
+    editionId,
+  );
+  if (completions.size === 0) return false;
 
-  for (const document of documents) {
-    const completion = await getDocumentEnrichmentCompletion(db, document.id);
+  for (const completion of completions.values()) {
     if (completion.completedTypes.length !== REQUIRED_ENRICHMENT_TYPES.length) {
       return false;
     }

@@ -33,6 +33,11 @@ export interface DocumentEnrichmentCompletion {
   completedTypes: string[];
 }
 
+export type DocumentEnrichmentCompletionMap = ReadonlyMap<
+  string,
+  DocumentEnrichmentCompletion
+>;
+
 export class InvalidEnrichmentTypeError extends Error {
   readonly enrichmentType: string;
   constructor(enrichmentType: string) {
@@ -49,6 +54,13 @@ export interface EnrichmentTrackerRepository {
   resetForDocument(documentId: string): Promise<void>;
   getCompletedTypesForDocument(documentId: string): Promise<string[]>;
   isDocumentFullyEnriched(documentId: string): Promise<boolean>;
+  /**
+   * Read completion for every document in an edition in one query. Optional
+   * for lightweight test doubles; the production repository always provides it.
+   */
+  getDocumentEnrichmentCompletionsForEdition?: (
+    editionId: string,
+  ) => Promise<DocumentEnrichmentCompletionMap>;
   getDocumentCounts(editionId: string): Promise<EditionEnrichmentCounts>;
   isEditionFullyEnriched(editionId: string): Promise<boolean>;
   getEditionEnqueuedAt(editionId: string): Promise<Date | null>;
@@ -105,6 +117,10 @@ export async function getDocumentEnrichmentCompletion(
       FROM processing_jobs
       WHERE target->>'documentId' = ${documentId}
         AND target ? 'chunkId'
+        AND job_type IN (${sql.join(
+          REQUIRED_ENRICHMENT_TYPES.map((type) => sql`${type}`),
+          sql`, `,
+        )})
       GROUP BY job_type
     ),
     status_counts AS (
@@ -140,6 +156,105 @@ export async function getDocumentEnrichmentCompletion(
     .map((row) => row.enrichment_type);
 
   return { completedTypes };
+}
+
+/**
+ * Read effective completion for all documents in an edition in one aggregate
+ * query. This preserves the tracker fallback for legacy documents while
+ * avoiding one full processing_jobs scan per document.
+ */
+export async function getDocumentEnrichmentCompletionsForEdition(
+  db: Kysely<Database> | Transaction<Database>,
+  editionId: string,
+): Promise<DocumentEnrichmentCompletionMap> {
+  const rows = await sql<{
+    document_id: string;
+    enrichment_type: string;
+    chunk_count: number | string;
+    observed_job_chunks: number | string;
+    completed_job_chunks: number | string;
+    done_status_rows: number | string;
+  }>`
+    WITH required_types(enrichment_type) AS (
+      VALUES ${sql.join(
+        REQUIRED_ENRICHMENT_TYPES.map((type) => sql`(${type})`),
+        sql`, `,
+      )}
+    ),
+    edition_documents AS (
+      SELECT
+        d.id,
+        COUNT(dc.id)::int AS chunk_count
+      FROM documents d
+      LEFT JOIN document_chunks dc ON dc.document_id = d.id
+      WHERE d.edition_id = ${editionId}
+      GROUP BY d.id
+    ),
+    job_counts AS (
+      SELECT
+        pj.target->>'documentId' AS document_id,
+        pj.job_type AS enrichment_type,
+        COUNT(DISTINCT pj.target->>'chunkId')::int AS observed_job_chunks,
+        COUNT(DISTINCT pj.target->>'chunkId') FILTER (
+          WHERE pj.status IN ('completed', 'archived')
+        )::int AS completed_job_chunks
+      FROM processing_jobs pj
+      INNER JOIN edition_documents ed
+        ON ed.id::text = pj.target->>'documentId'
+      WHERE pj.target ? 'chunkId'
+        AND pj.job_type IN (${sql.join(
+          REQUIRED_ENRICHMENT_TYPES.map((type) => sql`${type}`),
+          sql`, `,
+        )})
+      GROUP BY pj.target->>'documentId', pj.job_type
+    ),
+    status_counts AS (
+      SELECT
+        des.document_id,
+        des.enrichment_type,
+        COUNT(*) FILTER (WHERE des.status = 'done')::int AS done_status_rows
+      FROM document_enrichment_status des
+      INNER JOIN edition_documents ed ON ed.id = des.document_id
+      GROUP BY des.document_id, des.enrichment_type
+    )
+    SELECT
+      ed.id AS document_id,
+      r.enrichment_type,
+      ed.chunk_count,
+      COALESCE(j.observed_job_chunks, 0)::int AS observed_job_chunks,
+      COALESCE(j.completed_job_chunks, 0)::int AS completed_job_chunks,
+      COALESCE(s.done_status_rows, 0)::int AS done_status_rows
+    FROM edition_documents ed
+    CROSS JOIN required_types r
+    LEFT JOIN job_counts j
+      ON j.document_id = ed.id::text
+      AND j.enrichment_type = r.enrichment_type
+    LEFT JOIN status_counts s
+      ON s.document_id = ed.id
+      AND s.enrichment_type = r.enrichment_type
+  `.execute(db);
+
+  const completedByDocument = new Map<string, string[]>();
+  for (const row of rows.rows) {
+    const chunkCount = Number(row.chunk_count);
+    const observedJobChunks = Number(row.observed_job_chunks);
+    const completedJobChunks = Number(row.completed_job_chunks);
+    const complete = observedJobChunks > 0
+      ? completedJobChunks >= chunkCount && chunkCount > 0
+      : Number(row.done_status_rows) > 0;
+    if (!complete) continue;
+    const completedTypes = completedByDocument.get(row.document_id) ?? [];
+    completedTypes.push(row.enrichment_type);
+    completedByDocument.set(row.document_id, completedTypes);
+  }
+
+  const allDocumentIds = new Set(rows.rows.map((row) => row.document_id));
+  return new Map(
+    [...allDocumentIds].map((documentId) => [
+      documentId,
+      { completedTypes: completedByDocument.get(documentId) ?? [] },
+    ]),
+  );
 }
 
 export function createEnrichmentTrackerRepository(
@@ -189,24 +304,20 @@ export function createEnrichmentTrackerRepository(
       return completion.completedTypes.length === REQUIRED_ENRICHMENT_TYPES.length;
     },
 
-    async getDocumentCounts(editionId) {
-      const totalRow = await db
-        .selectFrom("documents")
-        .select((eb) => eb.fn.count<number>("id").as("total"))
-        .where("edition_id", "=", editionId)
-        .executeTakeFirstOrThrow();
-      const totalDocuments = Number(totalRow.total);
+    async getDocumentEnrichmentCompletionsForEdition(editionId) {
+      return getDocumentEnrichmentCompletionsForEdition(db, editionId);
+    },
 
-      const documents = await db
-        .selectFrom("documents")
-        .select("id")
-        .where("edition_id", "=", editionId)
-        .execute();
+    async getDocumentCounts(editionId) {
+      const completions = await getDocumentEnrichmentCompletionsForEdition(
+        db,
+        editionId,
+      );
+      const totalDocuments = completions.size;
 
       let fullyEnrichedDocuments = 0;
       let totalCompletedTypeRows = 0;
-      for (const document of documents) {
-        const completion = await getDocumentEnrichmentCompletion(db, document.id);
+      for (const completion of completions.values()) {
         totalCompletedTypeRows += completion.completedTypes.length;
         if (completion.completedTypes.length === REQUIRED_ENRICHMENT_TYPES.length) {
           fullyEnrichedDocuments += 1;

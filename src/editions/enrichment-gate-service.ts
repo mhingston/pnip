@@ -5,7 +5,7 @@ import {
   type EnrichmentTrackerRepository,
   REQUIRED_ENRICHMENT_TYPES,
   assertValidEnrichmentType,
-  getDocumentEnrichmentCompletion,
+  getDocumentEnrichmentCompletionsForEdition,
 } from "./enrichment-tracker-repository.js";
 
 const CLUSTER_STORIES_JOB_TYPE = "cluster_stories";
@@ -33,20 +33,18 @@ async function countFullyEnrichedInTransaction(
   trx: Transaction<Database>,
   editionId: string,
 ): Promise<TrackedCounts> {
-  const documents = await trx
-    .selectFrom("documents")
-    .select("id")
-    .where("edition_id", "=", editionId)
-    .execute();
-  const totalDocuments = documents.length;
+  const completions = await getDocumentEnrichmentCompletionsForEdition(
+    trx,
+    editionId,
+  );
+  const totalDocuments = completions.size;
 
   if (totalDocuments === 0) {
     return { totalDocuments: 0, fullyEnrichedDocuments: 0 };
   }
 
   let fullyEnrichedDocuments = 0;
-  for (const document of documents) {
-    const completion = await getDocumentEnrichmentCompletion(trx, document.id);
+  for (const completion of completions.values()) {
     if (completion.completedTypes.length === REQUIRED_ENRICHMENT_TYPES.length) {
       fullyEnrichedDocuments += 1;
     }

@@ -7,6 +7,9 @@ const configSchema = z.object({
   DATABASE_URL: z
     .string()
     .regex(/^postgres/, "must begin with 'postgres'"),
+  PG_POOL_MAX: z.coerce.number().int().min(1).max(32).default(8),
+  PG_POOL_IDLE_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
+  PG_POOL_CONNECTION_TIMEOUT_MS: z.coerce.number().int().positive().default(10_000),
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
   TEST_DATABASE_URL: z.string().optional(),
   MINIFLUX_URL: z.string().optional(),

@@ -9,6 +9,12 @@ export interface ProcessFlagsResult {
   errors: string[];
 }
 
+export const DEFAULT_PROCESS_MAX_JOBS = 100;
+
+export function resolveProcessMaxJobs(maxJobs: number | undefined): number {
+  return maxJobs ?? DEFAULT_PROCESS_MAX_JOBS;
+}
+
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 export function parseProcessFlags(
@@ -64,7 +70,8 @@ Flags:
   --max-jobs <N>         stop after claiming at most N jobs
   -h, --help             show this help
 
-Without flags, process drains every eligible job. The scheduler uses both
+Without --max-jobs, process handles at most 100 jobs. The scheduler uses both
 flags so a large backlog from an older edition cannot prevent the current
-edition from being processed.
+edition from being processed. Repeat the command or pass a larger explicit
+limit to drain more work.
 `;

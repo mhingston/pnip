@@ -43,6 +43,9 @@ describe("config", () => {
     const config: Config = loadConfig();
     expect(config.DATABASE_URL).toBe("postgres://localhost/db");
     expect(config.LOG_LEVEL).toBe("info");
+    expect(config.PG_POOL_MAX).toBe(8);
+    expect(config.PG_POOL_IDLE_TIMEOUT_MS).toBe(30_000);
+    expect(config.PG_POOL_CONNECTION_TIMEOUT_MS).toBe(10_000);
     expect(config.DIGEST_MIN_STORIES).toBe(25);
     expect(config.DIGEST_MAX_STORIES).toBe(25);
     expect(config.DIGEST_MAX_STORIES_PER_SOURCE).toBe(8);
@@ -67,6 +70,17 @@ describe("config", () => {
     process.env.MARKITDOWN_BIN = "/usr/bin/markitdown";
     const config = loadConfig();
     expect(config.MARKITDOWN_BIN).toBe("/usr/bin/markitdown");
+  });
+
+  it("parses bounded PostgreSQL pool settings", () => {
+    process.env.DATABASE_URL = "postgres://localhost/db";
+    process.env.PG_POOL_MAX = "6";
+    process.env.PG_POOL_IDLE_TIMEOUT_MS = "12000";
+    process.env.PG_POOL_CONNECTION_TIMEOUT_MS = "4000";
+    const config = loadConfig();
+    expect(config.PG_POOL_MAX).toBe(6);
+    expect(config.PG_POOL_IDLE_TIMEOUT_MS).toBe(12000);
+    expect(config.PG_POOL_CONNECTION_TIMEOUT_MS).toBe(4000);
   });
 
   it("DOCTOR_FAILED_THRESHOLD coerces a numeric string to a number", () => {

@@ -275,6 +275,95 @@ describe("EnrichmentTrackerRepository", () => {
     expect(d3).toBeDefined();
   });
 
+  it("getDocumentCounts evaluates chunk jobs for an edition in one aggregate", async () => {
+    const ed = await editionRepo.create("2026-01-14");
+    const d1 = await docRepo.create({
+      editionId: ed.id,
+      sourceType: "article",
+      sourceUrl: "https://e.com/14a",
+    });
+    const d2 = await docRepo.create({
+      editionId: ed.id,
+      sourceType: "article",
+      sourceUrl: "https://e.com/14b",
+    });
+    const d3 = await docRepo.create({
+      editionId: ed.id,
+      sourceType: "article",
+      sourceUrl: "https://e.com/14c",
+    });
+
+    async function addSingleChunk(documentId: string, chunkId: string) {
+      const section = await db
+        .insertInto("document_sections")
+        .values({
+          document_id: documentId,
+          section_order: 0,
+          heading: null,
+          section_type: "paragraph",
+          content_markdown: "body",
+          content_text: "body",
+          metadata: {},
+        })
+        .returning("id")
+        .executeTakeFirstOrThrow();
+      await db
+        .insertInto("document_chunks")
+        .values({
+          id: chunkId,
+          document_id: documentId,
+          section_id: section.id,
+          chunk_sequence: 0,
+          content_text: "body",
+          token_count: 1,
+          start_offset: 0,
+          end_offset: 4,
+          paragraph_start: 0,
+          paragraph_end: 0,
+          timestamp_start: null,
+          timestamp_end: null,
+        })
+        .execute();
+    }
+
+    const d1Chunk = `tracker-batch-${randomUUID()}`;
+    const d3Chunk = `tracker-batch-${randomUUID()}`;
+    await addSingleChunk(d1.id, d1Chunk);
+    await addSingleChunk(d3.id, d3Chunk);
+
+    for (const type of REQUIRED_ENRICHMENT_TYPES) {
+      await db
+        .insertInto("processing_jobs")
+        .values({
+          job_type: type,
+          edition_id: ed.id,
+          target: JSON.stringify({ documentId: d1.id, chunkId: d1Chunk }),
+          status: "completed",
+          completed_at: new Date(),
+        })
+        .execute();
+      await tracker.markDone(d2.id, type);
+      await tracker.markDone(d3.id, type);
+    }
+    await db
+      .insertInto("processing_jobs")
+      .values({
+        job_type: "summarize_chunk",
+        edition_id: ed.id,
+        target: JSON.stringify({ documentId: d3.id, chunkId: d3Chunk }),
+        status: "pending",
+      })
+      .execute();
+
+    const counts = await tracker.getDocumentCounts(ed.id);
+    expect(counts).toEqual({
+      totalDocuments: 3,
+      fullyEnrichedDocuments: 2,
+      totalCompletedTypeRows: 14,
+      expectedTypeRows: 15,
+    });
+  });
+
   it("isEditionFullyEnriched is false with zero documents and true only when all are enriched", async () => {
     const emptyEd = await editionRepo.create("2026-01-08");
     expect(await tracker.isEditionFullyEnriched(emptyEd.id)).toBe(false);

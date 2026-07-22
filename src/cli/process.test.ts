@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { parseProcessFlags, PROCESS_HELP } from "./process.js";
+import {
+  DEFAULT_PROCESS_MAX_JOBS,
+  parseProcessFlags,
+  PROCESS_HELP,
+  resolveProcessMaxJobs,
+} from "./process.js";
 
 describe("parseProcessFlags", () => {
   it("returns defaults when no flags are passed", () => {
@@ -38,5 +43,10 @@ describe("parseProcessFlags", () => {
   it("recognizes help", () => {
     expect(parseProcessFlags({ args: ["--help"] }).help).toBe(true);
     expect(PROCESS_HELP).toContain("--max-jobs");
+  });
+
+  it("applies a safety cap when no explicit batch limit is supplied", () => {
+    expect(resolveProcessMaxJobs(undefined)).toBe(DEFAULT_PROCESS_MAX_JOBS);
+    expect(resolveProcessMaxJobs(250)).toBe(250);
   });
 });

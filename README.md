@@ -189,6 +189,9 @@ PNIP loads `.env` through `dotenv`. `DATABASE_URL` is the only globally required
 | --- | --- | --- | --- |
 | `DATABASE_URL` | Yes | — | PostgreSQL connection string. Must begin with `postgres`. |
 | `TEST_DATABASE_URL` | Tests | — | Separate PostgreSQL connection string used by integration tests. |
+| `PG_POOL_MAX` | No | `8` | Maximum PostgreSQL clients per PNIP process. Keep the aggregate across concurrent processes within the database connection budget. |
+| `PG_POOL_IDLE_TIMEOUT_MS` | No | `30000` | Milliseconds before an idle PostgreSQL client is closed. |
+| `PG_POOL_CONNECTION_TIMEOUT_MS` | No | `10000` | Maximum milliseconds to wait for a PostgreSQL client. |
 | `LOG_LEVEL` | No | `info` | Logging verbosity: `debug`, `info`, `warn`, or `error`. |
 | `DOCTOR_FAILED_THRESHOLD` | No | internal default | Positive queue-failure threshold used by `digestive doctor`. |
 
@@ -270,6 +273,11 @@ The minimum story count is a target, not a guarantee. Feed failures, duplicate e
 | `WORKER_CONCURRENCY` | No | `4` | Number of concurrent processing workers. Invalid values fall back to `4`; values above `16` are capped at `16`. |
 | `RETRY_MAX_ATTEMPTS` | No | `5` | Maximum attempts for processing jobs. Invalid values fall back to `5`; values above `20` are capped at `20`. |
 | `PNIP_DRAIN_MAX_JOBS` | No | `100` | Maximum jobs processed by each `digest-drain.sh` tick. This is a script-level setting rather than part of the Zod application schema. |
+
+The `process` command also applies a 100-job safety cap when `--max-jobs` is
+omitted. The process command takes a PostgreSQL advisory lock, so concurrent
+manual and scheduled drains exit cleanly instead of competing for the same
+queue.
 
 Transient provider deferrals do not consume a job's retry budget in the same way as permanent processing failures.
 

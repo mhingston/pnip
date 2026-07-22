@@ -8,7 +8,10 @@ import type { ProvenanceRepository } from "../provenance/provenance-repository.j
 import type { StoryRepository } from "./story-repository.js";
 import type { SignalRepository, CreateSignalInput } from "../signals/signal-repository.js";
 import type { SourceTrustRepository } from "../signals/source-trust-repository.js";
-import type { EnrichmentTrackerRepository } from "../editions/enrichment-tracker-repository.js";
+import {
+  REQUIRED_ENRICHMENT_TYPES,
+  type EnrichmentTrackerRepository,
+} from "../editions/enrichment-tracker-repository.js";
 import { deriveSourceIdentity } from "../signals/source-identity.js";
 import {
   isFocusedYoutubeChannel,
@@ -105,11 +108,18 @@ export function createClusterStoriesWorker(
       }
 
       const inputs: DocumentClusterInput[] = [];
+      const completionByDocument =
+        deps.enrichmentTracker.getDocumentEnrichmentCompletionsForEdition === undefined
+          ? undefined
+          : await deps.enrichmentTracker.getDocumentEnrichmentCompletionsForEdition(
+              editionId,
+            );
 
       for (const doc of documents) {
-        const isFullyEnriched = await deps.enrichmentTracker.isDocumentFullyEnriched(
-          doc.id,
-        );
+        const isFullyEnriched = completionByDocument === undefined
+          ? await deps.enrichmentTracker.isDocumentFullyEnriched(doc.id)
+          : completionByDocument.get(doc.id)?.completedTypes.length ===
+            REQUIRED_ENRICHMENT_TYPES.length;
         if (!isFullyEnriched) continue;
 
         const summaries = await deps.summaryRepo.getByDocumentId(doc.id);

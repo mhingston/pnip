@@ -4,6 +4,7 @@ import { withTransaction, type PgPool } from "./pool.js";
 
 const MIGRATIONS_TABLE = "_migrations";
 const DEFAULT_DIR = fileURLToPath(new URL("migrations/", import.meta.url));
+const NON_TRANSACTIONAL_MARKER = /^\s*--\s*pnip:\s*non-transactional\s*$/im;
 
 export interface MigrationResult {
   applied: string[];
@@ -36,6 +37,10 @@ async function listMigrationFiles(directory: string): Promise<string[]> {
 
 export { listMigrationFiles };
 
+export function isNonTransactionalMigration(sql: string): boolean {
+  return NON_TRANSACTIONAL_MARKER.test(sql);
+}
+
 export async function runMigrations(
   pool: PgPool,
   opts?: { directory?: string },
@@ -61,13 +66,25 @@ export async function runMigrations(
     }
     const sql = await readFile(`${directory}/${filename}`, "utf8");
     try {
-      await withTransaction(pool, async (client) => {
-        await client.query(sql);
-        await client.query(
+      if (isNonTransactionalMigration(sql)) {
+        // PostgreSQL's CREATE INDEX CONCURRENTLY cannot run inside a
+        // transaction. The migration is still recorded only after the DDL
+        // succeeds; IF NOT EXISTS makes a retry safe if recording is
+        // interrupted after the index was built.
+        await pool.query(sql);
+        await pool.query(
           `INSERT INTO ${MIGRATIONS_TABLE} (filename) VALUES ($1)`,
           [filename],
         );
-      });
+      } else {
+        await withTransaction(pool, async (client) => {
+          await client.query(sql);
+          await client.query(
+            `INSERT INTO ${MIGRATIONS_TABLE} (filename) VALUES ($1)`,
+            [filename],
+          );
+        });
+      }
     } catch (err) {
       if (err instanceof MigrationError) throw err;
       throw new MigrationError(filename, err);

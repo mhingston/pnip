@@ -286,7 +286,12 @@ describe("getPartitionMetrics", () => {
   });
 
   it("one edition, 5 master documents: one row, latest_document_count = 5", async () => {
-    const edId = await insertEdition({ publicationDate: "2026-07-08" });
+    const recentPublicationDate = new Date(
+      Date.now() - 24 * 60 * 60 * 1000,
+    )
+      .toISOString()
+      .slice(0, 10);
+    const edId = await insertEdition({ publicationDate: recentPublicationDate });
     for (let i = 0; i < 5; i++) {
       await insertDocument({
         editionId: edId,
@@ -301,11 +306,11 @@ describe("getPartitionMetrics", () => {
     expect(master.partition_key).toBe("master");
     expect(master.total_documents).toBe(5);
     expect(master.distinct_days).toBe(1);
-    expect(master.latest_edition_date).toBe("2026-07-08");
+    expect(master.latest_edition_date).toBe(recentPublicationDate);
     expect(master.latest_document_count).toBe(5);
     expect(m.perDayLast7Days.length).toBe(1);
     expect(m.perDayLast7Days[0]).toEqual({
-      edition_date: "2026-07-08",
+      edition_date: recentPublicationDate,
       partition_key: "master",
       document_count: 5,
     });

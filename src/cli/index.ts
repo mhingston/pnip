@@ -131,10 +131,12 @@ import {
 import {
   PROCESS_HELP,
   parseProcessFlags,
+  resolveProcessMaxJobs,
 } from "./process.js";
 
 const DEFAULT_WORKER_CONCURRENCY = 4;
 const MAX_WORKER_CONCURRENCY = 16;
+const PROCESS_ADVISORY_LOCK_NAME = "pnip:digest-process";
 
 function resolvePositiveInt(
   raw: string | undefined,
@@ -154,7 +156,11 @@ export function resolveWorkerConcurrency(raw?: string): number {
 async function main(): Promise<number> {
   const cfg = loadConfig();
 
-  const pool = createPool(cfg.DATABASE_URL);
+  const pool = createPool(cfg.DATABASE_URL, {
+    max: cfg.PG_POOL_MAX,
+    idleTimeoutMillis: cfg.PG_POOL_IDLE_TIMEOUT_MS,
+    connectionTimeoutMillis: cfg.PG_POOL_CONNECTION_TIMEOUT_MS,
+  });
   let db: Kysely<Database> | undefined;
   try {
     await runMigrations(pool);
@@ -210,6 +216,19 @@ async function main(): Promise<number> {
         console.log(PROCESS_HELP);
         return 2;
       }
+
+      const processLockClient = await pool.connect();
+      let processLockAcquired = false;
+      try {
+        const lockResult = await processLockClient.query<{ locked: boolean }>(
+          "SELECT pg_try_advisory_lock(hashtext($1)) AS locked",
+          [PROCESS_ADVISORY_LOCK_NAME],
+        );
+        processLockAcquired = lockResult.rows[0]?.locked === true;
+        if (!processLockAcquired) {
+          console.log("another process drain is already running; exiting cleanly");
+          return 0;
+        }
 
       const logger = createLogger({ baseFields: { worker: "cli" } });
       const youtubeFocusChannels = parseYoutubeFocusChannels(
@@ -430,7 +449,8 @@ async function main(): Promise<number> {
         });
       }
 
-      let remainingJobs = parsed.maxJobs;
+      const effectiveMaxJobs = resolveProcessMaxJobs(parsed.maxJobs);
+      let remainingJobs = effectiveMaxJobs;
       const workerIdPrefix = `cli-worker-${process.pid}`;
       const processedByWorker = await Promise.all(
         Array.from({ length: workerConcurrency }, async (_, index) => {
@@ -468,11 +488,17 @@ async function main(): Promise<number> {
       const scope = parsed.editionDate
         ? ` for edition date ${parsed.editionDate}`
         : "";
-      const limit = parsed.maxJobs === undefined
-        ? ""
-        : ` (limit=${parsed.maxJobs})`;
+      const limit = ` (limit=${effectiveMaxJobs})`;
       console.log(`Processed ${processed} jobs${scope}${limit}. No matching jobs remain or the batch limit was reached.`);
       return 0;
+      } finally {
+        if (processLockAcquired) {
+          await processLockClient
+            .query("SELECT pg_advisory_unlock(hashtext($1))", [PROCESS_ADVISORY_LOCK_NAME])
+            .catch(() => undefined);
+        }
+        processLockClient.release();
+      }
     }
 
     if (command === "maintenance") {

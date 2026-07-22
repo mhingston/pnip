@@ -3,8 +3,27 @@ import { Pool, type PoolClient } from "pg";
 export type PgPool = Pool;
 export type PgClient = PoolClient;
 
-export function createPool(connectionString: string): PgPool {
-  const pool = new Pool({ connectionString });
+export interface PgPoolOptions {
+  max?: number;
+  idleTimeoutMillis?: number;
+  connectionTimeoutMillis?: number;
+}
+
+const DEFAULT_POOL_OPTIONS: Required<PgPoolOptions> = {
+  max: 8,
+  idleTimeoutMillis: 30_000,
+  connectionTimeoutMillis: 10_000,
+};
+
+export function createPool(
+  connectionString: string,
+  options?: PgPoolOptions,
+): PgPool {
+  const pool = new Pool({
+    connectionString,
+    ...DEFAULT_POOL_OPTIONS,
+    ...options,
+  });
   // pg emits client errors on the pool itself. Without a listener, a
   // transient server/network disconnect can become an uncaught process error
   // and terminate a queue drain instead of allowing the pool to replace the
