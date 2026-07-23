@@ -17,4 +17,16 @@ describe("daily-publish orchestration", () => {
     expect(digestIndex).toBeGreaterThanOrEqual(0);
     expect(readinessIndex).toBeLessThan(digestIndex);
   });
+
+  it("rolls over unready documents before evaluating readiness", () => {
+    const rolloverCommand =
+      'npm run digestive -- rollover-unenriched --date "$DATE"';
+    const readinessCommand = 'npm run digestive -- generate-edition --date "$DATE"';
+    const rolloverIndex = dailyPublishScript.indexOf(rolloverCommand);
+    const readinessIndex = dailyPublishScript.indexOf(readinessCommand);
+
+    expect(rolloverIndex).toBeGreaterThanOrEqual(0);
+    expect(readinessIndex).toBeGreaterThanOrEqual(0);
+    expect(rolloverIndex).toBeLessThan(readinessIndex);
+  });
 });

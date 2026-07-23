@@ -10,6 +10,7 @@ import type { Database } from "../database/kysely.js";
 import type { Kysely } from "kysely";
 import { createMinifluxClient } from "../discovery/miniflux-client.js";
 import { createEditionRepository } from "../editions/edition-repository.js";
+import { createEditionRolloverService } from "../editions/edition-rollover-service.js";
 import { createEnrichmentTrackerRepository } from "../editions/enrichment-tracker-repository.js";
 import { createEnrichmentGateService } from "../editions/enrichment-gate-service.js";
 import { reconcileMissingClusterJobs } from "../editions/cluster-reconciliation.js";
@@ -94,6 +95,11 @@ import {
   parseGenerateEditionFlags,
   runGenerateEditionCommand,
 } from "./generate-edition.js";
+import {
+  ROLLOVER_UNENRICHED_HELP,
+  parseRolloverUnenrichedFlags,
+  runRolloverUnenrichedCommand,
+} from "./rollover-unenriched.js";
 import {
   RETRY_HELP,
   parseRetryFlags,
@@ -786,6 +792,34 @@ async function main(): Promise<number> {
       return exitCode;
     }
 
+    if (command === "rollover-unenriched") {
+      const parsed = parseRolloverUnenrichedFlags({ args: rest });
+      if (parsed.help) {
+        console.log(ROLLOVER_UNENRICHED_HELP);
+        return 0;
+      }
+      if (parsed.errors.length > 0) {
+        for (const e of parsed.errors) console.error(e);
+        console.log(ROLLOVER_UNENRICHED_HELP);
+        return 2;
+      }
+
+      const logger = createLogger({ baseFields: { worker: "rollover-unenriched" } });
+      const editionRepo = createEditionRepository(db);
+      const rollover = createEditionRolloverService({
+        db,
+        editionRepo,
+        logger,
+      });
+      const { exitCode } = await runRolloverUnenrichedCommand({
+        service: rollover,
+        resolveEditionId: async (date) => (await editionRepo.getByDate(date))?.id,
+        editionDate: parsed.editionDate,
+        log: (m) => console.log(m),
+      });
+      return exitCode;
+    }
+
     if (command === "retry") {
       const parsed = parseRetryFlags({ args: rest });
       if (parsed.help) {
@@ -939,7 +973,7 @@ async function main(): Promise<number> {
     }
 
     console.log(
-      "Usage: digestive <command>\nCommands: discover, process, maintenance, generate-digest, generate-email, generate-notebook, generate-podcast, publish-edition, generate-edition, retry, doctor, metrics, partitions, feedback, feedback-summary, source-trust",
+      "Usage: digestive <command>\nCommands: discover, process, maintenance, generate-digest, generate-email, generate-notebook, generate-podcast, publish-edition, generate-edition, rollover-unenriched, retry, doctor, metrics, partitions, feedback, feedback-summary, source-trust",
     );
     return 2;
   } finally {
