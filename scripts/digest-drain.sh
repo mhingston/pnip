@@ -51,6 +51,18 @@ DISCOVER_LOCK_FILE="/tmp/pnip-digest-discover.lock"
 PROCESS_LOCK_FILE="/tmp/pnip-digest-process.lock"
 DRAIN_MAX_JOBS="${PNIP_DRAIN_MAX_JOBS:-100}"
 DRAIN_DATE="$(date +%F)"
+DRAIN_NEXT_DATE="$(date -d "$DRAIN_DATE + 1 day" +%F)"
+BOUNDARY_LOCK_FILE="/tmp/pnip-edition-boundary.lock"
+
+# Daily publication takes this lock exclusively while it rolls over and
+# publishes an edition. Hold it shared across discovery + processing so the
+# boundary cannot race a drain that is adding or claiming current-edition
+# documents.
+exec 202>"$BOUNDARY_LOCK_FILE"
+if ! flock --shared --nonblock 202; then
+  log "edition publication boundary is in progress (lock=$BOUNDARY_LOCK_FILE); skipping drain"
+  exit 0
+fi
 
 run_discovery() (
   exec 200>"$DISCOVER_LOCK_FILE"
@@ -66,6 +78,7 @@ run_discovery() (
 )
 
 run_process() (
+  local process_date="$1"
   exec 201>"$PROCESS_LOCK_FILE"
   if ! flock --nonblock 201; then
     log "another bounded process batch is in progress (lock=$PROCESS_LOCK_FILE); skipping processing"
@@ -73,10 +86,21 @@ run_process() (
   fi
   trap 'flock --unlock 201 2>/dev/null || true; rm -f "$PROCESS_LOCK_FILE"' EXIT
 
-  log "process starting (date=$DRAIN_DATE, max_jobs=$DRAIN_MAX_JOBS)"
-  npm run digestive -- process --date "$DRAIN_DATE" --max-jobs "$DRAIN_MAX_JOBS"
-  log "process complete (date=$DRAIN_DATE)"
+  log "process starting (date=$process_date, max_jobs=$DRAIN_MAX_JOBS)"
+  npm run digestive -- process --date "$process_date" --max-jobs "$DRAIN_MAX_JOBS"
+  log "process complete (date=$process_date)"
 )
 
 run_discovery
-run_process
+run_process "$DRAIN_DATE"
+
+# Rollover deliberately places late or incomplete documents in the next
+# edition. Warm that edition while it is still open so tomorrow's publication
+# does not begin with the entire rollover backlog. The active-partitions call
+# is also a cheap, database-backed existence check; a missing next edition is
+# normal until the first discovery after midnight.
+if npm run --silent digestive -- active-partitions --date "$DRAIN_NEXT_DATE" >/dev/null 2>&1; then
+  run_process "$DRAIN_NEXT_DATE"
+else
+  log "no next edition yet (date=$DRAIN_NEXT_DATE); skipping next-edition processing"
+fi

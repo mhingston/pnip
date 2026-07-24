@@ -5,6 +5,10 @@ const dailyPublishScript = readFileSync(
   new URL("../../scripts/daily-publish.sh", import.meta.url),
   "utf8",
 );
+const digestDrainScript = readFileSync(
+  new URL("../../scripts/digest-drain.sh", import.meta.url),
+  "utf8",
+);
 
 describe("daily-publish orchestration", () => {
   it("transitions the edition to ready before generating the digest", () => {
@@ -28,5 +32,19 @@ describe("daily-publish orchestration", () => {
     expect(rolloverIndex).toBeGreaterThanOrEqual(0);
     expect(readinessIndex).toBeGreaterThanOrEqual(0);
     expect(rolloverIndex).toBeLessThan(readinessIndex);
+  });
+
+  it("coordinates the publication boundary with the digest drain", () => {
+    expect(dailyPublishScript).toContain("/tmp/pnip-edition-boundary.lock");
+    expect(dailyPublishScript).toContain("flock --exclusive 201");
+    expect(digestDrainScript).toContain("flock --shared --nonblock 202");
+  });
+
+  it("warms an already-created next edition", () => {
+    expect(digestDrainScript).toContain('DRAIN_NEXT_DATE="$(date -d "$DRAIN_DATE + 1 day" +%F)"');
+    expect(digestDrainScript).toContain(
+      'active-partitions --date "$DRAIN_NEXT_DATE"',
+    );
+    expect(digestDrainScript).toContain('run_process "$DRAIN_NEXT_DATE"');
   });
 });

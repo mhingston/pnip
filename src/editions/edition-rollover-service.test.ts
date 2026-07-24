@@ -20,6 +20,7 @@ import { createChunkRepository } from "../chunking/chunk-repository.js";
 import { createStoryRepository } from "../clustering/story-repository.js";
 import { createStorySummaryRepository } from "../clustering/story-summary-repository.js";
 import { createEditionRolloverService } from "./edition-rollover-service.js";
+import { REQUIRED_ENRICHMENT_TYPES } from "./enrichment-tracker-repository.js";
 
 const migrationSqlPaths = [
   "../database/migrations/002_create_processing_jobs.sql",
@@ -157,6 +158,33 @@ describe("EditionRolloverService", () => {
     return chunks[0]!.id;
   }
 
+  async function makeSectionForDoc(documentId: string) {
+    return sectionRepo.createBatch([
+      {
+        documentId,
+        order: 0,
+        type: "paragraph",
+        contentMarkdown: "body",
+        contentText: "body text",
+        metadata: {},
+      },
+    ]);
+  }
+
+  async function markFullyEnriched(documentId: string) {
+    await db
+      .insertInto("document_enrichment_status")
+      .values(
+        REQUIRED_ENRICHMENT_TYPES.map((enrichment_type) => ({
+          document_id: documentId,
+          enrichment_type,
+          status: "done" as const,
+          completed_at: new Date(),
+        })),
+      )
+      .execute();
+  }
+
   async function makePrompt(name: string) {
     return db
       .insertInto("prompt_versions")
@@ -187,6 +215,8 @@ describe("EditionRolloverService", () => {
     });
     const c1 = await makeChunkForDoc(d1.id);
     const c2 = await makeChunkForDoc(d2.id);
+    await markFullyEnriched(d1.id);
+    await markFullyEnriched(d2.id);
     const replaced = await storyRepo.replaceForEdition({
       editionId: ed.id,
       stories: [
@@ -229,6 +259,7 @@ describe("EditionRolloverService", () => {
       sourceUrl: "https://e.com/stranded",
     });
     const readyChunk = await makeChunkForDoc(ready.id);
+    await markFullyEnriched(ready.id);
     await makeChunkForDoc(stranded.id);
     const replaced = await storyRepo.replaceForEdition({
       editionId: source.id,
@@ -261,6 +292,40 @@ describe("EditionRolloverService", () => {
     expect(sourceDocs.map((d) => d.id)).toEqual([ready.id]);
     const targetDocs = await docRepo.getByEdition(target.id);
     expect(targetDocs.map((d) => d.id)).toEqual([stranded.id]);
+  });
+
+  it("repairs a ready edition and requeues a skipped chunk job", async () => {
+    const source = await editionRepo.create("2026-08-03");
+    const stranded = await docRepo.create({
+      editionId: source.id,
+      sourceType: "article",
+      sourceUrl: "https://e.com/ready-but-stranded",
+    });
+    await makeSectionForDoc(stranded.id);
+    await db
+      .insertInto("processing_jobs")
+      .values({
+        job_type: "chunk_document",
+        edition_id: source.id,
+        target: JSON.stringify({ documentId: stranded.id }),
+        status: "completed",
+        completed_at: new Date(),
+      })
+      .execute();
+    await editionRepo.transition(source.id, "ready");
+
+    const result = await service.rolloverUnreadyDocuments(source.id);
+
+    expect(result.movedDocumentCount).toBe(1);
+    expect(result.requeuedJobCount).toBe(1);
+    const targetJobs = await db
+      .selectFrom("processing_jobs")
+      .selectAll()
+      .where("edition_id", "=", result.targetEditionId)
+      .where("job_type", "=", "chunk_document")
+      .execute();
+    expect(targetJobs).toHaveLength(1);
+    expect(targetJobs[0]!.status).toBe("pending");
   });
 
   it("also moves documents whose story has no summary yet", async () => {
@@ -300,6 +365,7 @@ describe("EditionRolloverService", () => {
       sourceUrl: "https://e.com/stranded",
     });
     const readyChunk = await makeChunkForDoc(ready.id);
+    await markFullyEnriched(ready.id);
     await makeChunkForDoc(stranded.id);
     const replaced = await storyRepo.replaceForEdition({
       editionId: source.id,
@@ -344,6 +410,7 @@ describe("EditionRolloverService", () => {
     });
     await makeChunkForDoc(moved.id);
     const keptChunk = await makeChunkForDoc(kept.id);
+    await markFullyEnriched(kept.id);
     const replaced = await storyRepo.replaceForEdition({
       editionId: source.id,
       stories: [{ label: "A", documentIds: [kept.id] }],
@@ -374,8 +441,9 @@ describe("EditionRolloverService", () => {
           job_type: "summarize_chunk",
           edition_id: source.id,
           target: JSON.stringify({ documentId: kept.id, chunkId: "c2" }),
-          status: "pending",
+          status: "completed",
           next_eligible_at: new Date(),
+          completed_at: new Date(),
         },
       ])
       .execute();

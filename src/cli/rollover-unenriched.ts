@@ -34,7 +34,8 @@ export async function runRolloverUnenrichedCommand(
     const result = await deps.service.rolloverUnreadyDocuments(editionId);
     log(
       `Rolled over unready documents: moved ${result.movedDocumentCount} documents, ` +
-        `${result.movedJobCount} jobs, ${result.movedDiscoveryEventCount} discovery events; ` +
+        `${result.movedJobCount} jobs, requeued ${result.requeuedJobCount ?? 0} jobs, ` +
+        `${result.movedDiscoveryEventCount} discovery events; ` +
         `cancelled ${result.cancelledJobCount} jobs; ` +
         `deleted ${result.deletedStoryIds.length} empty stories. ` +
         `Source edition ${result.sourceEditionId} → target edition ${result.targetEditionId}.`,

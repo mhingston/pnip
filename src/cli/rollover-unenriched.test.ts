@@ -61,6 +61,7 @@ describe("runRolloverUnenrichedCommand", () => {
         movedDocumentCount: 16,
         movedDiscoveryEventCount: 12,
         movedJobCount: 80,
+        requeuedJobCount: 4,
         cancelledJobCount: 0,
         deletedStoryIds: [],
       }),

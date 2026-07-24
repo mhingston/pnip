@@ -15,7 +15,11 @@ Drains new Miniflux entries into PNIP and processes them. Designed to run
 on a tight cron (every 5–15 minutes) throughout the day. Discovery and
 processing use separate locks, so a slow provider/backlog cannot stop the
 next edition from being discovered. Each tick processes a bounded batch for
-the current date, keeping old editions from starving today's edition.
+the current date and, when it already exists, the next date. This warms
+documents rolled over at the publication boundary while keeping old editions
+from starving today's edition. The drain takes a shared publication-boundary
+lock; the publisher takes the same lock exclusively during rollover and
+publication.
 
 Logs to stdout; cron appends the output to `logs/digest-drain.log`.
 

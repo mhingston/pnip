@@ -2,6 +2,10 @@ import { sql, type Kysely, type SqlBool } from "kysely";
 import type { Database, Edition } from "../database/kysely.js";
 import type { Logger } from "../logging/logger.js";
 import { type EditionRepository } from "./edition-repository.js";
+import {
+  getDocumentEnrichmentCompletionsForEdition,
+  REQUIRED_ENRICHMENT_TYPES,
+} from "./enrichment-tracker-repository.js";
 
 export interface EditionRolloverResult {
   sourceEditionId: string;
@@ -9,6 +13,8 @@ export interface EditionRolloverResult {
   movedDocumentCount: number;
   movedDiscoveryEventCount: number;
   movedJobCount: number;
+  /** Jobs recreated for expanded documents whose prior chunk job was skipped. */
+  requeuedJobCount?: number;
   cancelledJobCount: number;
   /** IDs of stories that became empty after the move and were deleted. */
   deletedStoryIds: string[];
@@ -24,7 +30,11 @@ export interface EditionRolloverDeps {
   logger?: Logger;
 }
 
-const MUTABLE_EDITION_STATUSES = ["building", "failed"] as const;
+// A ready edition is still repairable until the publication service moves it
+// to publishing. This covers a boundary race from older deployments where a
+// chunk job was marked complete after the edition became ready.
+const ROLLOVER_EDITION_STATUSES = ["building", "failed", "ready"] as const;
+const NEXT_MUTABLE_EDITION_STATUSES = ["building", "failed"] as const;
 
 function nextDayUtc(dateKey: string): string {
   const date = new Date(`${dateKey}T00:00:00.000Z`);
@@ -72,7 +82,7 @@ async function resolveOrCreateNextMutableEdition(
         .returningAll()
         .executeTakeFirstOrThrow();
     }
-    if ((MUTABLE_EDITION_STATUSES as readonly string[]).includes(existing.status)) {
+    if ((NEXT_MUTABLE_EDITION_STATUSES as readonly string[]).includes(existing.status)) {
       return existing;
     }
   }
@@ -96,7 +106,7 @@ export function createEditionRolloverService(
         if (!source) {
           throw new Error(`edition not found: ${editionId}`);
         }
-        if (!(MUTABLE_EDITION_STATUSES as readonly string[]).includes(source.status)) {
+        if (!(ROLLOVER_EDITION_STATUSES as readonly string[]).includes(source.status)) {
           deps.logger?.info("rollover noop: edition is not mutable", {
             editionId: source.id,
             status: source.status,
@@ -112,46 +122,50 @@ export function createEditionRolloverService(
           } satisfies EditionRolloverResult;
         }
 
-        const target = await resolveOrCreateNextMutableEdition(trx, source.publication_date);
-
-        // Documents that are NOT in any story that has a story_summary row are
-        // considered unready. This includes three cases: never enriched, enriched
-        // but never clustered, and clustered but the story still lacks a summary.
-        // The remaining documents are publishable today. The NOT EXISTS form
-        // makes the "any" quantifier explicit: a doc that has at least one
-        // membership in a summarised story is publishable, even if other
-        // memberships point at non-summarised stories.
-        const unreadyDocumentRows = await trx
-          .selectFrom("documents as d")
-          .select("d.id")
-          .where("d.edition_id", "=", source.id)
-          .where((eb) =>
-            eb.not(
-              eb.exists(
-                eb
-                  .selectFrom("cluster_members as cm")
-                  .innerJoin("story_summaries as ss", "ss.story_id", "cm.story_id")
-                  .whereRef("cm.document_id", "=", "d.id"),
-              ),
-            ),
-          )
-          .execute();
-
-        const movedDocumentIds = unreadyDocumentRows.map((r) => r.id);
+        // Match the publication readiness gate: a document is publishable only
+        // when it is fully enriched AND belongs to a story with a summary.
+        // Looking only for a summary is insufficient after a chunk repair can
+        // reset enrichment state while leaving an older story membership.
+        const completions = await getDocumentEnrichmentCompletionsForEdition(
+          trx,
+          source.id,
+        );
+        const documentIds = [...completions.keys()];
+        const summarizedDocumentIds = new Set<string>();
+        if (documentIds.length > 0) {
+          const summarizedRows = await trx
+            .selectFrom("cluster_members as cm")
+            .innerJoin("story_summaries as ss", "ss.story_id", "cm.story_id")
+            .select("cm.document_id")
+            .where("cm.document_id", "in", documentIds)
+            .distinct()
+            .execute();
+          for (const row of summarizedRows) {
+            summarizedDocumentIds.add(row.document_id);
+          }
+        }
+        const movedDocumentIds = documentIds.filter((documentId) => {
+          const fullyEnriched =
+            (completions.get(documentId)?.completedTypes.length ?? 0) ===
+            REQUIRED_ENRICHMENT_TYPES.length;
+          return !fullyEnriched || !summarizedDocumentIds.has(documentId);
+        });
         if (movedDocumentIds.length === 0) {
           deps.logger?.info("rollover noop: every document is ready", {
             editionId: source.id,
           });
           return {
             sourceEditionId: source.id,
-            targetEditionId: target.id,
             movedDocumentCount: 0,
+            targetEditionId: source.id,
             movedDiscoveryEventCount: 0,
             movedJobCount: 0,
             cancelledJobCount: 0,
             deletedStoryIds: [],
           } satisfies EditionRolloverResult;
         }
+
+        const target = await resolveOrCreateNextMutableEdition(trx, source.publication_date);
 
         // Stories that will lose at least one member. We collect their ids
         // before the move so we can clean up stories that end up empty.
@@ -165,7 +179,8 @@ export function createEditionRolloverService(
           .execute();
         const affectedStoryIds = affectedStoryRows.map((r) => r.story_id);
 
-        // Re-target pending/running document-scoped jobs to the new edition.
+        // Re-target document-scoped jobs to the new edition. Failed child jobs
+        // move too so a later retry command can scope them to the target day.
         // The processing queue claims work by edition_id, so jobs that stay
         // on the source edition would never be picked up by tomorrow's drain.
         // We match on documentId without scoping to the source edition: jobs
@@ -181,9 +196,42 @@ export function createEditionRolloverService(
             "in",
             movedDocumentIds,
           )
-          .where("status", "in", ["pending", "running"])
+          .where("status", "in", ["pending", "running", "failed"])
           .returning(["id"])
           .execute();
+
+        // A previous boundary race can have marked chunk_document complete
+        // after the source edition became ready. Such a job is not claimable
+        // again, while the expanded document still has sections but no chunks
+        // or enrichment jobs. Recreate only the missing chunk job; the
+        // NOT EXISTS guard keeps this idempotent across reruns.
+        const movedDocumentIdSql = sql.join(movedDocumentIds.map((id) => sql`${id}`));
+        const requeuedChunkJobs = await sql<{ id: string }>`
+          INSERT INTO processing_jobs
+            (job_type, edition_id, target, status, next_eligible_at)
+          SELECT
+            'chunk_document',
+            ${target.id},
+            jsonb_build_object('documentId', d.id::text),
+            'pending',
+            now()
+          FROM documents d
+          WHERE d.id IN (${movedDocumentIdSql})
+            AND EXISTS (
+              SELECT 1 FROM document_sections s WHERE s.document_id = d.id
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM document_chunks c WHERE c.document_id = d.id
+            )
+            AND NOT EXISTS (
+              SELECT 1
+              FROM processing_jobs pj
+              WHERE pj.job_type = 'chunk_document'
+                AND pj.status IN ('pending', 'running')
+                AND pj.target->>'documentId' = d.id::text
+            )
+          RETURNING id
+        `.execute(trx);
 
         // Move the documents themselves. Document-scoped rows (sections,
         // chunks, enrichment data, embeddings) follow via their foreign key
@@ -259,6 +307,7 @@ export function createEditionRolloverService(
           movedDocumentCount: movedDocumentIds.length,
           movedDiscoveryEventCount,
           movedJobCount: movedJobs.length,
+          requeuedJobCount: requeuedChunkJobs.rows.length,
           cancelledJobCount: 0,
           deletedStoryIds: emptyStoryIds,
         };

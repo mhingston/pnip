@@ -68,7 +68,7 @@ if ! flock --nonblock 200; then
   echo "[$(date '+%Y-%m-%d %H:%M:%S %Z')] another daily-publish is in progress (lock=$LOCK_FILE); exiting cleanly"
   exit 0
 fi
-trap 'flock --unlock 200 2>/dev/null || true; rm -f "$LOCK_FILE"' EXIT
+BOUNDARY_LOCK_FILE="/tmp/pnip-edition-boundary.lock"
 
 DATE="${PNIP_PUBLISH_DATE:-$(date +%F)}"
 LOG_DIR="${PNIP_LOG_DIR:-$PROJECT_DIR/logs}"
@@ -80,6 +80,17 @@ mkdir -p "$LOG_DIR"
 log() {
   printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S %Z')" "$*" | tee -a "$LOG_FILE"
 }
+
+# Discovery and processing take a shared lock in digest-drain.sh. The daily
+# publication takes the same lock exclusively for the whole boundary so no
+# document can arrive or be claimed between rollover, readiness evaluation,
+# and the final publish transition.
+exec 201>"$BOUNDARY_LOCK_FILE"
+log "waiting for edition-boundary lock (lock=$BOUNDARY_LOCK_FILE)"
+flock --exclusive 201
+log "edition-boundary lock acquired"
+
+trap 'flock --unlock 201 2>/dev/null || true; flock --unlock 200 2>/dev/null || true; rm -f "$LOCK_FILE"' EXIT
 
 # run <description> <command...> — log + execute, abort on failure.
 #

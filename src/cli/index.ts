@@ -491,6 +491,16 @@ async function main(): Promise<number> {
         }),
       );
       const processed = processedByWorker.reduce((total, count) => total + count, 0);
+      // A bounded drain can finish the final enrichment for an edition after
+      // the start-of-drain reconciliation has already run. Reconcile again so
+      // the next bounded drain can immediately process the resulting cluster
+      // job instead of waiting for another unrelated recovery path.
+      const requeuedClustersAfterDrain = await reconcileMissingClusterJobs(db);
+      if (requeuedClustersAfterDrain > 0) {
+        processLogger.info("requeued cluster jobs after enrichment drain", {
+          editionCount: requeuedClustersAfterDrain,
+        });
+      }
       const scope = parsed.editionDate
         ? ` for edition date ${parsed.editionDate}`
         : "";
