@@ -7,7 +7,6 @@ import type { PluginRegistry } from "./plugin-registry.js";
 import type { ExpansionPlugin } from "./types.js";
 import type { ProcessingJob } from "../database/kysely.js";
 import type { ProvenanceRepository } from "../provenance/provenance-repository.js";
-import type { ProcessingJobQueue } from "../jobs/queue/processing-job-queue.js";
 
 function fakePlugin(name: string, supports: boolean, sourceType = "article"): ExpansionPlugin {
   return {
@@ -23,23 +22,6 @@ function fakePlugin(name: string, supports: boolean, sourceType = "article"): Ex
         { order: 1, section_type: "paragraph", content_markdown: "Body.", content_text: "Body." },
       ],
     }),
-  };
-}
-
-function fakeQueue(): ProcessingJobQueue {
-  return {
-    enqueue: vi.fn().mockResolvedValue({ id: "refresh-job-1" }),
-    claim: vi.fn(),
-    complete: vi.fn(),
-    getJob: vi.fn(),
-    recoverStaleJobs: vi.fn(),
-    cancelForEdition: vi.fn(),
-    archiveJobs: vi.fn(),
-    purgeArchivedJobs: vi.fn(),
-    countByStatus: vi.fn(),
-    listFailed: vi.fn(),
-    requeue: vi.fn(),
-    getMetrics: vi.fn(),
   };
 }
 
@@ -71,7 +53,6 @@ describe("ExpandDocumentWorker", () => {
       sectionRepo: {} as SectionRepository,
       pluginRegistry: {} as PluginRegistry,
       provenanceRepo: {} as ProvenanceRepository,
-      queue: fakeQueue(),
     });
     expect(worker.supports("expand_document")).toBe(true);
     expect(worker.supports("other")).toBe(false);
@@ -110,14 +91,11 @@ describe("ExpandDocumentWorker", () => {
       resolveToDocuments: vi.fn(),
     };
 
-    const queue = fakeQueue();
-
     const worker = createExpandDocumentWorker({
       docRepo,
       sectionRepo,
       pluginRegistry,
       provenanceRepo,
-      queue,
     });
 
     const outcome = await worker.execute(makeJob({
@@ -154,7 +132,6 @@ describe("ExpandDocumentWorker", () => {
         relation: "expanded_from",
       }),
     );
-    expect(queue.enqueue).not.toHaveBeenCalled();
     expect(outcome).toEqual({
       childJobs: [
         {
@@ -195,7 +172,6 @@ describe("ExpandDocumentWorker", () => {
       sectionRepo,
       pluginRegistry,
       provenanceRepo: {} as ProvenanceRepository,
-      queue: fakeQueue(),
     });
 
     const outcome = await worker.execute(makeJob(), {
@@ -246,7 +222,6 @@ describe("ExpandDocumentWorker", () => {
       sectionRepo,
       pluginRegistry,
       provenanceRepo,
-      queue: fakeQueue(),
     });
 
     const outcome = await worker.execute(makeJob(), {
@@ -285,7 +260,6 @@ describe("ExpandDocumentWorker", () => {
       sectionRepo: {} as SectionRepository,
       pluginRegistry,
       provenanceRepo: {} as ProvenanceRepository,
-      queue: fakeQueue(),
     });
 
     await expect(worker.execute(makeJob(), { db: {} as any, logger: {} as any })).rejects.toThrow(
@@ -299,7 +273,6 @@ describe("ExpandDocumentWorker", () => {
       sectionRepo: {} as SectionRepository,
       pluginRegistry: { register: vi.fn(), select: vi.fn(), list: vi.fn(() => []) },
       provenanceRepo: {} as ProvenanceRepository,
-      queue: fakeQueue(),
     });
 
     await expect(
@@ -307,7 +280,7 @@ describe("ExpandDocumentWorker", () => {
     ).rejects.toThrow(/invalid target/i);
   });
 
-  it("on RedditRateLimitError re-enqueues expand_document with delayed nextEligibleAt and returns {}", async () => {
+  it("on RedditRateLimitError defers the existing job until resetSeconds (does not duplicate)", async () => {
     const plugin: ExpansionPlugin = {
       name: "reddit",
       supports: () => true,
@@ -341,14 +314,12 @@ describe("ExpandDocumentWorker", () => {
       resolveCitations: vi.fn(),
       resolveToDocuments: vi.fn(),
     };
-    const queue = fakeQueue();
 
     const worker = createExpandDocumentWorker({
       docRepo,
       sectionRepo,
       pluginRegistry,
       provenanceRepo,
-      queue,
     });
 
     const redditUrl = "https://www.reddit.com/r/test/comments/1upftp9/title/";
@@ -360,15 +331,73 @@ describe("ExpandDocumentWorker", () => {
 
     expect(docRepo.create).not.toHaveBeenCalled();
     expect(sectionRepo.createBatch).not.toHaveBeenCalled();
-    expect(queue.enqueue).toHaveBeenCalledTimes(1);
-    const arg = (queue.enqueue as ReturnType<typeof vi.fn>).mock.calls[0][0];
-    expect(arg.jobType).toBe("expand_document");
-    expect(arg.editionId).toBe("edition-1");
-    expect(arg.target).toEqual({ discoveryEventId: "event-1", url: redditUrl });
-    const elapsed = arg.nextEligibleAt.getTime() - before;
+    expect(provenanceRepo.recordLineage).not.toHaveBeenCalled();
+    expect(outcome.childJobs).toBeUndefined();
+    expect(outcome.deferUntil).toBeInstanceOf(Date);
+    const elapsed = outcome.deferUntil!.getTime() - before;
     expect(elapsed).toBeGreaterThanOrEqual(45 * 1000 - 1000);
     expect(elapsed).toBeLessThanOrEqual(45 * 1000 + 5000);
-    expect(outcome).toEqual({});
+  });
+
+  it("on RedditRateLimitError during repair, defers without emitting a chunk job", async () => {
+    const plugin: ExpansionPlugin = {
+      name: "reddit",
+      supports: () => true,
+      expand: vi.fn().mockRejectedValue(new RedditRateLimitError(30)),
+    };
+    const pluginRegistry: PluginRegistry = {
+      register: vi.fn(),
+      select: vi.fn(() => plugin),
+      list: vi.fn(() => []),
+    };
+
+    const docRepo: DocumentRepository = {
+      create: vi.fn(),
+      getById: vi.fn(),
+      getByEdition: vi.fn(),
+      getByEditionAndUrl: vi.fn().mockResolvedValue({
+        id: "partial-doc",
+        edition_id: "edition-1",
+      }),
+      getByEditionAndPartition: vi.fn(),
+      getRankedByEditionAndPartition: vi.fn(),
+    };
+    const sectionRepo: SectionRepository = {
+      createBatch: vi.fn(),
+      getByDocumentId: vi.fn().mockResolvedValue([]),
+      getMaxOrder: vi.fn(),
+      getByDocumentIdAndType: vi.fn(),
+    };
+    const provenanceRepo: ProvenanceRepository = {
+      recordLineage: vi.fn(),
+      recordLineageBatch: vi.fn(),
+      getSources: vi.fn(),
+      getConsumers: vi.fn(),
+      resolveCitations: vi.fn(),
+      resolveToDocuments: vi.fn(),
+    };
+
+    const worker = createExpandDocumentWorker({
+      docRepo,
+      sectionRepo,
+      pluginRegistry,
+      provenanceRepo,
+    });
+
+    const redditUrl = "https://www.reddit.com/r/test/comments/1upftp9/title/";
+    const before = Date.now();
+    const outcome = await worker.execute(
+      makeJob({ target: { discoveryEventId: "event-1", url: redditUrl } }),
+      { db: {} as any, logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn(), child: vi.fn() } as any },
+    );
+
+    expect(sectionRepo.createBatch).not.toHaveBeenCalled();
+    expect(provenanceRepo.recordLineage).not.toHaveBeenCalled();
+    expect(outcome.childJobs).toBeUndefined();
+    expect(outcome.deferUntil).toBeInstanceOf(Date);
+    const elapsed = outcome.deferUntil!.getTime() - before;
+    expect(elapsed).toBeGreaterThanOrEqual(30 * 1000 - 1000);
+    expect(elapsed).toBeLessThanOrEqual(30 * 1000 + 5000);
   });
 
   it("propagates non-rate-limit errors from plugin.expand", async () => {
@@ -404,14 +433,12 @@ describe("ExpandDocumentWorker", () => {
       resolveCitations: vi.fn(),
       resolveToDocuments: vi.fn(),
     };
-    const queue = fakeQueue();
 
     const worker = createExpandDocumentWorker({
       docRepo,
       sectionRepo,
       pluginRegistry,
       provenanceRepo,
-      queue,
     });
 
     await expect(
@@ -420,7 +447,6 @@ describe("ExpandDocumentWorker", () => {
         { db: {} as any, logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn(), child: vi.fn() } as any },
       ),
     ).rejects.toThrow(/boom/);
-    expect(queue.enqueue).not.toHaveBeenCalled();
   });
 
   it("partitionKey: target with partitionKey='youtube' is forwarded to docRepo.create", async () => {
@@ -463,7 +489,6 @@ describe("ExpandDocumentWorker", () => {
       sectionRepo,
       pluginRegistry,
       provenanceRepo,
-      queue: fakeQueue(),
     });
 
     await worker.execute(
@@ -525,7 +550,6 @@ describe("ExpandDocumentWorker", () => {
       sectionRepo,
       pluginRegistry,
       provenanceRepo,
-      queue: fakeQueue(),
     });
 
     await worker.execute(makeJob(), {

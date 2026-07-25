@@ -68,6 +68,18 @@ function averageEmbedding(vectors: number[][]): number[] {
   return acc;
 }
 
+function deferForActiveStorySummaries(
+  editionId: string,
+  ctx: WorkerContext,
+): WorkerOutcome {
+  const deferUntil = new Date(Date.now() + 60_000);
+  ctx.logger.info("active story summaries, deferring clustering", {
+    editionId,
+    nextEligibleAt: deferUntil.toISOString(),
+  });
+  return { deferUntil };
+}
+
 export function createClusterStoriesWorker(
   deps: ClusterStoriesDeps,
 ): Worker {
@@ -96,8 +108,13 @@ export function createClusterStoriesWorker(
 
       const documents = await deps.docRepo.getByEdition(editionId);
       if (documents.length === 0) {
+        const replacement =
+          await deps.storyRepo.replaceForEditionIfNoActiveSummaries({
+            editionId,
+            stories: [],
+          });
+        if (!replacement) return deferForActiveStorySummaries(editionId, ctx);
         ctx.logger.info("no documents to cluster, clearing stories", { editionId });
-        await deps.storyRepo.deleteByEdition(editionId);
         return {};
       }
 
@@ -167,10 +184,15 @@ export function createClusterStoriesWorker(
       }
 
       if (inputs.length === 0) {
+        const replacement =
+          await deps.storyRepo.replaceForEditionIfNoActiveSummaries({
+            editionId,
+            stories: [],
+          });
+        if (!replacement) return deferForActiveStorySummaries(editionId, ctx);
         ctx.logger.info("no documents with summaries+embeddings, clearing stories", {
           editionId,
         });
-        await deps.storyRepo.deleteByEdition(editionId);
         return {};
       }
 
@@ -180,10 +202,13 @@ export function createClusterStoriesWorker(
       };
       const clusters = clusterDocuments(inputs, deps.options, rankingInput);
 
-      const { stories } = await deps.storyRepo.replaceForEdition({
-        editionId,
-        stories: clusters,
-      });
+      const replacement =
+        await deps.storyRepo.replaceForEditionIfNoActiveSummaries({
+          editionId,
+          stories: clusters,
+        });
+      if (!replacement) return deferForActiveStorySummaries(editionId, ctx);
+      const { stories } = replacement;
 
       await deps.provenanceRepo.recordLineageBatch(
         stories.flatMap((s) =>

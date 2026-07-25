@@ -49,7 +49,7 @@ fi
 # next cron tick from discovering the next day's edition.
 DISCOVER_LOCK_FILE="/tmp/pnip-digest-discover.lock"
 PROCESS_LOCK_FILE="/tmp/pnip-digest-process.lock"
-DRAIN_MAX_JOBS="${PNIP_DRAIN_MAX_JOBS:-100}"
+DRAIN_MAX_JOBS="${PNIP_DRAIN_MAX_JOBS:-500}"
 DRAIN_DATE="$(date +%F)"
 DRAIN_NEXT_DATE="$(date -d "$DRAIN_DATE + 1 day" +%F)"
 BOUNDARY_LOCK_FILE="/tmp/pnip-edition-boundary.lock"

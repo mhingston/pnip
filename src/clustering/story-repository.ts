@@ -1,4 +1,4 @@
-import { Kysely, type Transaction } from "kysely";
+import { Kysely, sql, type Transaction } from "kysely";
 import type { Database } from "../database/kysely.js";
 
 export interface StoryClusterRow {
@@ -43,11 +43,73 @@ export interface StoryRepository {
     input: ReplaceEditionStoriesInput,
     tx?: Kysely<Database> | Transaction<Database>,
   ): Promise<ReplaceEditionStoriesResult>;
+  replaceForEditionIfNoActiveSummaries(
+    input: ReplaceEditionStoriesInput,
+    tx?: Kysely<Database> | Transaction<Database>,
+  ): Promise<ReplaceEditionStoriesResult | undefined>;
   getById(id: string): Promise<StoryClusterRow | undefined>;
   getByEdition(editionId: string): Promise<StoryWithMembers[]>;
   getMembers(storyId: string): Promise<ClusterMemberRow[]>;
   getStoryForDocument(documentId: string): Promise<StoryClusterRow | undefined>;
   deleteByEdition(editionId: string): Promise<void>;
+}
+
+async function replaceForEditionInTransaction(
+  trx: Transaction<Database>,
+  input: ReplaceEditionStoriesInput,
+  existingIds: readonly string[],
+): Promise<ReplaceEditionStoriesResult> {
+  if (existingIds.length > 0) {
+    await trx
+      .deleteFrom("cluster_members")
+      .where("story_id", "in", [...existingIds])
+      .execute();
+  }
+  await trx
+    .deleteFrom("story_clusters")
+    .where("edition_id", "=", input.editionId)
+    .execute();
+
+  const result: StoryWithMembers[] = [];
+
+  for (let i = 0; i < input.stories.length; i++) {
+    const storyInput = input.stories[i];
+    if (storyInput.documentIds.length === 0) continue;
+    const story = await trx
+      .insertInto("story_clusters")
+      .values({
+        edition_id: input.editionId,
+        label: storyInput.label,
+        cluster_order: i,
+      })
+      .returningAll()
+      .executeTakeFirstOrThrow();
+
+    const members: ClusterMemberRow[] = [];
+    for (const documentId of storyInput.documentIds) {
+      const similarity =
+        input.similarities?.get(`${story.id}:${documentId}`) ??
+        input.similarities?.get(documentId) ??
+        0;
+      const member = await trx
+        .insertInto("cluster_members")
+        .values({
+          story_id: story.id,
+          document_id: documentId,
+          role: "supporting",
+          similarity,
+        })
+        .returningAll()
+        .executeTakeFirstOrThrow();
+      members.push(member);
+    }
+    result.push({ story, members });
+  }
+
+  return {
+    stories: result,
+    removedStoryIds: [...existingIds],
+  };
 }
 
 export function createStoryRepository(db: Kysely<Database>): StoryRepository {
@@ -60,59 +122,45 @@ export function createStoryRepository(db: Kysely<Database>): StoryRepository {
           .select("id")
           .where("edition_id", "=", input.editionId)
           .execute();
-        const existingIds = new Set(existing.map((e) => e.id));
+        return replaceForEditionInTransaction(
+          trx,
+          input,
+          existing.map((row) => row.id),
+        );
+      });
+    },
 
-        if (existingIds.size > 0) {
-          await trx
-            .deleteFrom("cluster_members")
-            .where("story_id", "in", [...existingIds])
-            .execute();
-        }
+    async replaceForEditionIfNoActiveSummaries(input, tx) {
+      const conn = tx ?? db;
+      return conn.transaction().execute(async (trx) => {
         await trx
-          .deleteFrom("story_clusters")
+          .selectFrom("editions")
+          .select("id")
+          .where("id", "=", input.editionId)
+          .forUpdate()
+          .executeTakeFirst();
+
+        const existing = await trx
+          .selectFrom("story_clusters")
+          .select("id")
           .where("edition_id", "=", input.editionId)
+          .forUpdate()
           .execute();
+        const existingIds = existing.map((row) => row.id);
 
-        const result: StoryWithMembers[] = [];
-
-        for (let i = 0; i < input.stories.length; i++) {
-          const storyInput = input.stories[i];
-          if (storyInput.documentIds.length === 0) continue;
-          const story = await trx
-            .insertInto("story_clusters")
-            .values({
-              edition_id: input.editionId,
-              label: storyInput.label,
-              cluster_order: i,
-            })
-            .returningAll()
-            .executeTakeFirstOrThrow();
-
-          const members: ClusterMemberRow[] = [];
-          for (const documentId of storyInput.documentIds) {
-            const similarity =
-              input.similarities?.get(`${story.id}:${documentId}`) ??
-              input.similarities?.get(documentId) ??
-              0;
-            const member = await trx
-              .insertInto("cluster_members")
-              .values({
-                story_id: story.id,
-                document_id: documentId,
-                role: "supporting",
-                similarity,
-              })
-              .returningAll()
-              .executeTakeFirstOrThrow();
-            members.push(member);
-          }
-          result.push({ story, members });
+        if (existingIds.length > 0) {
+          const activeSummary = await trx
+            .selectFrom("processing_jobs")
+            .select("id")
+            .where("edition_id", "=", input.editionId)
+            .where("job_type", "=", "summarize_story")
+            .where("status", "in", ["pending", "running"])
+            .where(sql<string>`target->>'storyId'`, "in", existingIds)
+            .executeTakeFirst();
+          if (activeSummary) return undefined;
         }
 
-        return {
-          stories: result,
-          removedStoryIds: [...existingIds],
-        };
+        return replaceForEditionInTransaction(trx, input, existingIds);
       });
     },
 

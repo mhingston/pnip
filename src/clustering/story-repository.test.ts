@@ -22,6 +22,9 @@ import {
   type StoryRepository,
 } from "./story-repository.js";
 
+const processingJobMigrationPath = fileURLToPath(
+  new URL("../database/migrations/002_create_processing_jobs.sql", import.meta.url),
+);
 const editionMigrationPath = fileURLToPath(
   new URL("../database/migrations/003_create_editions.sql", import.meta.url),
 );
@@ -66,6 +69,7 @@ describe("StoryRepository", () => {
     }
     pool = createPool(url);
 
+    const processingJobSql = await readFile(processingJobMigrationPath, "utf8");
     const editionSql = await readFile(editionMigrationPath, "utf8");
     const docSql = await readFile(docMigrationPath, "utf8");
     const sectionSql = await readFile(sectionMigrationPath, "utf8");
@@ -91,6 +95,7 @@ describe("StoryRepository", () => {
     try {
       await client.query(`CREATE SCHEMA ${schema}`);
       await client.query(`SET search_path TO ${schema}, public`);
+      await client.query(processingJobSql);
       await client.query(editionSql);
       await client.query(docSql);
       await client.query(sectionSql);
@@ -155,6 +160,7 @@ describe("StoryRepository", () => {
   });
 
   beforeEach(async () => {
+    await db.deleteFrom("processing_jobs").execute();
     await db.deleteFrom("cluster_members").execute();
     await db.deleteFrom("story_clusters").execute();
   });
@@ -195,6 +201,81 @@ describe("StoryRepository", () => {
     expect(all).toHaveLength(1);
     expect(all[0].story.label).toBe("new");
     expect(all[0].members.map((m) => m.document_id)).toEqual([doc1]);
+  });
+
+  it.each(["pending", "running"] as const)(
+    "does not replace a snapshot with a %s summarize_story job",
+    async (status) => {
+      const first = await storyRepo.replaceForEdition({
+        editionId,
+        stories: [{ label: "old", documentIds: [doc1, doc2] }],
+      });
+      const oldStoryId = first.stories[0]!.story.id;
+      const summaryJob = await db
+        .insertInto("processing_jobs")
+        .values({
+          job_type: "summarize_story",
+          edition_id: editionId,
+          target: JSON.stringify({ storyId: oldStoryId }),
+          status,
+        })
+        .returning("id")
+        .executeTakeFirstOrThrow();
+
+      const blocked =
+        await storyRepo.replaceForEditionIfNoActiveSummaries({
+          editionId,
+          stories: [{ label: "new", documentIds: [doc3] }],
+        });
+
+      expect(blocked).toBeUndefined();
+      const unchanged = await storyRepo.getByEdition(editionId);
+      expect(unchanged).toHaveLength(1);
+      expect(unchanged[0]!.story.id).toBe(oldStoryId);
+      expect(unchanged[0]!.members.map((member) => member.document_id)).toEqual([
+        doc1,
+        doc2,
+      ]);
+
+      await db
+        .updateTable("processing_jobs")
+        .set({ status: "completed", completed_at: new Date() })
+        .where("id", "=", summaryJob.id)
+        .execute();
+      const replaced =
+        await storyRepo.replaceForEditionIfNoActiveSummaries({
+          editionId,
+          stories: [{ label: "new", documentIds: [doc3] }],
+        });
+
+      expect(replaced?.stories).toHaveLength(1);
+      expect(replaced?.stories[0]!.story.id).not.toBe(oldStoryId);
+      expect(replaced?.removedStoryIds).toEqual([oldStoryId]);
+    },
+  );
+
+  it("ignores active summarize_story jobs for a different snapshot", async () => {
+    const first = await storyRepo.replaceForEdition({
+      editionId,
+      stories: [{ label: "old", documentIds: [doc1] }],
+    });
+    await db
+      .insertInto("processing_jobs")
+      .values({
+        job_type: "summarize_story",
+        edition_id: editionId,
+        target: JSON.stringify({ storyId: randomUUID() }),
+        status: "pending",
+      })
+      .execute();
+
+    const replaced = await storyRepo.replaceForEditionIfNoActiveSummaries({
+      editionId,
+      stories: [{ label: "new", documentIds: [doc2] }],
+    });
+
+    expect(replaced?.removedStoryIds).toEqual([first.stories[0]!.story.id]);
+    expect(replaced?.stories[0]!.story.label).toBe("new");
   });
 
   it("cluster member uniqueness within a story: same document twice in one story raises", async () => {

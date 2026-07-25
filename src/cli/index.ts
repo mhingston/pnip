@@ -297,7 +297,6 @@ async function main(): Promise<number> {
         sectionRepo,
         pluginRegistry: registry,
         provenanceRepo,
-        queue,
       });
 
       const chunkRepo = createChunkRepository(db);

@@ -638,7 +638,6 @@ async function runExpansionStep(
       sectionRepo: env.sectionRepo,
       pluginRegistry: env.pluginRegistry,
       provenanceRepo: env.provenanceRepo,
-      queue: env.jobQueue,
     });
     const outcome = await worker.execute(
       job,
@@ -1469,7 +1468,6 @@ describe("M13 §61 acceptance criteria — full pipeline", () => {
       sectionRepo: env.sectionRepo,
       pluginRegistry: env.pluginRegistry,
       provenanceRepo: env.provenanceRepo,
-      queue: env.jobQueue,
     });
     const runtime: WorkerRuntime = createWorkerRuntime({
       db: env.db,

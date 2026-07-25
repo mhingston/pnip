@@ -146,6 +146,7 @@ function makeFakeEditionRepo(opts: {
 function makeFakeStoryRepo(opts: { byId?: StoryClusterRow | undefined } = {}): StoryRepository {
   return {
     replaceForEdition: vi.fn(),
+    replaceForEditionIfNoActiveSummaries: vi.fn(),
     getById: vi.fn().mockResolvedValue(opts.byId),
     getByEdition: vi.fn().mockResolvedValue([]),
     getMembers: vi.fn().mockResolvedValue([]),

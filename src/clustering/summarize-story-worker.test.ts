@@ -139,6 +139,7 @@ function makeDeps(overrides?: {
 }) {
   const storyRepo: StoryRepository = {
     replaceForEdition: vi.fn(),
+    replaceForEditionIfNoActiveSummaries: vi.fn(),
     getById: vi.fn().mockImplementation(async (id: string) =>
       overrides && "story" in overrides ? overrides.story : makeStory({ id }),
     ),

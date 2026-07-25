@@ -5,7 +5,6 @@ import type { SectionRepository } from "./section-repository.js";
 import type { PluginRegistry } from "./plugin-registry.js";
 import type { ExpansionPlugin, SectionData } from "./types.js";
 import type { ProvenanceRepository } from "../provenance/provenance-repository.js";
-import type { ProcessingJobQueue } from "../jobs/queue/processing-job-queue.js";
 import { RedditRateLimitError } from "./reddit-rate-limiter.js";
 
 interface ExpandTarget {
@@ -49,7 +48,6 @@ export function createExpandDocumentWorker(deps: {
   sectionRepo: SectionRepository;
   pluginRegistry: PluginRegistry;
   provenanceRepo: ProvenanceRepository;
-  queue: ProcessingJobQueue;
 }): Worker {
   return {
     supports(jobType: string): boolean {
@@ -64,6 +62,7 @@ export function createExpandDocumentWorker(deps: {
         throw new Error(`no plugin supports URL: ${url}`);
       }
 
+      let deferredUntil: Date | undefined;
       const expand = async (): Promise<Awaited<ReturnType<ExpansionPlugin["expand"]>> | null> => {
         try {
           return await plugin.expand({
@@ -78,12 +77,7 @@ export function createExpandDocumentWorker(deps: {
               url,
               resetSeconds: err.resetSeconds,
             });
-            await deps.queue.enqueue({
-              jobType: "expand_document",
-              editionId: job.edition_id ?? undefined,
-              target: { discoveryEventId, url, title, partitionKey },
-              nextEligibleAt: new Date(Date.now() + err.resetSeconds * 1000),
-            });
+            deferredUntil = new Date(Date.now() + err.resetSeconds * 1000);
             return null;
           }
           throw err;
@@ -106,7 +100,9 @@ export function createExpandDocumentWorker(deps: {
           documentId: existing.id,
         });
         const repaired = await expand();
-        if (repaired === null) return {};
+        if (repaired === null) {
+          return deferredUntil !== undefined ? { deferUntil: deferredUntil } : {};
+        }
         if (repaired.sections.length === 0) {
           throw new Error(`expansion produced no sections for ${url}`);
         }
@@ -130,7 +126,9 @@ export function createExpandDocumentWorker(deps: {
       }
 
       const result = await expand();
-      if (result === null) return {};
+      if (result === null) {
+        return deferredUntil !== undefined ? { deferUntil: deferredUntil } : {};
+      }
       if (result.sections.length === 0) {
         throw new Error(`expansion produced no sections for ${url}`);
       }

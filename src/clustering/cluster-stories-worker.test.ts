@@ -124,6 +124,7 @@ function makeDeps(overrides?: {
   embeddingsByDoc?: Map<string, EmbeddingRow[]>;
   trustRows?: SourceTrustRow[];
   fullyEnrichedDocs?: Set<string>;
+  activeStorySummaries?: boolean;
   youtubeFocusChannels?: readonly string[];
   options?: Partial<import("./clustering-service.js").ClusterOptions>;
 }) {
@@ -165,28 +166,33 @@ function makeDeps(overrides?: {
     deleteByChunkId: vi.fn(),
   };
 
-  const storyRepo: StoryRepository = {
-    replaceForEdition: vi.fn().mockImplementation(async ({ stories }: { stories: { label: string; documentIds: string[] }[] }) => ({
-      stories: stories.map((s: { label: string; documentIds: string[] }, i: number) => ({
-        story: {
-          id: `story-${i}`,
-          edition_id: "edition-1",
-          label: s.label,
-          cluster_order: i,
-          created_at: new Date(),
-          updated_at: new Date(),
-        } as StoryClusterRow,
-        members: s.documentIds.map((docId: string, j: number) => ({
-          id: `member-${i}-${j}`,
-          story_id: `story-${i}`,
-          document_id: docId,
-          role: "supporting",
-          similarity: 0,
-          created_at: new Date(),
-        } as ClusterMemberRow)),
-      })),
-      removedStoryIds: [],
+  const replaceStories = async ({ stories }: { stories: { label: string; documentIds: string[] }[] }) => ({
+    stories: stories.map((s: { label: string; documentIds: string[] }, i: number) => ({
+      story: {
+        id: `story-${i}`,
+        edition_id: "edition-1",
+        label: s.label,
+        cluster_order: i,
+        created_at: new Date(),
+        updated_at: new Date(),
+      } as StoryClusterRow,
+      members: s.documentIds.map((docId: string, j: number) => ({
+        id: `member-${i}-${j}`,
+        story_id: `story-${i}`,
+        document_id: docId,
+        role: "supporting",
+        similarity: 0,
+        created_at: new Date(),
+      } as ClusterMemberRow)),
     })),
+    removedStoryIds: [],
+  });
+  const storyRepo: StoryRepository = {
+    replaceForEdition: vi.fn().mockImplementation(replaceStories),
+    replaceForEditionIfNoActiveSummaries: vi.fn().mockImplementation(
+      async (input: { stories: { label: string; documentIds: string[] }[] }) =>
+        overrides?.activeStorySummaries ? undefined : replaceStories(input),
+    ),
     getById: vi.fn(),
     getByEdition: vi.fn(),
     getMembers: vi.fn(),
@@ -264,8 +270,10 @@ describe("ClusterStoriesWorker", () => {
 
     const outcome = await worker.execute(makeJob(), { db: {} as any, logger: silentLogger() });
     expect(outcome).toEqual({});
-    expect(deps.storyRepo.deleteByEdition).toHaveBeenCalledWith("edition-1");
-    expect(deps.storyRepo.replaceForEdition).not.toHaveBeenCalled();
+    expect(
+      deps.storyRepo.replaceForEditionIfNoActiveSummaries,
+    ).toHaveBeenCalledWith({ editionId: "edition-1", stories: [] });
+    expect(deps.storyRepo.deleteByEdition).not.toHaveBeenCalled();
   });
 
   it("defers instead of clustering a partially enriched edition", async () => {
@@ -277,7 +285,38 @@ describe("ClusterStoriesWorker", () => {
 
     expect(outcome.deferUntil).toBeInstanceOf(Date);
     expect(outcome.childJobs).toBeUndefined();
-    expect(deps.storyRepo.replaceForEdition).not.toHaveBeenCalled();
+    expect(deps.storyRepo.replaceForEditionIfNoActiveSummaries).not.toHaveBeenCalled();
+  });
+
+  it("defers instead of replacing a snapshot with active story summaries", async () => {
+    const docs = [makeDoc({ id: "doc-1" })];
+    const deps = makeDeps({
+      documents: docs,
+      summariesByDoc: new Map([
+        ["doc-1", [makeSummary("doc-1", "AI breakthrough")]],
+      ]),
+      topicsByDoc: new Map([
+        ["doc-1", [makeTopic("doc-1", "ai", 0.9)]],
+      ]),
+      embeddingsByDoc: new Map([
+        ["doc-1", [makeEmbedding("doc-1", [1, 0, 0])]],
+      ]),
+      activeStorySummaries: true,
+    });
+    const worker = createClusterStoriesWorker(deps);
+
+    const outcome = await worker.execute(makeJob(), {
+      db: {} as any,
+      logger: silentLogger(),
+    });
+
+    expect(outcome.deferUntil).toBeInstanceOf(Date);
+    expect(outcome.childJobs).toBeUndefined();
+    expect(
+      deps.storyRepo.replaceForEditionIfNoActiveSummaries,
+    ).toHaveBeenCalledTimes(1);
+    expect(deps.provenanceRepo.recordLineageBatch).not.toHaveBeenCalled();
+    expect(deps.signalRepo.createBatch).not.toHaveBeenCalled();
   });
 
   it("skips documents without summaries or embeddings and records no stories", async () => {
@@ -287,7 +326,10 @@ describe("ClusterStoriesWorker", () => {
 
     const outcome = await worker.execute(makeJob(), { db: {} as any, logger: silentLogger() });
     expect(outcome).toEqual({});
-    expect(deps.storyRepo.deleteByEdition).toHaveBeenCalledWith("edition-1");
+    expect(
+      deps.storyRepo.replaceForEditionIfNoActiveSummaries,
+    ).toHaveBeenCalledWith({ editionId: "edition-1", stories: [] });
+    expect(deps.storyRepo.deleteByEdition).not.toHaveBeenCalled();
   });
 
   it("clusters two related documents into one story and enqueues one summarize_story", async () => {
@@ -316,7 +358,7 @@ describe("ClusterStoriesWorker", () => {
 
     const outcome = await worker.execute(makeJob(), { db: {} as any, logger: silentLogger() });
 
-    expect(deps.storyRepo.replaceForEdition).toHaveBeenCalledTimes(1);
+    expect(deps.storyRepo.replaceForEditionIfNoActiveSummaries).toHaveBeenCalledTimes(1);
     expect(outcome.childJobs).toBeDefined();
     expect(outcome.childJobs).toHaveLength(1);
     expect(outcome.childJobs![0].jobType).toBe("summarize_story");
@@ -367,7 +409,7 @@ describe("ClusterStoriesWorker", () => {
     await worker.execute(makeJob(), { db: {} as any, logger: silentLogger() });
     await worker.execute(makeJob(), { db: {} as any, logger: silentLogger() });
 
-    expect(deps.storyRepo.replaceForEdition).toHaveBeenCalledTimes(2);
+    expect(deps.storyRepo.replaceForEditionIfNoActiveSummaries).toHaveBeenCalledTimes(2);
   });
 
   it("throws on invalid target", async () => {
@@ -504,7 +546,7 @@ describe("ClusterStoriesWorker", () => {
     await worker.execute(makeJob(), { db: {} as any, logger: silentLogger() });
 
     expect(deps.sourceTrustRepo.getAll).toHaveBeenCalledTimes(1);
-    const replaceForEdition = deps.storyRepo.replaceForEdition as ReturnType<typeof vi.fn>;
+    const replaceForEdition = deps.storyRepo.replaceForEditionIfNoActiveSummaries as ReturnType<typeof vi.fn>;
     expect(replaceForEdition).toHaveBeenCalledTimes(1);
     const passed = replaceForEdition.mock.calls[0][0] as {
       stories: { label: string; documentIds: string[] }[];
@@ -554,7 +596,7 @@ describe("ClusterStoriesWorker", () => {
 
     await worker.execute(makeJob(), { db: {} as any, logger: silentLogger() });
 
-    const replaceForEdition = deps.storyRepo.replaceForEdition as ReturnType<typeof vi.fn>;
+    const replaceForEdition = deps.storyRepo.replaceForEditionIfNoActiveSummaries as ReturnType<typeof vi.fn>;
     const passed = replaceForEdition.mock.calls[0][0] as {
       stories: { documentIds: string[] }[];
     };

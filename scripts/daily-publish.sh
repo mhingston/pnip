@@ -74,6 +74,7 @@ DATE="${PNIP_PUBLISH_DATE:-$(date +%F)}"
 LOG_DIR="${PNIP_LOG_DIR:-$PROJECT_DIR/logs}"
 LOG_FILE="$LOG_DIR/daily-publish-${DATE}.log"
 DRY_RUN="${PNIP_DRY_RUN:-}"
+PUBLISH_PROCESS_MAX_JOBS="${PNIP_PUBLISH_PROCESS_MAX_JOBS:-10000}"
 
 mkdir -p "$LOG_DIR"
 
@@ -166,6 +167,9 @@ done <<< "$PARTITION_LINES"
 # a database error does not silently slip through.
 run "rollover-unenriched" \
   npm run digestive -- rollover-unenriched --date "$DATE"
+
+run "finish current edition processing" \
+  npm run digestive -- process --date "$DATE" --max-jobs "$PUBLISH_PROCESS_MAX_JOBS"
 
 # 2. Evaluate the building -> ready transition before rendering the digest.
 # The Markdown service intentionally refuses to render a building edition, so

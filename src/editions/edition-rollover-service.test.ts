@@ -328,6 +328,23 @@ describe("EditionRolloverService", () => {
     expect(targetJobs[0]!.status).toBe("pending");
   });
 
+  it("keeps fully enriched documents for clustering and summary generation", async () => {
+    const source = await editionRepo.create("2026-08-04");
+    const document = await docRepo.create({
+      editionId: source.id,
+      sourceType: "article",
+      sourceUrl: "https://e.com/fully-enriched",
+    });
+    await makeChunkForDoc(document.id);
+    await markFullyEnriched(document.id);
+
+    const result = await service.rolloverUnreadyDocuments(source.id);
+
+    expect(result.movedDocumentCount).toBe(0);
+    expect(result.targetEditionId).toBe(source.id);
+    expect((await docRepo.getByEdition(source.id)).map((d) => d.id)).toEqual([document.id]);
+  });
+
   it("also moves documents whose story has no summary yet", async () => {
     const source = await editionRepo.create("2026-08-04");
     const lonely = await docRepo.create({

@@ -53,6 +53,7 @@ import { createClusterStoriesWorker } from "./cluster-stories-worker.js";
 import { vectorToSql } from "../common/vector-codec.js";
 
 const migrations = [
+  "002_create_processing_jobs.sql",
   "003_create_editions.sql",
   "004_create_prompt_versions.sql",
   "008_create_documents.sql",

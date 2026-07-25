@@ -122,36 +122,19 @@ export function createEditionRolloverService(
           } satisfies EditionRolloverResult;
         }
 
-        // Match the publication readiness gate: a document is publishable only
-        // when it is fully enriched AND belongs to a story with a summary.
-        // Looking only for a summary is insufficient after a chunk repair can
-        // reset enrichment state while leaving an older story membership.
         const completions = await getDocumentEnrichmentCompletionsForEdition(
           trx,
           source.id,
         );
         const documentIds = [...completions.keys()];
-        const summarizedDocumentIds = new Set<string>();
-        if (documentIds.length > 0) {
-          const summarizedRows = await trx
-            .selectFrom("cluster_members as cm")
-            .innerJoin("story_summaries as ss", "ss.story_id", "cm.story_id")
-            .select("cm.document_id")
-            .where("cm.document_id", "in", documentIds)
-            .distinct()
-            .execute();
-          for (const row of summarizedRows) {
-            summarizedDocumentIds.add(row.document_id);
-          }
-        }
         const movedDocumentIds = documentIds.filter((documentId) => {
           const fullyEnriched =
             (completions.get(documentId)?.completedTypes.length ?? 0) ===
             REQUIRED_ENRICHMENT_TYPES.length;
-          return !fullyEnriched || !summarizedDocumentIds.has(documentId);
+          return !fullyEnriched;
         });
         if (movedDocumentIds.length === 0) {
-          deps.logger?.info("rollover noop: every document is ready", {
+          deps.logger?.info("rollover noop: every document is fully enriched", {
             editionId: source.id,
           });
           return {
@@ -188,7 +171,9 @@ export function createEditionRolloverService(
         // (for example, jobs re-enqueued after the document moved) also need
         // to follow. The cancel-counter below reflects any rows that the
         // batch UPDATE found but could not move to the target edition.
-        const movedJobs = await trx
+        const movedDocumentIdSql = sql.join(movedDocumentIds.map((id) => sql`${id}`));
+
+        const movedDocumentJobs = await trx
           .updateTable("processing_jobs")
           .set({ edition_id: target.id, updated_at: sql<Date>`now()` })
           .where(
@@ -199,13 +184,27 @@ export function createEditionRolloverService(
           .where("status", "in", ["pending", "running", "failed"])
           .returning(["id"])
           .execute();
+        const movedUnexpandedJobs = await sql<{ id: string }>`
+          UPDATE processing_jobs
+          SET edition_id = ${target.id}, updated_at = now()
+          WHERE edition_id = ${source.id}
+            AND job_type = 'expand_document'
+            AND status IN ('pending', 'running', 'failed')
+            AND NOT EXISTS (
+              SELECT 1
+              FROM documents d
+              WHERE d.edition_id = ${source.id}
+                AND d.id NOT IN (${movedDocumentIdSql})
+                AND d.source_url = processing_jobs.target->>'url'
+            )
+          RETURNING id
+        `.execute(trx);
 
         // A previous boundary race can have marked chunk_document complete
         // after the source edition became ready. Such a job is not claimable
         // again, while the expanded document still has sections but no chunks
         // or enrichment jobs. Recreate only the missing chunk job; the
         // NOT EXISTS guard keeps this idempotent across reruns.
-        const movedDocumentIdSql = sql.join(movedDocumentIds.map((id) => sql`${id}`));
         const requeuedChunkJobs = await sql<{ id: string }>`
           INSERT INTO processing_jobs
             (job_type, edition_id, target, status, next_eligible_at)
@@ -251,26 +250,20 @@ export function createEditionRolloverService(
           .where("document_id", "in", movedDocumentIds)
           .execute();
 
-        // Move the discovery events for the moved documents. We match by
-        // source_url since the discovery_event -> document link is via the
-        // expansion job target, not a foreign key.
-        const movedDocumentUrls = await trx
-          .selectFrom("documents")
-          .select("source_url")
-          .where("id", "in", movedDocumentIds)
-          .execute();
-        const movedUrls = movedDocumentUrls.map((r) => r.source_url);
-        let movedDiscoveryEventCount = 0;
-        if (movedUrls.length > 0) {
-          const movedDiscoveryEvents = await trx
-            .updateTable("discovery_events")
-            .set({ edition_id: target.id })
-            .where("edition_id", "=", source.id)
-            .where("url", "in", movedUrls)
-            .returning(["id"])
-            .execute();
-          movedDiscoveryEventCount = movedDiscoveryEvents.length;
-        }
+        const movedDiscoveryEvents = await sql<{ id: string }>`
+          UPDATE discovery_events de
+          SET edition_id = ${target.id}
+          WHERE de.edition_id = ${source.id}
+            AND NOT EXISTS (
+              SELECT 1
+              FROM documents d
+              WHERE d.edition_id = ${source.id}
+                AND d.id NOT IN (${movedDocumentIdSql})
+                AND d.source_url = de.url
+            )
+          RETURNING de.id
+        `.execute(trx);
+        const movedDiscoveryEventCount = movedDiscoveryEvents.rows.length;
 
         // Clean up stories that have lost all of their members. A story with
         // no documents is not a story — it would only generate empty
@@ -306,7 +299,7 @@ export function createEditionRolloverService(
           targetEditionId: target.id,
           movedDocumentCount: movedDocumentIds.length,
           movedDiscoveryEventCount,
-          movedJobCount: movedJobs.length,
+          movedJobCount: movedDocumentJobs.length + movedUnexpandedJobs.rows.length,
           requeuedJobCount: requeuedChunkJobs.rows.length,
           cancelledJobCount: 0,
           deletedStoryIds: emptyStoryIds,
