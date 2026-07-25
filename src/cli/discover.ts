@@ -27,7 +27,7 @@ export async function runDiscoverCommand(
       miniflux: deps.miniflux,
     });
     log(
-      `Discovered ${result.total} entries (created=${result.created}, duplicates=${result.duplicates}, enqueued=${result.enqueued}, failed=${result.failed}) for edition ${result.editionId}`,
+      `Discovered ${result.total} entries (created=${result.created}, duplicates=${result.duplicates}, enqueued=${result.enqueued}, excluded=${result.excluded}, failed=${result.failed}) for edition ${result.editionId}`,
     );
     return { exitCode: 0, result };
   } catch (err) {

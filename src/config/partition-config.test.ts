@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  parseMinifluxExcludedCategoryIds,
   parsePartitionConfig,
   type PartitionConfig,
 } from "./index.js";
@@ -204,6 +205,25 @@ describe("parsePartitionConfig", () => {
     expect(() =>
       parsePartitionConfig('{"youtube":{"category_id":"3"}}'),
     ).toThrow(/category_id must be a positive integer/);
+  });
+});
+
+describe("parseMinifluxExcludedCategoryIds", () => {
+  it("parses and deduplicates positive category IDs", () => {
+    expect([...parseMinifluxExcludedCategoryIds("4, 3,4")]).toEqual([4, 3]);
+  });
+
+  it("returns an empty set when unset", () => {
+    expect([...parseMinifluxExcludedCategoryIds(undefined)]).toEqual([]);
+  });
+
+  it("rejects invalid category IDs", () => {
+    expect(() => parseMinifluxExcludedCategoryIds("4,reddit")).toThrow(
+      /MINIFLUX_EXCLUDED_CATEGORY_IDS/,
+    );
+    expect(() => parseMinifluxExcludedCategoryIds("0")).toThrow(
+      /MINIFLUX_EXCLUDED_CATEGORY_IDS/,
+    );
   });
 });
 

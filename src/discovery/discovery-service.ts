@@ -23,6 +23,7 @@ export interface DiscoveryResult {
   duplicates: number;
   enqueued: number;
   failed: number;
+  excluded: number;
 }
 
 export interface DiscoveryService {
@@ -113,6 +114,7 @@ export function createDiscoveryService(deps: {
   discoveryRepo: DiscoveryRepository;
   queue: ProcessingJobQueue;
   partitionConfig?: PartitionConfig;
+  excludedCategoryIds?: ReadonlySet<number>;
   logger?: Logger;
   /** Runtime target supplied by the CLI; omitted for legacy/test callers. */
   minimumEntries?: number;
@@ -139,6 +141,7 @@ export function createDiscoveryService(deps: {
       let duplicates = 0;
       let enqueued = 0;
       let failed = 0;
+      let excluded = 0;
       let afterEntryId: number | undefined;
       let backfilled = 0;
       const ingestionState = createMinifluxIngestionStateRepository(deps.db);
@@ -151,11 +154,33 @@ export function createDiscoveryService(deps: {
         afterEntryId = await deps.discoveryRepo.getMaxMinifluxEntryId();
       }
       let runHadFailure = false;
+      const excludedCategoryIds = deps.excludedCategoryIds ?? new Set<number>();
+      const isExcluded = (entry: MinifluxEntry): boolean =>
+        entry.category !== null &&
+        entry.category !== undefined &&
+        excludedCategoryIds.has(entry.category.id);
 
       const processEntry = async (
         entry: MinifluxEntry,
         advanceCursor: boolean,
-      ): Promise<"created" | "duplicate" | "failed"> => {
+      ): Promise<"created" | "duplicate" | "excluded" | "failed"> => {
+        if (isExcluded(entry)) {
+          try {
+            if (advanceCursor && !runHadFailure) {
+              await ingestionState.set({ lastEntryId: entry.id });
+            }
+            excluded++;
+            return "excluded";
+          } catch (err) {
+            runHadFailure = true;
+            editionLog?.error("excluded discovery entry cursor update failed", {
+              error: err as Error,
+              minifluxEntryId: entry.id,
+            });
+            failed++;
+            return "failed";
+          }
+        }
         let outcome: "created" | "duplicate" = "duplicate";
         try {
           const partitionKey = resolvePartitionKey({
@@ -280,6 +305,10 @@ export function createDiscoveryService(deps: {
           });
           if (historicalEntries.length === 0) break;
           for (const entry of historicalEntries) {
+            if (isExcluded(entry)) {
+              excluded++;
+              continue;
+            }
             const timestamp = entry.publishedAt ?? entry.createdAt;
             if (timestamp && new Date(timestamp) < cutoff) continue;
             if (await deps.discoveryRepo.getByMinifluxEntryId(entry.id)) continue;
@@ -347,9 +376,18 @@ export function createDiscoveryService(deps: {
         duplicates,
         enqueued,
         failed,
+        excluded,
         backfilled,
       });
-      return { editionId: edition.id, total, created, duplicates, enqueued, failed };
+      return {
+        editionId: edition.id,
+        total,
+        created,
+        duplicates,
+        enqueued,
+        failed,
+        excluded,
+      };
     },
   };
 }

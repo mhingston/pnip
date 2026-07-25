@@ -1,5 +1,6 @@
 import {
   loadConfig,
+  parseMinifluxExcludedCategoryIds,
   parsePartitionConfig,
   parseYoutubeFocusChannels,
 } from "../config/index.js";
@@ -195,6 +196,9 @@ async function main(): Promise<number> {
         discoveryRepo,
         queue,
         partitionConfig,
+        excludedCategoryIds: parseMinifluxExcludedCategoryIds(
+          cfg.MINIFLUX_EXCLUDED_CATEGORY_IDS,
+        ),
         minimumEntries: cfg.DIGEST_MIN_STORIES,
         lookbackDays: cfg.DIGEST_DISCOVERY_LOOKBACK_DAYS,
         sourceBalance: cfg.DIGEST_SOURCE_BALANCE !== "false",

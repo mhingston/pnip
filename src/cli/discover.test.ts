@@ -22,7 +22,7 @@ describe("runDiscoverCommand", () => {
         created: 2,
         duplicates: 1,
         enqueued: 2,
-        failed: 0,
+        failed: 0, excluded: 0,
       }),
     };
     const logs: string[] = [];
@@ -40,7 +40,7 @@ describe("runDiscoverCommand", () => {
 
   it("calls discover with today() when no editionDate passed", async () => {
     const discover = vi.fn().mockResolvedValue({
-      editionId: "e1", total: 0, created: 0, duplicates: 0, enqueued: 0, failed: 0,
+      editionId: "e1", total: 0, created: 0, duplicates: 0, enqueued: 0, failed: 0, excluded: 0,
     });
     const fakeService: DiscoveryService = { discover };
     await runDiscoverCommand({ service: fakeService, miniflux: fakeMiniflux() });
@@ -53,7 +53,7 @@ describe("runDiscoverCommand", () => {
 
   it("passes custom editionDate through", async () => {
     const discover = vi.fn().mockResolvedValue({
-      editionId: "e1", total: 0, created: 0, duplicates: 0, enqueued: 0, failed: 0,
+      editionId: "e1", total: 0, created: 0, duplicates: 0, enqueued: 0, failed: 0, excluded: 0,
     });
     const fakeService: DiscoveryService = { discover };
     await runDiscoverCommand({
@@ -87,7 +87,7 @@ describe("runDiscoverCommand", () => {
     const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     const fakeService: DiscoveryService = {
       discover: vi.fn().mockResolvedValue({
-        editionId: "e1", total: 0, created: 0, duplicates: 0, enqueued: 0, failed: 0,
+        editionId: "e1", total: 0, created: 0, duplicates: 0, enqueued: 0, failed: 0, excluded: 0,
       }),
     };
     const result = await runDiscoverCommand({ service: fakeService, miniflux: fakeMiniflux() });

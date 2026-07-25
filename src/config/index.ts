@@ -14,6 +14,7 @@ const configSchema = z.object({
   TEST_DATABASE_URL: z.string().optional(),
   MINIFLUX_URL: z.string().optional(),
   MINIFLUX_API_TOKEN: z.string().optional(),
+  MINIFLUX_EXCLUDED_CATEGORY_IDS: z.string().optional(),
   OPENAI_API_KEY: z.string().optional(),
   OPENAI_BASE_URL: z.string().optional(),
   GOOGLE_GENERATIVE_AI_API_KEY: z.string().optional(),
@@ -74,6 +75,23 @@ export type PartitionConfig = Record<string, PartitionConfigEntry>;
  * author name and URL because oEmbed does not expose the same identifier
  * consistently for every channel.
  */
+export function parseMinifluxExcludedCategoryIds(
+  raw: string | undefined,
+): ReadonlySet<number> {
+  if (!raw || raw.trim() === "") return new Set();
+  const ids = raw.split(",").map((value) => {
+    const trimmed = value.trim();
+    const id = Number(trimmed);
+    if (!/^\d+$/.test(trimmed) || !Number.isSafeInteger(id) || id <= 0) {
+      throw new Error(
+        `Invalid MINIFLUX_EXCLUDED_CATEGORY_IDS: "${value}" must be a positive integer`,
+      );
+    }
+    return id;
+  });
+  return new Set(ids);
+}
+
 export function parseYoutubeFocusChannels(
   raw: string | undefined,
 ): string[] {

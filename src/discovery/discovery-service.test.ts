@@ -284,6 +284,46 @@ describe("DiscoveryService", () => {
     expect(calls.listEntries[0]?.status).toBe("all");
   });
 
+  it("excludes configured Miniflux categories and advances the cursor", async () => {
+    const { client } = createFakeMiniflux({
+      pages: [
+        [
+          entry(1, "https://blog.example.com/1", 10, { id: 2, title: "Blogs" }),
+          entry(2, "https://www.reddit.com/r/test/2", 11, { id: 4, title: "Reddit" }),
+        ],
+        [],
+      ],
+    });
+    const service = createDiscoveryService({
+      db,
+      editionRepo,
+      discoveryRepo,
+      queue,
+      excludedCategoryIds: new Set([4]),
+    });
+
+    const result = await service.discover({
+      editionDate: "2026-01-01",
+      miniflux: client,
+    });
+
+    expect(result).toMatchObject({
+      total: 2,
+      created: 1,
+      enqueued: 1,
+      excluded: 1,
+      failed: 0,
+    });
+    expect(await discoveryRepo.getByMinifluxEntryId(1)).toBeDefined();
+    expect(await discoveryRepo.getByMinifluxEntryId(2)).toBeUndefined();
+    expect(await countJobs()).toBe(1);
+    const state = await db
+      .selectFrom("miniflux_ingestion_state")
+      .select("last_entry_id")
+      .executeTakeFirstOrThrow();
+    expect(state.last_entry_id).toBe("2");
+  });
+
   it("invalidates a queued cluster snapshot when a late entry is discovered", async () => {
     const edition = await editionRepo.create("2026-01-01");
     await db
