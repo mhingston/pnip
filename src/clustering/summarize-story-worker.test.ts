@@ -657,6 +657,47 @@ describe("SummarizeStoryWorker", () => {
     expect(deps.storySummaryRepo.replaceForStory).toHaveBeenCalledOnce();
   });
 
+  it("skips regeneration when the existing summary has the same input_hash", async () => {
+    const docs = new Map([["doc-1", makeDoc()]]);
+    const chunks = new Map([["doc-1", [makeChunk({ id: "chunk-1" })]]]);
+    const summaries = new Map([["doc-1", [makeSummary("doc-1", "Fed raised rates.")]]]);
+
+    const deps = makeDeps({
+      members: [{ document_id: "doc-1" }],
+      documents: docs,
+      chunks,
+      summaries,
+    });
+    (deps.storySummaryRepo.getByStoryId as ReturnType<typeof vi.fn>).mockResolvedValue({
+      id: "ss-existing",
+      story_id: "story-1",
+      content: "existing",
+      prompt_id: "prompt-1",
+      prompt_version: 1,
+      model: "m",
+      provider: "p",
+      input_hash: "deterministic-hash",
+      created_at: new Date(),
+    });
+    (deps.promptExecutor.execute as ReturnType<typeof vi.fn>).mockResolvedValue({
+      content: JSON.stringify({ summary: "ignored", claims: [] }),
+      promptId: "prompt-1",
+      promptVersion: 1,
+      model: "m",
+      provider: "p",
+      inputHash: "deterministic-hash",
+      createdAt: new Date().toISOString(),
+    });
+
+    const outcome = await createSummarizeStoryWorker(deps).execute(makeJob(), {
+      db: {} as any,
+      logger: silentLogger(),
+    });
+
+    expect(outcome).toEqual({});
+    expect(deps.storySummaryRepo.replaceForStory).not.toHaveBeenCalled();
+  });
+
   it("throws on invalid target", async () => {
     const deps = makeDeps();
     const worker = createSummarizeStoryWorker(deps);

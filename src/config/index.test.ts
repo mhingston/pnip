@@ -40,6 +40,9 @@ describe("config", () => {
   it("returns a typed Config with DATABASE_URL and LOG_LEVEL defaulting to 'info'", () => {
     process.env.DATABASE_URL = "postgres://localhost/db";
     delete process.env.LOG_LEVEL;
+    delete process.env.PG_POOL_MAX;
+    delete process.env.PG_POOL_IDLE_TIMEOUT_MS;
+    delete process.env.PG_POOL_CONNECTION_TIMEOUT_MS;
     const config: Config = loadConfig();
     expect(config.DATABASE_URL).toBe("postgres://localhost/db");
     expect(config.LOG_LEVEL).toBe("info");

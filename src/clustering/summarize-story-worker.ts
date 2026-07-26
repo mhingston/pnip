@@ -284,6 +284,8 @@ export function createSummarizeStoryWorker(
         return {};
       }
 
+      const existingSummary = await deps.storySummaryRepo.getByStoryId(storyId);
+
       const members = await deps.storyRepo.getMembers(storyId);
       if (members.length === 0) {
         ctx.logger.warn("story has no members, skipping", { storyId });
@@ -379,6 +381,18 @@ export function createSummarizeStoryWorker(
           source_chunks: chunkList,
         },
       });
+
+      if (
+        existingSummary !== undefined &&
+        existingSummary.input_hash === result.inputHash
+      ) {
+        ctx.logger.info("story summary unchanged, skipping regeneration", {
+          storyId,
+          summaryId: existingSummary.id,
+          inputHash: result.inputHash,
+        });
+        return {};
+      }
 
       let summaryText: string;
       let parsedClaims: StoryClaim[];
