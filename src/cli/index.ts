@@ -2,6 +2,7 @@ import {
   loadConfig,
   parseMinifluxExcludedCategoryIds,
   parsePartitionConfig,
+  parseRaindropBridgeFeedIds,
   parseYoutubeFocusChannels,
 } from "../config/index.js";
 import { createPool } from "../database/pool.js";
@@ -121,6 +122,7 @@ import { createNotebookLmClient } from "../digest/notebooklm/notebooklm-client.j
 import { createNotebookService } from "../digest/notebooklm/notebook-service.js";
 import { createPodcastService } from "../digest/notebooklm/podcast-service.js";
 import { createPublicationService } from "../publication/publication-service.js";
+import { createUnbookmarkEmitter } from "../raindrop/unbookmark-emitter.js";
 import { createSignalRepository } from "../signals/signal-repository.js";
 import { createSourceTrustRepository } from "../signals/source-trust-repository.js";
 import {
@@ -202,6 +204,9 @@ async function main(): Promise<number> {
         minimumEntries: cfg.DIGEST_MIN_STORIES,
         lookbackDays: cfg.DIGEST_DISCOVERY_LOOKBACK_DAYS,
         sourceBalance: cfg.DIGEST_SOURCE_BALANCE !== "false",
+        readLaterFeedIds: parseRaindropBridgeFeedIds(
+          cfg.RAINDROP_BRIDGE_FEED_IDS,
+        ),
         logger: createLogger({ baseFields: { worker: "discovery" } }),
       });
 
@@ -744,6 +749,12 @@ async function main(): Promise<number> {
       const podcastRepo = createPodcastRepository(db);
       const queue = createProcessingJobQueue(db);
       const partitionConfig = parsePartitionConfig(cfg.PARTITION_CONFIG);
+      const unbookmarkEmitter = cfg.RAINDROP_BRIDGE_ENQUEUE_CMD
+        ? createUnbookmarkEmitter({
+            command: cfg.RAINDROP_BRIDGE_ENQUEUE_CMD,
+            cwd: process.env.RAINDROP_BRIDGE_CWD,
+          })
+        : undefined;
       const service = createPublicationService({
         db,
         editionRepo,
@@ -754,6 +765,7 @@ async function main(): Promise<number> {
         jobQueue: queue,
         partitionConfig,
         logger,
+        unbookmarkEmitter,
       });
       const { exitCode } = await runPublishEditionCommand({
         service,

@@ -21,6 +21,7 @@ import type { NotebookRow } from "../digest/notebooklm/notebook-repository.js";
 import type { PodcastRow } from "../digest/notebooklm/podcast-repository.js";
 import type { ProcessingJobQueue } from "../jobs/queue/processing-job-queue.js";
 import type { Logger } from "../logging/logger.js";
+import type { UnbookmarkEmitter } from "../raindrop/unbookmark-emitter.js";
 
 function silentLogger(): Logger {
   return {
@@ -927,5 +928,183 @@ describe("checkCompletion with partition config", () => {
     );
     expect(mocks.editionRepo.transition).not.toHaveBeenCalled();
     expect(mocks.jobQueue.cancelForEdition).not.toHaveBeenCalled();
+  });
+});
+
+function makeDbWithDiscoveryMetadata(
+  metadataRows: Array<unknown>,
+): Kysely<Database> {
+  const chain: Record<string, unknown> = {};
+  chain["select"] = vi.fn().mockReturnValue(chain);
+  chain["where"] = vi.fn().mockReturnValue(chain);
+  chain["execute"] = vi.fn().mockResolvedValue(metadataRows.map((metadata) => ({ metadata })));
+  return { selectFrom: vi.fn().mockReturnValue(chain) } as unknown as Kysely<Database>;
+}
+
+function makeFakeEmitter(): UnbookmarkEmitter & {
+  calls: Array<{ editionId: string; bookmarkIds: number[]; status: number }>;
+} {
+  const calls: Array<{ editionId: string; bookmarkIds: number[]; status: number }> = [];
+  return {
+    calls,
+    async emit(entry) {
+      calls.push({
+        editionId: entry.editionId,
+        bookmarkIds: entry.bookmarkIds,
+        status: 0,
+      });
+      return { filePath: "/tmp/fake.json", status: 0 };
+    },
+  };
+}
+
+describe("publish — read-later unbookmark", () => {
+  function stubReadyPublish(
+    mocks: FakeDeps["mocks"],
+  ): void {
+    mocks.editionRepo.getById.mockResolvedValue(
+      makeEdition({ status: "ready", id: "ed-1" }),
+    );
+    mocks.markdownDigestRepo.getByEdition.mockResolvedValue(makeMarkdown());
+    mocks.emailDigestRepo.getByEdition.mockResolvedValue(
+      makeEmail({ delivery_status: "sent" }),
+    );
+    mocks.notebookRepo.getByEdition.mockResolvedValue(
+      makeNotebook({ status: "ready" }),
+    );
+    mocks.podcastRepo.getByEdition.mockResolvedValue(
+      makePodcast({ status: "ready", url: "https://cdn.example.com/x.mp3" }),
+    );
+    mocks.editionRepo.transition.mockImplementation(
+      async (id: string, to: EditionStatus) =>
+        makeEdition({ id, status: to }),
+    );
+    mocks.jobQueue.cancelForEdition.mockResolvedValue(0);
+  }
+
+  it("forwards read-later bookmark ids to the emitter after a successful publish", async () => {
+    const base = makeFakeDeps();
+    const emitter = makeFakeEmitter();
+    const db = makeDbWithDiscoveryMetadata([
+      { sourceFamily: "read-later", sourceBookmarkId: 7 },
+      { sourceFamily: "read-later", sourceBookmarkId: 9 },
+      { sourceFamily: "article" },
+    ]);
+    const deps: PublicationServiceDeps = {
+      ...base.deps,
+      db,
+      unbookmarkEmitter: emitter,
+    };
+    stubReadyPublish(base.mocks);
+
+    const svc = createPublicationService(deps);
+    const result = await svc.publish({ editionId: "ed-1" });
+
+    expect(result.status).toBe("published");
+    expect(result.unbookmarked).toEqual({
+      bookmarkIds: [7, 9],
+      emitted: true,
+      bridgeStatus: 0,
+    });
+    expect(emitter.calls).toHaveLength(1);
+    expect(emitter.calls[0]).toEqual({
+      editionId: "ed-1",
+      bookmarkIds: [7, 9],
+      status: 0,
+    });
+  });
+
+  it("does not invoke the emitter when no read-later events exist", async () => {
+    const base = makeFakeDeps();
+    const emitter = makeFakeEmitter();
+    const db = makeDbWithDiscoveryMetadata([
+      { sourceFamily: "article" },
+      { sourceFamily: "youtube" },
+    ]);
+    const deps: PublicationServiceDeps = {
+      ...base.deps,
+      db,
+      unbookmarkEmitter: emitter,
+    };
+    stubReadyPublish(base.mocks);
+
+    const svc = createPublicationService(deps);
+    const result = await svc.publish({ editionId: "ed-1" });
+
+    expect(result.unbookmarked).toEqual({
+      bookmarkIds: [],
+      emitted: false,
+    });
+    expect(emitter.calls).toHaveLength(0);
+  });
+
+  it("captures emitter failures but still publishes the edition", async () => {
+    const base = makeFakeDeps();
+    const calls: unknown[] = [];
+    const failingEmitter: UnbookmarkEmitter = {
+      async emit(entry) {
+        calls.push(entry);
+        throw new Error("bridge crashed");
+      },
+    };
+    const db = makeDbWithDiscoveryMetadata([
+      { sourceFamily: "read-later", sourceBookmarkId: 11 },
+    ]);
+    const deps: PublicationServiceDeps = {
+      ...base.deps,
+      db,
+      unbookmarkEmitter: failingEmitter,
+    };
+    stubReadyPublish(base.mocks);
+
+    const svc = createPublicationService(deps);
+    const result = await svc.publish({ editionId: "ed-1" });
+
+    expect(result.status).toBe("published");
+    expect(result.unbookmarked).toEqual({
+      bookmarkIds: [11],
+      emitted: false,
+    });
+    expect(calls).toHaveLength(1);
+  });
+
+  it("skips the metadata query entirely when no emitter is configured", async () => {
+    const base = makeFakeDeps();
+    const db = makeDbWithDiscoveryMetadata([]);
+    const deps: PublicationServiceDeps = { ...base.deps, db };
+    stubReadyPublish(base.mocks);
+
+    const svc = createPublicationService(deps);
+    const result = await svc.publish({ editionId: "ed-1" });
+
+    expect(result.status).toBe("published");
+    expect(result.unbookmarked).toEqual({
+      bookmarkIds: [],
+      emitted: false,
+    });
+    expect((db.selectFrom as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
+  });
+
+  it("is a no-op against an already-published edition (no metadata query, no emitter call)", async () => {
+    const base = makeFakeDeps();
+    const emitter = makeFakeEmitter();
+    const db = makeDbWithDiscoveryMetadata([
+      { sourceFamily: "read-later", sourceBookmarkId: 5 },
+    ]);
+    const deps: PublicationServiceDeps = {
+      ...base.deps,
+      db,
+      unbookmarkEmitter: emitter,
+    };
+    base.mocks.editionRepo.getById.mockResolvedValue(
+      makeEdition({ status: "published" }),
+    );
+
+    const svc = createPublicationService(deps);
+    const result = await svc.publish({ editionId: "ed-1" });
+
+    expect(result.status).toBe("already_published");
+    expect(emitter.calls).toHaveLength(0);
+    expect((db.selectFrom as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
   });
 });

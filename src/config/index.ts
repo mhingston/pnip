@@ -55,6 +55,20 @@ const configSchema = z.object({
     .optional(),
   YOUTUBE_FOCUS_CHANNELS: z.string().optional(),
   PARTITION_CONFIG: z.string().optional(),
+  /**
+   * Comma-separated Miniflux feed IDs that carry bookmarks emitted by
+   * pnip-raindrop-bridge. Discovery stashes the bookmark id from the URL
+   * fragment and tags the event as `sourceFamily: read-later` so the
+   * publish step can enqueue tag removal. Empty disables the integration.
+   */
+  RAINDROP_BRIDGE_FEED_IDS: z.string().optional(),
+  /**
+   * Command invoked after a successful publication to forward an
+   * unbookmark request to the bridge. The bridge's working directory and
+   * `.env` must be reachable from this command. Empty disables the
+   * post-publish hook (the edition still publishes normally).
+   */
+  RAINDROP_BRIDGE_ENQUEUE_CMD: z.string().optional(),
 });
 
 export type Config = z.infer<typeof configSchema>;
@@ -90,6 +104,29 @@ export function parseMinifluxExcludedCategoryIds(
     return id;
   });
   return new Set(ids);
+}
+
+/**
+ * Parse the Miniflux feed IDs that the raindrop-bridge subscribes to.
+ * Empty or unset means the integration is disabled; discovery treats
+ * every entry as a regular feed item.
+ */
+export function parseRaindropBridgeFeedIds(
+  raw: string | undefined,
+): ReadonlySet<number> {
+  if (!raw || raw.trim() === "") return new Set();
+  const ids = raw.split(",").map((value) => {
+    const trimmed = value.trim();
+    if (trimmed === "") return null;
+    const id = Number(trimmed);
+    if (!/^\d+$/.test(trimmed) || !Number.isSafeInteger(id) || id <= 0) {
+      throw new Error(
+        `Invalid RAINDROP_BRIDGE_FEED_IDS: "${value}" must be a positive integer`,
+      );
+    }
+    return id;
+  });
+  return new Set(ids.filter((id): id is number => id !== null));
 }
 
 export function parseYoutubeFocusChannels(

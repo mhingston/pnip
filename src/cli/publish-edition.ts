@@ -9,6 +9,7 @@ import {
 import type { Database, Edition } from "../database/kysely.js";
 import type { PartitionConfig } from "../config/index.js";
 import { PARTITION_MASTER } from "../discovery/partition-resolver.js";
+import type { UnbookmarkEmitter } from "../raindrop/unbookmark-emitter.js";
 
 const DEFAULT_MIN_ARTICLES = 5;
 
@@ -33,6 +34,12 @@ export interface PublishEditionCommandDeps {
   editionDate?: string | Date;
   dryRun?: boolean;
   log?: (msg: string) => void;
+  /**
+   * Optional bridge emitter passed through to the publication service
+   * for the post-publish read-later cleanup. Omit to disable the hook;
+   * publication still succeeds.
+   */
+  unbookmarkEmitter?: UnbookmarkEmitter;
 }
 
 export interface PublishEditionCommandResult {
@@ -214,6 +221,15 @@ export async function runPublishEditionCommand(
     if (result.completion.missingArtifacts.length > 0) {
       log(
         `missing artifacts: ${result.completion.missingArtifacts.join(", ")}`,
+      );
+    }
+    if (result.unbookmarked && result.unbookmarked.bookmarkIds.length > 0) {
+      const tag = result.unbookmarked.emitted
+        ? `bridgeStatus=${result.unbookmarked.bridgeStatus ?? "unknown"}`
+        : "emitter-failed";
+      log(
+        `read-later cleanup: forwarded ${result.unbookmarked.bookmarkIds.length} ` +
+          `bookmark id(s) to bridge (${tag})`,
       );
     }
     const exitCode =

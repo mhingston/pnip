@@ -13,6 +13,7 @@ import type { ProcessingJobQueue } from "../jobs/queue/processing-job-queue.js";
 import type { PartitionConfig } from "../config/index.js";
 import { PARTITION_MASTER } from "../discovery/partition-resolver.js";
 import { getActivePartitions } from "./active-partitions.js";
+import type { UnbookmarkEmitter, UnbookmarkEntry } from "../raindrop/unbookmark-emitter.js";
 
 export class PublicationGateFailedError extends Error {
   readonly editionId: string;
@@ -67,10 +68,20 @@ export interface PublicationServiceResult {
   alreadyExisted: boolean;
   cancelledJobCount: number;
   completion: CompletionReport;
+  unbookmarked?: UnbookmarkReport;
 }
 
 export interface PublishInput {
   editionId: string;
+}
+
+export interface UnbookmarkReport {
+  /** Bookmark ids that were forwarded to the bridge queue. */
+  bookmarkIds: number[];
+  /** Whether the emitter reported a successful spawn. */
+  emitted: boolean;
+  /** Bridge exit status if invoked; undefined when nothing was queued. */
+  bridgeStatus?: number;
 }
 
 export interface PublicationService {
@@ -91,6 +102,12 @@ export interface PublicationServiceDeps {
   jobQueue: ProcessingJobQueue;
   partitionConfig?: PartitionConfig;
   logger?: Logger;
+  /**
+   * Optional bridge for forwarding post-publish unbookmark requests to
+   * pnip-raindrop-bridge. Omit to disable the integration; the publish
+   * step still succeeds when this is null.
+   */
+  unbookmarkEmitter?: UnbookmarkEmitter;
 }
 
 const LABEL_MARKDOWN = "markdown digest missing or empty";
@@ -116,6 +133,51 @@ function emptyCompletion(): CompletionReport {
     partitionNotebooks: [],
     missingArtifacts: [],
   };
+}
+
+function emptyUnbookmarkReport(): UnbookmarkReport {
+  return { bookmarkIds: [], emitted: false };
+}
+
+/**
+ * Pull every Raindrop bookmark id that landed in this edition. Bookmarks
+ * are encoded into `discovery_events.metadata->>'sourceBookmarkId'` at
+ * discovery time when the entry came from the bridge feed.
+ */
+async function readBookmarkIdsForEdition(
+  db: Kysely<Database>,
+  editionId: string,
+): Promise<number[]> {
+  const rows = await db
+    .selectFrom("discovery_events")
+    .select("metadata")
+    .where("edition_id", "=", editionId)
+    .execute();
+  const ids = new Set<number>();
+  for (const row of rows) {
+    const meta = row.metadata;
+    if (meta === null || meta === undefined) continue;
+    // Kysely returns JSONB as already-parsed values when the column type
+    // is unknown; tolerate both shapes.
+    const obj =
+      typeof meta === "string"
+        ? (() => {
+            try {
+              return JSON.parse(meta) as Record<string, unknown>;
+            } catch {
+              return undefined;
+            }
+          })()
+        : (meta as Record<string, unknown>);
+    if (!obj || typeof obj !== "object") continue;
+    const raw = (obj as { sourceBookmarkId?: unknown }).sourceBookmarkId;
+    if (typeof raw === "number" && Number.isInteger(raw) && raw > 0) {
+      ids.add(raw);
+    } else if (typeof raw === "string" && /^\d+$/.test(raw)) {
+      ids.add(Number(raw));
+    }
+  }
+  return [...ids].sort((a, b) => a - b);
 }
 
 export function createPublicationService(
@@ -232,6 +294,7 @@ export function createPublicationService(
         alreadyExisted: true,
         cancelledJobCount: 0,
         completion: emptyCompletion(),
+        unbookmarked: emptyUnbookmarkReport(),
       };
     }
     if (edition.status === "publishing") {
@@ -241,6 +304,7 @@ export function createPublicationService(
         alreadyExisted: false,
         cancelledJobCount: 0,
         completion: emptyCompletion(),
+        unbookmarked: emptyUnbookmarkReport(),
       };
     }
 
@@ -276,12 +340,20 @@ export function createPublicationService(
       cancelledJobCount,
     });
 
+    const unbookmarked = await emitUnbookmarkRequest(
+      publishedEdition,
+      deps.unbookmarkEmitter,
+      deps.db,
+      deps.logger,
+    );
+
     return {
       edition: publishedEdition,
       status: "published",
       alreadyExisted: false,
       cancelledJobCount,
       completion,
+      unbookmarked,
     };
   }
 
@@ -302,4 +374,46 @@ export function createPublicationService(
     publish,
     publishForDate,
   };
+}
+
+/**
+ * Forward the just-published edition's Raindrop bookmark ids to the
+ * bridge. Failures are logged but never re-thrown — publication has
+ * already succeeded and we don't want to surface a queue-write failure
+ * as a publish failure.
+ */
+async function emitUnbookmarkRequest(
+  edition: Edition,
+  emitter: UnbookmarkEmitter | undefined,
+  db: Kysely<Database>,
+  logger: Logger | undefined,
+): Promise<UnbookmarkReport> {
+  if (!emitter) return emptyUnbookmarkReport();
+  const bookmarkIds = await readBookmarkIdsForEdition(db, edition.id);
+  if (bookmarkIds.length === 0) {
+    logger?.debug("no read-later bookmarks to unbookmark", { editionId: edition.id });
+    return emptyUnbookmarkReport();
+  }
+  const entry: UnbookmarkEntry = {
+    editionId: edition.id,
+    editionDate: edition.publication_date.toISOString().slice(0, 10),
+    bookmarkIds,
+    queuedAt: new Date().toISOString(),
+  };
+  try {
+    const result = await emitter.emit(entry);
+    logger?.info("forwarded read-later unbookmark queue entry to bridge", {
+      editionId: edition.id,
+      bookmarkCount: bookmarkIds.length,
+      bridgeStatus: result.status,
+    });
+    return { bookmarkIds, emitted: true, bridgeStatus: result.status };
+  } catch (err) {
+    logger?.error("failed to forward read-later unbookmark queue entry", {
+      editionId: edition.id,
+      bookmarkCount: bookmarkIds.length,
+      error: err as Error,
+    });
+    return { bookmarkIds, emitted: false };
+  }
 }
