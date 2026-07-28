@@ -17,7 +17,7 @@ import { spawn } from "node:child_process";
 export interface UnbookmarkEntry {
   editionId: string;
   editionDate: string;
-  bookmarkIds: number[];
+  bridgeTokens: string[];
   queuedAt: string;
 }
 

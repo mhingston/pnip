@@ -9,7 +9,7 @@ import {
 const sampleEntry: UnbookmarkEntry = {
   editionId: "11111111-1111-1111-1111-111111111111",
   editionDate: "2025-07-27",
-  bookmarkIds: [1, 2, 3],
+  bridgeTokens: ["1", "2", "3"],
   queuedAt: "2025-07-27T18:00:00.000Z",
 };
 

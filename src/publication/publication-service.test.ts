@@ -942,15 +942,15 @@ function makeDbWithDiscoveryMetadata(
 }
 
 function makeFakeEmitter(): UnbookmarkEmitter & {
-  calls: Array<{ editionId: string; bookmarkIds: number[]; status: number }>;
+  calls: Array<{ editionId: string; bridgeTokens: string[]; status: number }>;
 } {
-  const calls: Array<{ editionId: string; bookmarkIds: number[]; status: number }> = [];
+  const calls: Array<{ editionId: string; bridgeTokens: string[]; status: number }> = [];
   return {
     calls,
     async emit(entry) {
       calls.push({
         editionId: entry.editionId,
-        bookmarkIds: entry.bookmarkIds,
+        bridgeTokens: entry.bridgeTokens,
         status: 0,
       });
       return { filePath: "/tmp/fake.json", status: 0 };
@@ -958,7 +958,7 @@ function makeFakeEmitter(): UnbookmarkEmitter & {
   };
 }
 
-describe("publish — read-later unbookmark", () => {
+describe("publish — bridge unbookmark", () => {
   function stubReadyPublish(
     mocks: FakeDeps["mocks"],
   ): void {
@@ -982,12 +982,12 @@ describe("publish — read-later unbookmark", () => {
     mocks.jobQueue.cancelForEdition.mockResolvedValue(0);
   }
 
-  it("forwards read-later bookmark ids to the emitter after a successful publish", async () => {
+  it("forwards bridge tokens to the emitter after a successful publish", async () => {
     const base = makeFakeDeps();
     const emitter = makeFakeEmitter();
     const db = makeDbWithDiscoveryMetadata([
-      { sourceFamily: "read-later", sourceBookmarkId: 7 },
-      { sourceFamily: "read-later", sourceBookmarkId: 9 },
+      { bridgeToken: "7" },
+      { bridgeToken: "9" },
       { sourceFamily: "article" },
     ]);
     const deps: PublicationServiceDeps = {
@@ -1002,19 +1002,19 @@ describe("publish — read-later unbookmark", () => {
 
     expect(result.status).toBe("published");
     expect(result.unbookmarked).toEqual({
-      bookmarkIds: [7, 9],
+      bridgeTokens: ["7", "9"],
       emitted: true,
       bridgeStatus: 0,
     });
     expect(emitter.calls).toHaveLength(1);
     expect(emitter.calls[0]).toEqual({
       editionId: "ed-1",
-      bookmarkIds: [7, 9],
+      bridgeTokens: ["7", "9"],
       status: 0,
     });
   });
 
-  it("does not invoke the emitter when no read-later events exist", async () => {
+  it("does not invoke the emitter when no bridge tokens are recorded", async () => {
     const base = makeFakeDeps();
     const emitter = makeFakeEmitter();
     const db = makeDbWithDiscoveryMetadata([
@@ -1032,7 +1032,7 @@ describe("publish — read-later unbookmark", () => {
     const result = await svc.publish({ editionId: "ed-1" });
 
     expect(result.unbookmarked).toEqual({
-      bookmarkIds: [],
+      bridgeTokens: [],
       emitted: false,
     });
     expect(emitter.calls).toHaveLength(0);
@@ -1048,7 +1048,7 @@ describe("publish — read-later unbookmark", () => {
       },
     };
     const db = makeDbWithDiscoveryMetadata([
-      { sourceFamily: "read-later", sourceBookmarkId: 11 },
+      { bridgeToken: "11" },
     ]);
     const deps: PublicationServiceDeps = {
       ...base.deps,
@@ -1062,7 +1062,7 @@ describe("publish — read-later unbookmark", () => {
 
     expect(result.status).toBe("published");
     expect(result.unbookmarked).toEqual({
-      bookmarkIds: [11],
+      bridgeTokens: ["11"],
       emitted: false,
     });
     expect(calls).toHaveLength(1);
@@ -1079,7 +1079,7 @@ describe("publish — read-later unbookmark", () => {
 
     expect(result.status).toBe("published");
     expect(result.unbookmarked).toEqual({
-      bookmarkIds: [],
+      bridgeTokens: [],
       emitted: false,
     });
     expect((db.selectFrom as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
@@ -1089,7 +1089,7 @@ describe("publish — read-later unbookmark", () => {
     const base = makeFakeDeps();
     const emitter = makeFakeEmitter();
     const db = makeDbWithDiscoveryMetadata([
-      { sourceFamily: "read-later", sourceBookmarkId: 5 },
+      { bridgeToken: "5" },
     ]);
     const deps: PublicationServiceDeps = {
       ...base.deps,

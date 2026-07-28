@@ -56,10 +56,11 @@ const configSchema = z.object({
   YOUTUBE_FOCUS_CHANNELS: z.string().optional(),
   PARTITION_CONFIG: z.string().optional(),
   /**
-   * Comma-separated Miniflux feed IDs that carry bookmarks emitted by
-   * pnip-raindrop-bridge. Discovery stashes the bookmark id from the URL
-   * fragment and tags the event as `sourceFamily: read-later` so the
-   * publish step can enqueue tag removal. Empty disables the integration.
+   * Comma-separated Miniflux feed IDs whose entries are supplied by
+   * pnip-raindrop-bridge. Discovery copies `entry.author` into
+   * `metadata.bridgeToken` for those entries so the publish step can
+   * forward the opaque token to the bridge. Empty disables the
+   * integration; those entries are treated as regular feed items.
    */
   RAINDROP_BRIDGE_FEED_IDS: z.string().optional(),
   /**

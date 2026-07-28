@@ -32,6 +32,7 @@ export interface MinifluxEntry {
   feedId: number;
   title: string;
   url: string;
+  author?: string;
   hash?: string;
   publishedAt?: string;
   createdAt?: string;
@@ -97,6 +98,7 @@ interface RawMinifluxEntry {
   feed_id: number;
   title: string;
   url: string;
+  author?: string;
   hash?: string;
   published_at?: string;
   created_at?: string;
@@ -124,6 +126,7 @@ function mapEntry(raw: RawMinifluxEntry): MinifluxEntry {
     feedId: raw.feed_id,
     title: raw.title,
     url: raw.url,
+    author: raw.author,
     hash: raw.hash,
     publishedAt: raw.published_at,
     createdAt: raw.created_at,

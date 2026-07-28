@@ -35,9 +35,9 @@ export interface PublishEditionCommandDeps {
   dryRun?: boolean;
   log?: (msg: string) => void;
   /**
-   * Optional bridge emitter passed through to the publication service
-   * for the post-publish read-later cleanup. Omit to disable the hook;
-   * publication still succeeds.
+   * Optional bridge emitter handed to the publication service to forward
+   * post-publish bridge tokens to the configured bridge. Omit to disable
+   * the hook; publication still succeeds.
    */
   unbookmarkEmitter?: UnbookmarkEmitter;
 }
@@ -223,13 +223,13 @@ export async function runPublishEditionCommand(
         `missing artifacts: ${result.completion.missingArtifacts.join(", ")}`,
       );
     }
-    if (result.unbookmarked && result.unbookmarked.bookmarkIds.length > 0) {
+    if (result.unbookmarked && result.unbookmarked.bridgeTokens.length > 0) {
       const tag = result.unbookmarked.emitted
         ? `bridgeStatus=${result.unbookmarked.bridgeStatus ?? "unknown"}`
         : "emitter-failed";
       log(
-        `read-later cleanup: forwarded ${result.unbookmarked.bookmarkIds.length} ` +
-          `bookmark id(s) to bridge (${tag})`,
+        `bridge hook: forwarded ${result.unbookmarked.bridgeTokens.length} ` +
+          `bridge token(s) (${tag})`,
       );
     }
     const exitCode =

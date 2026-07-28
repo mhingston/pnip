@@ -76,8 +76,8 @@ export interface PublishInput {
 }
 
 export interface UnbookmarkReport {
-  /** Bookmark ids that were forwarded to the bridge queue. */
-  bookmarkIds: number[];
+  /** Opaque bridge tokens that were forwarded to the bridge queue. */
+  bridgeTokens: string[];
   /** Whether the emitter reported a successful spawn. */
   emitted: boolean;
   /** Bridge exit status if invoked; undefined when nothing was queued. */
@@ -136,24 +136,24 @@ function emptyCompletion(): CompletionReport {
 }
 
 function emptyUnbookmarkReport(): UnbookmarkReport {
-  return { bookmarkIds: [], emitted: false };
+  return { bridgeTokens: [], emitted: false };
 }
 
 /**
- * Pull every Raindrop bookmark id that landed in this edition. Bookmarks
- * are encoded into `discovery_events.metadata->>'sourceBookmarkId'` at
- * discovery time when the entry came from the bridge feed.
+ * Pull every opaque bridge token that landed in this edition. Tokens are
+ * copied into `discovery_events.metadata->>'bridgeToken'` at discovery
+ * time when the entry came from a configured bridge feed.
  */
-async function readBookmarkIdsForEdition(
+async function readBridgeTokensForEdition(
   db: Kysely<Database>,
   editionId: string,
-): Promise<number[]> {
+): Promise<string[]> {
   const rows = await db
     .selectFrom("discovery_events")
     .select("metadata")
     .where("edition_id", "=", editionId)
     .execute();
-  const ids = new Set<number>();
+  const tokens = new Set<string>();
   for (const row of rows) {
     const meta = row.metadata;
     if (meta === null || meta === undefined) continue;
@@ -170,14 +170,12 @@ async function readBookmarkIdsForEdition(
           })()
         : (meta as Record<string, unknown>);
     if (!obj || typeof obj !== "object") continue;
-    const raw = (obj as { sourceBookmarkId?: unknown }).sourceBookmarkId;
-    if (typeof raw === "number" && Number.isInteger(raw) && raw > 0) {
-      ids.add(raw);
-    } else if (typeof raw === "string" && /^\d+$/.test(raw)) {
-      ids.add(Number(raw));
+    const raw = (obj as { bridgeToken?: unknown }).bridgeToken;
+    if (typeof raw === "string" && raw.length > 0) {
+      tokens.add(raw);
     }
   }
-  return [...ids].sort((a, b) => a - b);
+  return [...tokens].sort();
 }
 
 export function createPublicationService(
@@ -377,7 +375,7 @@ export function createPublicationService(
 }
 
 /**
- * Forward the just-published edition's Raindrop bookmark ids to the
+ * Forward the just-published edition's bridge tokens to the configured
  * bridge. Failures are logged but never re-thrown — publication has
  * already succeeded and we don't want to surface a queue-write failure
  * as a publish failure.
@@ -389,31 +387,31 @@ async function emitUnbookmarkRequest(
   logger: Logger | undefined,
 ): Promise<UnbookmarkReport> {
   if (!emitter) return emptyUnbookmarkReport();
-  const bookmarkIds = await readBookmarkIdsForEdition(db, edition.id);
-  if (bookmarkIds.length === 0) {
-    logger?.debug("no read-later bookmarks to unbookmark", { editionId: edition.id });
+  const bridgeTokens = await readBridgeTokensForEdition(db, edition.id);
+  if (bridgeTokens.length === 0) {
+    logger?.debug("no bridge tokens to forward", { editionId: edition.id });
     return emptyUnbookmarkReport();
   }
   const entry: UnbookmarkEntry = {
     editionId: edition.id,
     editionDate: edition.publication_date.toISOString().slice(0, 10),
-    bookmarkIds,
+    bridgeTokens,
     queuedAt: new Date().toISOString(),
   };
   try {
     const result = await emitter.emit(entry);
-    logger?.info("forwarded read-later unbookmark queue entry to bridge", {
+    logger?.info("forwarded bridge unbookmark queue entry", {
       editionId: edition.id,
-      bookmarkCount: bookmarkIds.length,
+      tokenCount: bridgeTokens.length,
       bridgeStatus: result.status,
     });
-    return { bookmarkIds, emitted: true, bridgeStatus: result.status };
+    return { bridgeTokens, emitted: true, bridgeStatus: result.status };
   } catch (err) {
-    logger?.error("failed to forward read-later unbookmark queue entry", {
+    logger?.error("failed to forward bridge unbookmark queue entry", {
       editionId: edition.id,
-      bookmarkCount: bookmarkIds.length,
+      tokenCount: bridgeTokens.length,
       error: err as Error,
     });
-    return { bookmarkIds, emitted: false };
+    return { bridgeTokens, emitted: false };
   }
 }

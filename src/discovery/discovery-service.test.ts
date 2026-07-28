@@ -69,8 +69,16 @@ function entry(
   url: string,
   feedId = 10,
   category?: MinifluxCategory,
+  author?: string,
 ): MinifluxEntry {
-  return { id, feedId, title: `Entry ${id}`, url, category: category ?? null };
+  return {
+    id,
+    feedId,
+    title: `Entry ${id}`,
+    url,
+    author,
+    category: category ?? null,
+  };
 }
 
 interface FakeMinifluxCalls {
@@ -798,14 +806,14 @@ describe("DiscoveryService", () => {
     expect(target.title).toBe("Entry 1");
   });
 
-  it("read-later feed: stashes sourceBookmarkId and tags sourceFamily when feed id is configured", async () => {
+  it("bridge feed: stashes entry.author as metadata.bridgeToken when feed id is configured", async () => {
     const { client } = createFakeMiniflux({
       pages: [
         [
-          entry(1, "https://example.com/post#rb=12345", 42),
-          entry(2, "https://example.com/other#rb=67890&section=1", 42),
-          entry(3, "https://example.com/no-fragment", 42),
-          entry(4, "https://blog.example.com/4", 99),
+          entry(1, "https://example.com/post", 42, undefined, "token-A"),
+          entry(2, "https://example.com/other", 42, undefined, "token-B"),
+          entry(3, "https://example.com/no-author", 42),
+          entry(4, "https://blog.example.com/4", 99, undefined, "ignored"),
         ],
         [],
       ],
@@ -815,7 +823,7 @@ describe("DiscoveryService", () => {
       editionRepo,
       discoveryRepo,
       queue,
-      readLaterFeedIds: new Set([42]),
+      bridgeFeedIds: new Set([42]),
     });
     const result = await service.discover({
       editionDate: "2026-03-01",
@@ -830,28 +838,28 @@ describe("DiscoveryService", () => {
     const event4 = await discoveryRepo.getByMinifluxEntryId(4);
 
     expect(event1?.metadata).toMatchObject({
-      sourceFamily: "read-later",
-      sourceBookmarkId: 12345,
+      sourceFamily: "article",
+      bridgeToken: "token-A",
       feedId: 42,
     });
     expect(event2?.metadata).toMatchObject({
-      sourceFamily: "read-later",
-      sourceBookmarkId: 67890,
+      sourceFamily: "article",
+      bridgeToken: "token-B",
     });
-    // No fragment means no sourceBookmarkId, but the family is still tagged.
-    expect(event3?.metadata).toMatchObject({ sourceFamily: "read-later" });
-    expect(event3?.metadata).not.toHaveProperty("sourceBookmarkId");
-    // Feed 99 is not in the bridge set; URL classification takes over.
+    // No author means no bridgeToken is recorded.
+    expect(event3?.metadata).toMatchObject({ sourceFamily: "article" });
+    expect(event3?.metadata).not.toHaveProperty("bridgeToken");
+    // Feed 99 is not in the bridge set; even with an author, no token is recorded.
     expect(event4?.metadata).toMatchObject({
       sourceFamily: "article",
       feedId: 99,
     });
-    expect(event4?.metadata).not.toHaveProperty("sourceBookmarkId");
+    expect(event4?.metadata).not.toHaveProperty("bridgeToken");
   });
 
-  it("read-later feed: empty feed-id set behaves like the original classification", async () => {
+  it("bridge feed: empty feed-id set ignores entry.author entirely", async () => {
     const { client } = createFakeMiniflux({
-      pages: [[entry(1, "https://example.com/post#rb=12345", 42)], []],
+      pages: [[entry(1, "https://example.com/post", 42, undefined, "token-A")], []],
     });
     const service = createDiscoveryService({
       db,
@@ -863,6 +871,6 @@ describe("DiscoveryService", () => {
 
     const event = await discoveryRepo.getByMinifluxEntryId(1);
     expect(event?.metadata).toMatchObject({ sourceFamily: "article" });
-    expect(event?.metadata).not.toHaveProperty("sourceBookmarkId");
+    expect(event?.metadata).not.toHaveProperty("bridgeToken");
   });
 });

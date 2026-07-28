@@ -13,7 +13,6 @@ import { resolvePartitionKey } from "./partition-resolver.js";
 import { createMinifluxIngestionStateRepository } from "./miniflux-ingestion-state-repository.js";
 import {
   classifyDiscoverySourceFamily,
-  parseBookmarkIdFragment,
   selectBalancedEntries,
 } from "./source-coverage.js";
 
@@ -122,11 +121,13 @@ export function createDiscoveryService(deps: {
   lookbackDays?: number;
   sourceBalance?: boolean;
   /**
-   * Miniflux feed IDs whose entries come from pnip-raindrop-bridge.
-   * Empty/undefined disables the integration: those entries are treated
-   * as regular feed items and no bookmark id is recovered.
+   * Miniflux feed IDs whose entries are supplied by pnip-raindrop-bridge.
+   * For those entries, discovery copies `entry.author` into
+   * `metadata.bridgeToken` as an opaque string for the publish step to
+   * forward. Empty/undefined disables the integration: those entries are
+   * treated as regular feed items and no token is recorded.
    */
-  readLaterFeedIds?: ReadonlySet<number>;
+  bridgeFeedIds?: ReadonlySet<number>;
 }): DiscoveryService {
   return {
     async discover(input) {
@@ -162,7 +163,7 @@ export function createDiscoveryService(deps: {
       }
       let runHadFailure = false;
       const excludedCategoryIds = deps.excludedCategoryIds ?? new Set<number>();
-      const readLaterFeedIds = deps.readLaterFeedIds ?? new Set<number>();
+      const bridgeFeedIds = deps.bridgeFeedIds ?? new Set<number>();
       const isExcluded = (entry: MinifluxEntry): boolean =>
         entry.category !== null &&
         entry.category !== undefined &&
@@ -195,20 +196,14 @@ export function createDiscoveryService(deps: {
             entry,
             config: deps.partitionConfig,
           });
-          const isReadLater = readLaterFeedIds.has(entry.feedId);
-          const sourceFamily = isReadLater
-            ? "read-later"
-            : classifyDiscoverySourceFamily(entry.url);
-          const sourceBookmarkId = isReadLater
-            ? parseBookmarkIdFragment(entry.url)
-            : undefined;
+          const sourceFamily = classifyDiscoverySourceFamily(entry.url);
           const metadata: Record<string, unknown> = {
             title: entry.title,
             feedId: entry.feedId,
             sourceFamily,
           };
-          if (sourceBookmarkId !== undefined) {
-            metadata.sourceBookmarkId = sourceBookmarkId;
+          if (bridgeFeedIds.has(entry.feedId) && entry.author !== undefined) {
+            metadata.bridgeToken = entry.author;
           }
           await deps.db.transaction().execute(async (trx) => {
             const dr = createDiscoveryRepository(trx);

@@ -204,7 +204,7 @@ async function main(): Promise<number> {
         minimumEntries: cfg.DIGEST_MIN_STORIES,
         lookbackDays: cfg.DIGEST_DISCOVERY_LOOKBACK_DAYS,
         sourceBalance: cfg.DIGEST_SOURCE_BALANCE !== "false",
-        readLaterFeedIds: parseRaindropBridgeFeedIds(
+        bridgeFeedIds: parseRaindropBridgeFeedIds(
           cfg.RAINDROP_BRIDGE_FEED_IDS,
         ),
         logger: createLogger({ baseFields: { worker: "discovery" } }),
