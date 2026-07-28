@@ -13,6 +13,7 @@ import { resolvePartitionKey } from "./partition-resolver.js";
 import { createMinifluxIngestionStateRepository } from "./miniflux-ingestion-state-repository.js";
 import {
   classifyDiscoverySourceFamily,
+  parseBookmarkIdFragment,
   selectBalancedEntries,
 } from "./source-coverage.js";
 
@@ -120,6 +121,12 @@ export function createDiscoveryService(deps: {
   minimumEntries?: number;
   lookbackDays?: number;
   sourceBalance?: boolean;
+  /**
+   * Miniflux feed IDs whose entries come from pnip-raindrop-bridge.
+   * Empty/undefined disables the integration: those entries are treated
+   * as regular feed items and no bookmark id is recovered.
+   */
+  readLaterFeedIds?: ReadonlySet<number>;
 }): DiscoveryService {
   return {
     async discover(input) {
@@ -155,6 +162,7 @@ export function createDiscoveryService(deps: {
       }
       let runHadFailure = false;
       const excludedCategoryIds = deps.excludedCategoryIds ?? new Set<number>();
+      const readLaterFeedIds = deps.readLaterFeedIds ?? new Set<number>();
       const isExcluded = (entry: MinifluxEntry): boolean =>
         entry.category !== null &&
         entry.category !== undefined &&
@@ -187,6 +195,21 @@ export function createDiscoveryService(deps: {
             entry,
             config: deps.partitionConfig,
           });
+          const isReadLater = readLaterFeedIds.has(entry.feedId);
+          const sourceFamily = isReadLater
+            ? "read-later"
+            : classifyDiscoverySourceFamily(entry.url);
+          const sourceBookmarkId = isReadLater
+            ? parseBookmarkIdFragment(entry.url)
+            : undefined;
+          const metadata: Record<string, unknown> = {
+            title: entry.title,
+            feedId: entry.feedId,
+            sourceFamily,
+          };
+          if (sourceBookmarkId !== undefined) {
+            metadata.sourceBookmarkId = sourceBookmarkId;
+          }
           await deps.db.transaction().execute(async (trx) => {
             const dr = createDiscoveryRepository(trx);
             const { event, created: c } = await dr.getOrCreate({
@@ -197,11 +220,7 @@ export function createDiscoveryService(deps: {
               url: entry.url,
               hash: entry.hash,
               publishedAt: entry.publishedAt,
-              metadata: {
-                title: entry.title,
-                feedId: entry.feedId,
-                sourceFamily: classifyDiscoverySourceFamily(entry.url),
-              },
+              metadata,
               partitionKey,
             });
             if (c) {
@@ -355,15 +374,18 @@ export function createDiscoveryService(deps: {
 
       if (!(await hasMinifluxReadReset(deps.db, edition.id))) {
         try {
-          await input.miniflux.markAllFeedsRead();
+          await input.miniflux.markAllFeedsRead({
+            excludeCategoryIds: excludedCategoryIds,
+          });
           await markMinifluxReadReset(deps.db, edition.id);
-          editionLog?.info("marked all Miniflux feeds read at edition boundary", {
+          editionLog?.info("marked Miniflux feeds read at edition boundary", {
             editionDate: resolved.selectedDate,
+            excludedCategoryIds: Array.from(excludedCategoryIds).sort((a, b) => a - b),
           });
         } catch (err) {
           // Ingestion remains successful if the read-state housekeeping call
           // fails. The null marker makes the next poll retry it.
-          editionLog?.warn("could not mark all Miniflux feeds read", {
+          editionLog?.warn("could not mark Miniflux feeds read at edition boundary", {
             error: err as Error,
             editionDate: resolved.selectedDate,
           });

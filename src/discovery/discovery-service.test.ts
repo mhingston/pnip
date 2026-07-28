@@ -89,6 +89,7 @@ interface FakeMinifluxCalls {
     status?: string;
   }>;
   markAllFeedsRead: number;
+  markAllFeedsReadExcludeCategoryIds: ReadonlySet<number>[];
   markEntryRead: number[];
 }
 
@@ -101,6 +102,7 @@ function createFakeMiniflux(opts: {
     listUnread: [],
     listEntries: [],
     markAllFeedsRead: 0,
+    markAllFeedsReadExcludeCategoryIds: [],
     markEntryRead: [],
   };
   let pageIndex = 0;
@@ -137,8 +139,13 @@ function createFakeMiniflux(opts: {
     ): Promise<MinifluxEntry[]> {
       return this.listEntries!({ ...listOpts, status: "unread" });
     },
-    async markAllFeedsRead(): Promise<void> {
+    async markAllFeedsRead(feedOpts?: {
+      excludeCategoryIds?: ReadonlySet<number>;
+    }): Promise<void> {
       calls.markAllFeedsRead++;
+      calls.markAllFeedsReadExcludeCategoryIds.push(
+        feedOpts?.excludeCategoryIds ?? new Set<number>(),
+      );
       if (opts.markAllFeedsReadThrows) throw new Error("fake mark-all-read failure");
     },
     markEntryRead,
@@ -322,6 +329,33 @@ describe("DiscoveryService", () => {
       .select("last_entry_id")
       .executeTakeFirstOrThrow();
     expect(state.last_entry_id).toBe("2");
+  });
+
+  it("passes excludedCategoryIds to markAllFeedsRead so non-ingested categories are left unchanged", async () => {
+    const { client, calls } = createFakeMiniflux({
+      pages: [
+        [
+          entry(1, "https://blog.example.com/1", 10, { id: 2, title: "Blogs" }),
+          entry(2, "https://www.reddit.com/r/test/2", 11, { id: 4, title: "Reddit" }),
+        ],
+        [],
+      ],
+    });
+    const service = createDiscoveryService({
+      db,
+      editionRepo,
+      discoveryRepo,
+      queue,
+      excludedCategoryIds: new Set([4]),
+    });
+
+    await service.discover({ editionDate: "2026-01-01", miniflux: client });
+
+    expect(calls.markAllFeedsRead).toBe(1);
+    expect(calls.markAllFeedsReadExcludeCategoryIds).toHaveLength(1);
+    const passed = calls.markAllFeedsReadExcludeCategoryIds[0];
+    expect(passed).toBeInstanceOf(Set);
+    expect(Array.from(passed).sort((a, b) => a - b)).toEqual([4]);
   });
 
   it("invalidates a queued cluster snapshot when a late entry is discovered", async () => {
@@ -762,5 +796,73 @@ describe("DiscoveryService", () => {
     expect(target.partitionKey).toBe("youtube");
     expect(target.url).toBe("https://x/1");
     expect(target.title).toBe("Entry 1");
+  });
+
+  it("read-later feed: stashes sourceBookmarkId and tags sourceFamily when feed id is configured", async () => {
+    const { client } = createFakeMiniflux({
+      pages: [
+        [
+          entry(1, "https://example.com/post#rb=12345", 42),
+          entry(2, "https://example.com/other#rb=67890&section=1", 42),
+          entry(3, "https://example.com/no-fragment", 42),
+          entry(4, "https://blog.example.com/4", 99),
+        ],
+        [],
+      ],
+    });
+    const service = createDiscoveryService({
+      db,
+      editionRepo,
+      discoveryRepo,
+      queue,
+      readLaterFeedIds: new Set([42]),
+    });
+    const result = await service.discover({
+      editionDate: "2026-03-01",
+      miniflux: client,
+    });
+
+    expect(result.created).toBe(4);
+
+    const event1 = await discoveryRepo.getByMinifluxEntryId(1);
+    const event2 = await discoveryRepo.getByMinifluxEntryId(2);
+    const event3 = await discoveryRepo.getByMinifluxEntryId(3);
+    const event4 = await discoveryRepo.getByMinifluxEntryId(4);
+
+    expect(event1?.metadata).toMatchObject({
+      sourceFamily: "read-later",
+      sourceBookmarkId: 12345,
+      feedId: 42,
+    });
+    expect(event2?.metadata).toMatchObject({
+      sourceFamily: "read-later",
+      sourceBookmarkId: 67890,
+    });
+    // No fragment means no sourceBookmarkId, but the family is still tagged.
+    expect(event3?.metadata).toMatchObject({ sourceFamily: "read-later" });
+    expect(event3?.metadata).not.toHaveProperty("sourceBookmarkId");
+    // Feed 99 is not in the bridge set; URL classification takes over.
+    expect(event4?.metadata).toMatchObject({
+      sourceFamily: "article",
+      feedId: 99,
+    });
+    expect(event4?.metadata).not.toHaveProperty("sourceBookmarkId");
+  });
+
+  it("read-later feed: empty feed-id set behaves like the original classification", async () => {
+    const { client } = createFakeMiniflux({
+      pages: [[entry(1, "https://example.com/post#rb=12345", 42)], []],
+    });
+    const service = createDiscoveryService({
+      db,
+      editionRepo,
+      discoveryRepo,
+      queue,
+    });
+    await service.discover({ editionDate: "2026-03-02", miniflux: client });
+
+    const event = await discoveryRepo.getByMinifluxEntryId(1);
+    expect(event?.metadata).toMatchObject({ sourceFamily: "article" });
+    expect(event?.metadata).not.toHaveProperty("sourceBookmarkId");
   });
 });

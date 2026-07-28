@@ -330,6 +330,59 @@ describe("miniflux-client", () => {
 
       expect(calls).toHaveLength(1);
     });
+
+    it("skips feeds whose category is in excludeCategoryIds", async () => {
+      const { fetch, calls } = makeFakeFetch((call) => {
+        const path = new URL(call.url).pathname;
+        if (path === "/v1/feeds") {
+          return jsonResponse([
+            { id: 3, title: "Blogs", category: { id: 2, title: "Blogs" } },
+            { id: 4, title: "Reddit /r/example", category: { id: 10, title: "Reddit" } },
+            { id: 5, title: "YouTube", category: { id: 12, title: "YouTube" } },
+          ]);
+        }
+        return jsonResponse({}, 200);
+      });
+      const client = createMinifluxClient({
+        baseUrl: "http://127.0.0.1:8080",
+        token: TOKEN,
+        fetchImpl: fetch,
+      });
+
+      await client.markAllFeedsRead({ excludeCategoryIds: new Set([10]) });
+
+      expect(calls.map((call) => new URL(call.url).pathname)).toEqual([
+        "/v1/feeds",
+        "/v1/feeds/3/mark-all-as-read",
+        "/v1/feeds/5/mark-all-as-read",
+      ]);
+    });
+
+    it("skips uncategorized feeds when excludeCategoryIds is empty", async () => {
+      const { fetch, calls } = makeFakeFetch((call) => {
+        const path = new URL(call.url).pathname;
+        if (path === "/v1/feeds") {
+          return jsonResponse([
+            { id: 3, title: "Blogs", category: { id: 2, title: "Blogs" } },
+            { id: 6, title: "No category" },
+          ]);
+        }
+        return jsonResponse({}, 200);
+      });
+      const client = createMinifluxClient({
+        baseUrl: "http://127.0.0.1:8080",
+        token: TOKEN,
+        fetchImpl: fetch,
+      });
+
+      await client.markAllFeedsRead({ excludeCategoryIds: new Set([10]) });
+
+      expect(calls.map((call) => new URL(call.url).pathname)).toEqual([
+        "/v1/feeds",
+        "/v1/feeds/3/mark-all-as-read",
+        "/v1/feeds/6/mark-all-as-read",
+      ]);
+    });
   });
 
   describe("error handling", () => {

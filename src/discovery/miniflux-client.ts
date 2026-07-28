@@ -58,8 +58,15 @@ export interface MinifluxClient {
   listEntries?(opts?: ListMinifluxEntriesOptions): Promise<MinifluxEntry[]>;
   /** @deprecated Use listEntries({ status: "unread" }) for unread-only callers. */
   listUnreadEntries(opts?: Omit<ListMinifluxEntriesOptions, "status">): Promise<MinifluxEntry[]>;
-  /** Mark every entry in every subscribed feed as read. */
-  markAllFeedsRead(): Promise<void>;
+  /**
+   * Mark every entry in every subscribed feed as read at the edition boundary.
+   * Feeds belonging to a category in `excludeCategoryIds` are left untouched,
+   * so categories that are no longer ingested (e.g. Reddit) keep their unread
+   * state across boundaries.
+   */
+  markAllFeedsRead(opts?: {
+    excludeCategoryIds?: ReadonlySet<number>;
+  }): Promise<void>;
   markEntryRead(entryId: number): Promise<void>;
   markEntriesRead(entryIds: number[]): Promise<void>;
   health(): Promise<{ ok: boolean; status: number; body?: string }>;
@@ -172,7 +179,10 @@ export function createMinifluxClient(opts: {
       return this.listEntries!({ ...listOpts, status: "unread" });
     },
 
-    async markAllFeedsRead(): Promise<void> {
+    async markAllFeedsRead(opts?: {
+      excludeCategoryIds?: ReadonlySet<number>;
+    }): Promise<void> {
+      const excludeCategoryIds = opts?.excludeCategoryIds;
       const feedsUrl = `${base}/v1/feeds`;
       const feedsRes = await doFetch(feedsUrl, {
         method: "GET",
@@ -186,6 +196,17 @@ export function createMinifluxClient(opts: {
       // concurrent writes. The operation is idempotent, so a partial failure
       // is safe to retry on the next discovery poll.
       for (const feed of feeds) {
+        if (
+          excludeCategoryIds &&
+          feed.category !== null &&
+          feed.category !== undefined &&
+          excludeCategoryIds.has(feed.category.id)
+        ) {
+          // Categories excluded from ingestion are also excluded from the
+          // read-state reset, so their unread entries remain visible in
+          // Miniflux across edition boundaries.
+          continue;
+        }
         const url = `${base}/v1/feeds/${feed.id}/mark-all-as-read`;
         const res = await doFetch(url, {
           method: "PUT",
