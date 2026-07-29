@@ -285,9 +285,9 @@ describe("ChunkDocumentWorker", () => {
 
     const childJobs = outcome.childJobs;
     expect(childJobs).toBeDefined();
-    expect(childJobs).toHaveLength(5);
+    expect(childJobs).toHaveLength(1);
     expect(childJobs!.map((j) => j.jobType).sort()).toEqual(
-      ["assign_topics", "classify_quality", "embed_chunk", "extract_entities", "summarize_chunk"],
+      ["enrich_chunk"],
     );
     expect(childJobs!.map((j) => j.jobType)).not.toContain("cluster_stories");
 
@@ -365,6 +365,21 @@ describe("ChunkDocumentWorker", () => {
     expect(chunkRepo.createBatch).toHaveBeenCalled();
     expect(enrichmentTracker.resetForDocument).toHaveBeenCalledWith("doc-1");
     expect(enrichmentTracker.resetForDocument).toHaveBeenCalledTimes(1);
+  });
+
+  it("records every section as a source of a compact document-level chunk", async () => {
+    const provenanceRepo: ProvenanceRepository = { recordLineage: vi.fn(), recordLineageBatch: vi.fn().mockResolvedValue(undefined), getSources: vi.fn(), getConsumers: vi.fn(), resolveCitations: vi.fn(), resolveToDocuments: vi.fn() };
+    const worker = createChunkDocumentWorker({
+      docRepo: { getById: vi.fn().mockResolvedValue({ id: "doc-1", edition_id: "edition-1" }) } as any,
+      sectionRepo: { getByDocumentId: vi.fn().mockResolvedValue([makeSectionRow({ id: "sec-1" }), makeSectionRow({ id: "sec-2", content_text: "Second" })]) } as any,
+      chunkRepo: { getByDocumentId: vi.fn().mockResolvedValue([]), createBatch: vi.fn().mockResolvedValue([makeChunkRow()]) } as any,
+      provenanceRepo, enrichmentTracker: makeEnrichmentTracker(), editionRepo: makeEditionRepo(),
+    });
+    await worker.execute(makeJob(), { db: {} as any, logger: silentLogger() });
+    expect(provenanceRepo.recordLineageBatch).toHaveBeenCalledWith(expect.arrayContaining([
+      expect.objectContaining({ sourceId: "sec-1", targetId: "chunk-a1b2c3d4" }),
+      expect.objectContaining({ sourceId: "sec-2", targetId: "chunk-a1b2c3d4" }),
+    ]));
   });
 
   it("skips when edition is not in a mutable state (state guard)", async () => {

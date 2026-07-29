@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { chunkSection, chunkAllSections } from "./chunking-service.js";
+import { chunkSection, chunkAllSections, chunkDocumentSections } from "./chunking-service.js";
 import type { ChunkableSection } from "./chunking-service.js";
 
 function makeSection(overrides: Partial<ChunkableSection> & { id: string; document_id: string }): ChunkableSection {
@@ -131,5 +131,34 @@ describe("chunkAllSections", () => {
     expect(chunks).toHaveLength(2);
     expect(chunks[0].sectionId).toBe("s1");
     expect(chunks[1].sectionId).toBe("s3");
+  });
+});
+
+describe("chunkDocumentSections", () => {
+  it("uses one document-level chunk for a normal short article, including multiple sections", () => {
+    const sections = [
+      makeSection({ id: "s1", document_id: "d1", content_text: "First section." }),
+      makeSection({ id: "s2", document_id: "d1", content_text: "Second section." }),
+    ];
+
+    expect(chunkDocumentSections(sections)).toMatchObject([
+      {
+        documentId: "d1",
+        sectionId: "s1",
+        sequence: 0,
+        text: "First section.\n\nSecond section.",
+      },
+    ]);
+  });
+
+  it("retains chunk-level splitting for transcripts and oversized documents", () => {
+    const transcript = makeSection({
+      id: "s1",
+      document_id: "d1",
+      content_text: "word ".repeat(2_000),
+      metadata: { timestamp_start: 0, timestamp_end: 600 },
+    });
+
+    expect(chunkDocumentSections([transcript]).length).toBeGreaterThan(1);
   });
 });

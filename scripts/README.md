@@ -61,9 +61,11 @@ never retracts or delays the already-published edition.
 ### `notebook-drain.sh`
 
 Runs every 10 minutes by default. It resolves the active partitions for the
-local edition date and calls `generate-notebook --wait` for each one. It
-creates missing notebooks and polls existing pending source ingestion. This is
-the background NotebookLM path, entirely separate from `daily-publish.sh`.
+local edition date and calls `generate-notebook --wait` for each one. It is
+safe to run before publication, but the NotebookLM service skips creation and
+polling until the edition status is `published`. After that it creates missing
+notebooks and polls existing pending source ingestion. This is the background
+NotebookLM path, entirely separate from `daily-publish.sh`.
 
 To catch up a specific edition manually:
 
@@ -145,13 +147,13 @@ End-to-end driver for the M6 (Edition Assembly & Lifecycle) code path on a live
 database. Demonstrates the full M6 flow end-to-end without depending on the
 external `fabric` / AI providers:
 
-1. Seeds fake enrichment rows (summaries, entities, topics, embeddings,
-   quality_classifications) for every document in the edition.
+1. Seeds the combined enrichment artifacts (summary, entities, topics, and
+   quality classification) plus embeddings for every document in the edition.
 2. Resets the edition's `cluster_stories_enqueued_at` claim and the
    `document_enrichment_status` tracker.
 3. Calls `EnrichmentGateService.markEnrichmentDoneAndMaybeEnqueueCluster` for
    each document, observing that the gate returns `null` until the **last**
-   document's final enrichment completes, then returns the
+   document's combined enrichment and embedding complete, then returns the
    `{ jobType: "cluster_stories", ... }` payload **exactly once**.
 4. Creates a story and its summary directly (the live `cluster_stories` and
    `summarize_story` workers are tested in the unit suite; the M6 logic
@@ -174,9 +176,9 @@ The script hard-codes the edition id it targets; update `editionId` in
 
 ### `demo-gate-fire.ts`
 
-Replays the enrichment-tracker + gate sequence against enrichments that were
-actually produced by the real LLM (via `process`). Useful for validating the
-`building → ready` claim atomicity outside the full CLI run.
+Replays the enrichment-tracker + gate sequence against combined enrichments
+and embeddings actually produced by the real LLM (via `process`). Useful for
+validating the `building → ready` claim atomicity outside the full CLI run.
 
 Run only after `process` has produced at least one document's worth of
 real-LLM enrichment rows; the script does not seed fake data. It re-marks the

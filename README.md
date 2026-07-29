@@ -31,7 +31,7 @@ Feeds, newsletters, YouTube, Reddit, podcasts, PDFs, ...
                       PNIP discovery cursor
                               │
                               ▼
-            expand → chunk → enrich → embed → cluster
+       expand → compact/long-form chunk → enrich → embed → cluster
                               │
                               ▼
                      daily edition assembly
@@ -48,6 +48,13 @@ Feeds, newsletters, YouTube, Reddit, podcasts, PDFs, ...
 ```
 
 Miniflux remains responsible for fetching and aggregating feeds. PNIP consumes the resulting entries and is responsible for content extraction, enrichment, clustering, digest generation, and publication.
+
+For ordinary articles, PNIP stores one document-level chunk and performs one
+combined AI enrichment call that produces the summary, entities, topics, and
+quality assessment. Long documents and timed material such as transcripts keep
+the smaller chunk representation so coverage and timestamp-level provenance are
+preserved. Normal-article embeddings use the title plus grounded summary;
+chunk-level embedding remains the fallback for long or timed material.
 
 ## Opinionated defaults
 
@@ -140,10 +147,11 @@ npm run digestive -- generate-email --date "$DATE"
 npm run digestive -- publish-edition --date "$DATE"
 ```
 
-The recommended `notebook-drain.sh` cron job creates and resumes NotebookLM
-notebooks after publication. `podcast-drain.sh` then starts or resumes any
-configured audio overviews once their notebooks are ready. These optional
-artifacts never hold up the email or edition publication.
+The recommended `notebook-drain.sh` cron job runs safely throughout the day,
+but creates or resumes NotebookLM notebooks only after the edition is
+published. `podcast-drain.sh` then starts or resumes any configured audio
+overviews once their notebooks are ready. These optional artifacts never hold
+up the email or edition publication.
 
 For a one-off operational catch-up, wait for NotebookLM after the edition has
 been published, then optionally resume the podcast:
@@ -229,7 +237,7 @@ PNIP's discovery call reads all entries exposed by the configured Miniflux accou
 | `EMBEDDING_CACHE_DIR` | No | library default | Local cache directory for the embedding model. |
 | `GOOGLE_GENERATIVE_AI_API_KEY` | No | — | Reserved in the current configuration schema. It is not used by the currently selectable AI providers. |
 
-`AI_PROVIDER=fake` uses deterministic text and embedding providers intended for development and tests.
+`AI_PROVIDER=fake` uses deterministic text and embedding providers intended for development and tests. One text-model call supplies the combined document or chunk enrichment (summary, entities, topics, and quality); the embedding runs afterwards from the grounded summary.
 
 ### Content extraction
 
@@ -362,7 +370,7 @@ All commands support `-h` and `--help`. Date arguments default to today where su
 | `digestive generate-notebook` | Create or resume a NotebookLM notebook. Without `--wait`, it starts ingestion without blocking; use `--wait` for a manual poll/resume. |
 | `digestive generate-podcast` | Start or resume an optional NotebookLM audio overview after its notebook is ready. Use `--partition` and `--wait` as needed. |
 | `digestive generate-email` | Render and send the HTML email. `--dry-run` skips sending. |
-| `digestive generate-edition` | Evaluate the Building → Ready enrichment gate. |
+| `digestive generate-edition` | Evaluate the Building → Ready gate, which requires combined enrichment and an embedding for every document (or each required long/timed chunk). |
 | `digestive publish-edition` | Gate-check and publish the edition. `--dry-run` is read-only. |
 
 ### Operations
@@ -424,8 +432,8 @@ src/config          Environment parsing and partition configuration
 src/database        PostgreSQL schema, migrations, and Kysely types
 src/discovery       Miniflux client, discovery cursor, and partition routing
 src/expansion       Article, YouTube, podcast, PDF, and Reddit plugins
-src/chunking        Deterministic chunks and provenance
-src/enrichment      Summaries, entities, topics, embeddings, and quality
+src/chunking        Document-level chunks plus long/timed-content splitting and provenance
+src/enrichment      Combined summary/entity/topic/quality enrichment and embeddings
 src/clustering      Story clustering and story summaries
 src/editions        Edition lifecycle, readiness, and assembly
 src/digest          Markdown, email, NotebookLM, and podcast outputs

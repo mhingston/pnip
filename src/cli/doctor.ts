@@ -36,10 +36,7 @@ const DEFAULT_MIGRATIONS_DIR = "src/database/migrations";
 const KNOWN_WORKERS = [
   "expand_document",
   "chunk_document",
-  "summarize_chunk",
-  "extract_entities",
-  "assign_topics",
-  "classify_quality",
+  "enrich_chunk",
   "embed_chunk",
   "cluster_stories",
   "summarize_story",

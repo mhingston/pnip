@@ -15,7 +15,10 @@ import { createEditionRepository } from "../editions/edition-repository.js";
 import { createEditionRolloverService } from "../editions/edition-rollover-service.js";
 import { createEnrichmentTrackerRepository } from "../editions/enrichment-tracker-repository.js";
 import { createEnrichmentGateService } from "../editions/enrichment-gate-service.js";
-import { reconcileMissingClusterJobs } from "../editions/cluster-reconciliation.js";
+import {
+  reconcileLegacyEnrichmentJobs,
+  reconcileMissingClusterJobs,
+} from "../editions/cluster-reconciliation.js";
 import { createDiscoveryRepository } from "../discovery/discovery-repository.js";
 import { createProcessingJobQueue } from "../jobs/queue/processing-job-queue.js";
 import { createDiscoveryService } from "../discovery/discovery-service.js";
@@ -36,13 +39,10 @@ import { createTransformersJsEmbeddingProvider } from "../ai/transformersjs-embe
 import { createFakeEmbeddingProvider } from "../ai/fake-embedding-provider.js";
 import { seedDefaultPrompts } from "../prompts/seed-default-prompts.js";
 import { createSummaryRepository } from "../enrichment/summary/summary-repository.js";
-import { createSummarizeChunkWorker } from "../enrichment/summary/summarize-chunk-worker.js";
+import { createEnrichChunkWorker } from "../enrichment/enrich-chunk-worker.js";
 import { createEntityRepository } from "../enrichment/entities/entity-repository.js";
-import { createExtractEntitiesWorker } from "../enrichment/entities/extract-entities-worker.js";
 import { createTopicRepository } from "../enrichment/topics/topic-repository.js";
-import { createAssignTopicsWorker } from "../enrichment/topics/assign-topics-worker.js";
 import { createQualityRepository } from "../enrichment/quality/quality-repository.js";
-import { createClassifyQualityWorker } from "../enrichment/quality/classify-quality-worker.js";
 import { createEmbeddingRepository } from "../enrichment/embeddings/embedding-repository.js";
 import { createEmbedChunkWorker } from "../enrichment/embeddings/embed-chunk-worker.js";
 import { createClusterStoriesWorker } from "../clustering/cluster-stories-worker.js";
@@ -318,9 +318,12 @@ async function main(): Promise<number> {
       });
 
       const summaryRepo = createSummaryRepository(db);
-      const summaryWorker = createSummarizeChunkWorker({
+      const enrichWorker = createEnrichChunkWorker({
         chunkRepo,
         summaryRepo,
+        entityRepo: createEntityRepository(db),
+        topicRepo: createTopicRepository(db),
+        qualityRepo: createQualityRepository(db),
         promptRepo,
         promptExecutor,
         provider: aiProvider,
@@ -331,47 +334,13 @@ async function main(): Promise<number> {
       });
 
       const entityRepo = createEntityRepository(db);
-      const entitiesWorker = createExtractEntitiesWorker({
-        chunkRepo,
-        entityRepo,
-        promptRepo,
-        promptExecutor,
-        provider: aiProvider,
-        provenanceRepo,
-        gate: enrichmentGate,
-        editionRepo,
-        model: cfg.AI_TEXT_MODEL,
-      });
-
       const topicRepo = createTopicRepository(db);
-      const topicsWorker = createAssignTopicsWorker({
-        chunkRepo,
-        topicRepo,
-        promptRepo,
-        promptExecutor,
-        provider: aiProvider,
-        provenanceRepo,
-        gate: enrichmentGate,
-        editionRepo,
-        model: cfg.AI_TEXT_MODEL,
-      });
-
-      const qualityRepo = createQualityRepository(db);
-      const qualityWorker = createClassifyQualityWorker({
-        chunkRepo,
-        qualityRepo,
-        promptRepo,
-        promptExecutor,
-        provider: aiProvider,
-        provenanceRepo,
-        gate: enrichmentGate,
-        editionRepo,
-        model: cfg.AI_TEXT_MODEL,
-      });
 
       const embeddingRepo = createEmbeddingRepository(db);
       const embedWorker = createEmbedChunkWorker({
         chunkRepo,
+        docRepo,
+        summaryRepo,
         embeddingRepo,
         embeddingProvider,
         provenanceRepo,
@@ -430,10 +399,7 @@ async function main(): Promise<number> {
         workers: [
           expandWorker,
           chunkWorker,
-          summaryWorker,
-          entitiesWorker,
-          topicsWorker,
-          qualityWorker,
+          enrichWorker,
           embedWorker,
           clusterStoriesWorker,
           summarizeStoryWorker,
@@ -453,6 +419,13 @@ async function main(): Promise<number> {
         processLogger.info("recovered stale running jobs at start of drain", {
           recovered,
           thresholdMs: STALE_LOCK_THRESHOLD_MS,
+        });
+      }
+
+      const reconciledLegacyEnrichment = await reconcileLegacyEnrichmentJobs(db);
+      if (reconciledLegacyEnrichment > 0) {
+        processLogger.info("replaced legacy enrichment jobs with combined enrichment", {
+          jobCount: reconciledLegacyEnrichment,
         });
       }
 

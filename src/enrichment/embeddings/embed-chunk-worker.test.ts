@@ -103,6 +103,13 @@ function makeDeps(overrides?: {
     deleteByChunkId: vi.fn(),
   };
 
+  const docRepo = {
+    getById: vi.fn().mockResolvedValue({ id: "doc-1", title: "Test document" }),
+  };
+  const summaryRepo = {
+    getByChunkId: vi.fn().mockResolvedValue({ content: "A concise grounded summary." }),
+  };
+
   const provenanceRepo: ProvenanceRepository = {
     recordLineage: vi.fn().mockResolvedValue(undefined),
     recordLineageBatch: vi.fn(),
@@ -126,7 +133,7 @@ function makeDeps(overrides?: {
     assertProcessingAllowed: vi.fn(),
   };
 
-  return { chunkRepo, embeddingProvider, embeddingRepo, provenanceRepo, gate, editionRepo };
+  return { chunkRepo, docRepo, summaryRepo, embeddingProvider, embeddingRepo, provenanceRepo, gate, editionRepo };
 }
 
 describe("EmbedChunkWorker", () => {
@@ -137,7 +144,7 @@ describe("EmbedChunkWorker", () => {
     expect(worker.supports("other")).toBe(false);
   });
 
-  it("embeds chunk text and records provenance", async () => {
+  it("embeds the document title and grounded summary, then records provenance", async () => {
     const deps = makeDeps({ chunk: makeChunk(), providerDim: 8 });
     const worker = createEmbedChunkWorker(deps);
 
@@ -146,7 +153,9 @@ describe("EmbedChunkWorker", () => {
       logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn(), child: vi.fn() } as any,
     });
 
-    expect(deps.embeddingProvider.embed).toHaveBeenCalledWith(["Hello world."]);
+    expect(deps.embeddingProvider.embed).toHaveBeenCalledWith([
+      "Title: Test document\n\nSummary: A concise grounded summary.",
+    ]);
     expect(deps.embeddingRepo.replaceForChunk).toHaveBeenCalledWith(
       expect.objectContaining({
         chunkId: "chunk-1",

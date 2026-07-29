@@ -132,20 +132,17 @@ describe("EnrichmentGateService", () => {
   it("returns null when the document is not yet fully enriched after the mark", async () => {
     const ed = await makeEdition("2026-02-02");
     const doc = await makeDoc(ed.id, "https://e.com/2");
-    for (const t of REQUIRED_ENRICHMENT_TYPES) {
-      if (t === "summarize_chunk" || t === "classify_quality") continue;
-      await tracker.markDone(doc.id, t);
-    }
     const out = await gate.markEnrichmentDoneAndMaybeEnqueueCluster(
       ed.id,
       doc.id,
-      "summarize_chunk",
+      "enrich_chunk",
+      "not-yet-complete-chunk",
     );
     expect(out).toBeNull();
     expect(await tracker.getEditionEnqueuedAt(ed.id)).toBeNull();
     expect(
       (await tracker.getCompletedTypesForDocument(doc.id)).length,
-    ).toBe(4);
+    ).toBe(0);
   });
 
   it("returns null when the document is fully enriched but other edition documents are not", async () => {
@@ -153,11 +150,11 @@ describe("EnrichmentGateService", () => {
     const d1 = await makeDoc(ed.id, "https://e.com/3a");
     const d2 = await makeDoc(ed.id, "https://e.com/3b");
     for (const t of REQUIRED_ENRICHMENT_TYPES) await tracker.markDone(d1.id, t);
-    await markAllBut(ed.id, d2.id, "embed_chunk");
+    await markAllBut(ed.id, d2.id, "enrich_chunk");
     const out = await gate.markEnrichmentDoneAndMaybeEnqueueCluster(
       ed.id,
       d2.id,
-      "summarize_chunk",
+      "embed_chunk",
     );
     expect(out).toBeNull();
     expect(await tracker.getEditionEnqueuedAt(ed.id)).toBeNull();
@@ -166,11 +163,11 @@ describe("EnrichmentGateService", () => {
   it("enqueues cluster_stories exactly once when the last enrichment completes the edition", async () => {
     const ed = await makeEdition("2026-02-04");
     const doc = await makeDoc(ed.id, "https://e.com/4");
-    await markAllBut(ed.id, doc.id, "classify_quality");
+    await markAllBut(ed.id, doc.id, "embed_chunk");
     const out = await gate.markEnrichmentDoneAndMaybeEnqueueCluster(
       ed.id,
       doc.id,
-      "classify_quality",
+      "embed_chunk",
     );
     expect(out).not.toBeNull();
     expect(out!.jobType).toBe("cluster_stories");
@@ -221,19 +218,19 @@ describe("EnrichmentGateService", () => {
         },
       ])
       .execute();
-    await markAllBut(ed.id, doc.id, "summarize_chunk");
+    await markAllBut(ed.id, doc.id, "enrich_chunk");
     const jobs = await db
       .insertInto("processing_jobs")
       .values([
         {
-          job_type: "summarize_chunk",
+          job_type: "enrich_chunk",
           edition_id: ed.id,
           target: JSON.stringify({ chunkId: "gate-chunk-1", documentId: doc.id }),
           status: "completed",
           completed_at: new Date(),
         },
         {
-          job_type: "summarize_chunk",
+          job_type: "enrich_chunk",
           edition_id: ed.id,
           target: JSON.stringify({ chunkId: "gate-chunk-2", documentId: doc.id }),
           status: "pending",
@@ -245,12 +242,12 @@ describe("EnrichmentGateService", () => {
     const first = await gate.markEnrichmentDoneAndMaybeEnqueueCluster(
       ed.id,
       doc.id,
-      "summarize_chunk",
+      "enrich_chunk",
       "gate-chunk-1",
     );
     expect(first).toBeNull();
     expect(await tracker.getCompletedTypesForDocument(doc.id)).not.toContain(
-      "summarize_chunk",
+      "enrich_chunk",
     );
 
     await db
@@ -261,7 +258,7 @@ describe("EnrichmentGateService", () => {
     const second = await gate.markEnrichmentDoneAndMaybeEnqueueCluster(
       ed.id,
       doc.id,
-      "summarize_chunk",
+      "enrich_chunk",
       "gate-chunk-2",
     );
     expect(second?.jobType).toBe("cluster_stories");
@@ -275,13 +272,13 @@ describe("EnrichmentGateService", () => {
     const first = await gate.markEnrichmentDoneAndMaybeEnqueueCluster(
       ed.id,
       doc.id,
-      "summarize_chunk",
+      "enrich_chunk",
     );
     expect(first).not.toBeNull();
     const second = await gate.markEnrichmentDoneAndMaybeEnqueueCluster(
       ed.id,
       doc.id,
-      "summarize_chunk",
+      "enrich_chunk",
     );
     expect(second).toBeNull();
     const third = await gate.markEnrichmentDoneAndMaybeEnqueueCluster(
@@ -320,7 +317,7 @@ describe("EnrichmentGateService", () => {
     const first = await gate.markEnrichmentDoneAndMaybeEnqueueCluster(
       ed.id,
       doc.id,
-      "summarize_chunk",
+      "enrich_chunk",
     );
     expect(first).not.toBeNull();
 
@@ -329,14 +326,14 @@ describe("EnrichmentGateService", () => {
     const after = await gate.markEnrichmentDoneAndMaybeEnqueueCluster(
       ed.id,
       doc.id,
-      "summarize_chunk",
+      "enrich_chunk",
     );
     expect(after).toBeNull();
     await tracker.resetEditionEnqueue(ed.id);
     const re = await gate.markEnrichmentDoneAndMaybeEnqueueCluster(
       ed.id,
       doc.id,
-      "summarize_chunk",
+      "enrich_chunk",
     );
     expect(re).not.toBeNull();
     expect(re!.jobType).toBe("cluster_stories");

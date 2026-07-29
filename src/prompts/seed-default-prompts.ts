@@ -11,6 +11,21 @@ export interface PromptDefinition {
 
 export const DEFAULT_PROMPTS: readonly PromptDefinition[] = [
   {
+    name: "enrichment",
+    purpose: "Combined per-chunk summary, entity, topic, and quality enrichment",
+    template: `Analyse one document chunk. Return ONLY a JSON object with:
+- "summary": concise 1-3 sentence summary grounded in the text
+- "claims": one or more complete, atomic claims supported by the text
+- "entities": array of {"name", "type", "mention"}; type is person, organization, location, product, event, or concept
+- "topics": array of 1-5 {"topic", "confidence", "relevance"}; topic is a short lowercase phrase and numbers are in [0, 1]
+- "quality": {"label": "high" | "medium" | "low", "confidence": number in [0, 1], "reasoning": string | null}
+
+Return empty arrays where appropriate. Do not invent facts.
+
+Chunk text:
+{{chunk_text}}`,
+  },
+  {
     name: "summary",
     purpose: "Per-chunk summary with claim citations",
     template: `You are summarising a single chunk of a document. Produce a JSON object with two fields:

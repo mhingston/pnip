@@ -6,14 +6,10 @@ import type { ChunkRepository } from "./chunk-repository.js";
 import type { ProvenanceRepository } from "../provenance/provenance-repository.js";
 import type { EnrichmentTrackerRepository } from "../editions/enrichment-tracker-repository.js";
 import type { EditionRepository } from "../editions/edition-repository.js";
-import { chunkAllSections, type ChunkableSection } from "./chunking-service.js";
+import { chunkDocumentSections, type ChunkableSection } from "./chunking-service.js";
 
 const ENRICHMENT_JOB_TYPES = [
-  "summarize_chunk",
-  "extract_entities",
-  "assign_topics",
-  "embed_chunk",
-  "classify_quality",
+  "enrich_chunk",
 ] as const;
 
 interface ChunkTarget {
@@ -91,7 +87,7 @@ export function createChunkDocumentWorker(deps: {
         await deps.enrichmentTracker.resetForDocument(documentId);
       }
 
-      const chunkInputs = chunkAllSections(sections.map(toChunkableSection));
+      const chunkInputs = chunkDocumentSections(sections.map(toChunkableSection));
       if (chunkInputs.length === 0) {
         ctx.logger.info("chunking produced no chunks", { documentId });
         return {};
@@ -100,12 +96,19 @@ export function createChunkDocumentWorker(deps: {
       const chunks = await deps.chunkRepo.createBatch(chunkInputs);
       ctx.logger.info("chunks created", { documentId, count: chunks.length });
 
+      // The compact, document-level chunk intentionally contains all normal
+      // sections. Record each source section, rather than only the section
+      // used to satisfy document_chunks.section_id, so provenance remains
+      // complete for multi-section articles.
+      const lineageSources = chunks.length === 1
+        ? sections.map((section) => ({ sourceId: section.id, targetId: chunks[0]!.id }))
+        : chunks.map((chunk) => ({ sourceId: chunk.section_id, targetId: chunk.id }));
       await deps.provenanceRepo.recordLineageBatch(
-        chunks.map((c) => ({
+        lineageSources.map(({ sourceId, targetId }) => ({
           sourceType: "section",
-          sourceId: c.section_id,
+          sourceId,
           targetType: "chunk",
-          targetId: c.id,
+          targetId,
           relation: "chunked_from",
         })),
       );

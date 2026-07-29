@@ -23,6 +23,10 @@ export interface ChunkableSection {
 }
 
 const TARGET_TOKEN_COUNT = 1000;
+// Most web articles fit comfortably in a single model request.  Keep the
+// chunk representation for genuinely long material and timed transcripts,
+// where splitting remains necessary for coverage and citations.
+const DOCUMENT_CHUNKING_THRESHOLD = TARGET_TOKEN_COUNT * 2;
 
 function estimateTokens(text: string): number {
   return Math.max(1, Math.ceil(text.length / 4));
@@ -175,4 +179,43 @@ export function chunkAllSections(sections: ChunkableSection[]): ChunkInput[] {
   }
 
   return chunks;
+}
+
+function isTimedSection(section: ChunkableSection): boolean {
+  const { timestampStart, timestampEnd } = parseSectionMetadata(section.metadata);
+  return timestampStart !== undefined || timestampEnd !== undefined;
+}
+
+/**
+ * Make the default unit of enrichment a whole article.  A document-level
+ * chunk is still stored in document_chunks so all existing provenance and
+ * citation consumers continue to work unchanged.  Long/timed content falls
+ * back to the established section chunker.
+ */
+export function chunkDocumentSections(sections: ChunkableSection[]): ChunkInput[] {
+  const nonEmpty = sections.filter((section) => Boolean(section.content_text?.trim()));
+  if (nonEmpty.length === 0) return [];
+
+  const text = nonEmpty.map((section) => section.content_text!.trim()).join("\n\n");
+  if (
+    estimateTokens(text) > DOCUMENT_CHUNKING_THRESHOLD ||
+    nonEmpty.some(isTimedSection)
+  ) {
+    return chunkAllSections(nonEmpty);
+  }
+
+  const first = nonEmpty[0];
+  const last = nonEmpty[nonEmpty.length - 1];
+  return [{
+    id: deterministicChunkId(first.document_id, first.id, 0),
+    documentId: first.document_id,
+    sectionId: first.id,
+    sequence: 0,
+    text,
+    tokenCount: estimateTokens(text),
+    startOffset: 0,
+    endOffset: text.length,
+    paragraphStart: 0,
+    paragraphEnd: Math.max(0, (last.content_text?.split(/\n\n+/).length ?? 1) - 1),
+  }];
 }

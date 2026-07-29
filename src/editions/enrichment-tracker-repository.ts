@@ -2,11 +2,8 @@ import { Kysely, sql, Transaction } from "kysely";
 import type { Database } from "../database/kysely.js";
 
 export const REQUIRED_ENRICHMENT_TYPES = [
-  "summarize_chunk",
-  "extract_entities",
-  "assign_topics",
+  "enrich_chunk",
   "embed_chunk",
-  "classify_quality",
 ] as const;
 
 export type EnrichmentType = (typeof REQUIRED_ENRICHMENT_TYPES)[number];

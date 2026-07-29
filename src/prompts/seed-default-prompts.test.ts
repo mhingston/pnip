@@ -81,10 +81,11 @@ describe("seedDefaultPrompts", () => {
 
   it("creates all default prompt versions on first run", async () => {
     const summary = await seedDefaultPrompts(promptRepo);
-    expect(summary.created).toBe(8);
+    expect(summary.created).toBe(9);
     expect(summary.skipped).toBe(0);
     expect(summary.results.map((r) => `${r.name}@v${r.version}`).sort()).toEqual(
       [
+        "enrichment@v1",
         "entities@v1",
         "quality@v1",
         "story_summary@v1",
@@ -108,7 +109,7 @@ describe("seedDefaultPrompts", () => {
     await seedDefaultPrompts(promptRepo);
     const second = await seedDefaultPrompts(promptRepo);
     expect(second.created).toBe(0);
-    expect(second.skipped).toBe(8);
+    expect(second.skipped).toBe(9);
 
     const all = await promptRepo.listByName("story_summary");
     expect(all).toHaveLength(3);
@@ -122,7 +123,7 @@ describe("seedDefaultPrompts", () => {
     });
 
     const summary = await seedDefaultPrompts(promptRepo);
-    expect(summary.created).toBe(7);
+    expect(summary.created).toBe(8);
     expect(summary.skipped).toBe(1);
     const skipped = summary.results.find((r) => r.name === "summary");
     expect(skipped?.status).toBe("skipped");

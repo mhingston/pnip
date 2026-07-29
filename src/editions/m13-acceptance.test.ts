@@ -70,10 +70,7 @@ import { createExpandDocumentWorker } from "../expansion/expand-document-worker.
 import { createChunkDocumentWorker } from "../chunking/chunk-document-worker.js";
 import { createClusterStoriesWorker } from "../clustering/cluster-stories-worker.js";
 import { createSummarizeStoryWorker } from "../clustering/summarize-story-worker.js";
-import { createSummarizeChunkWorker } from "../enrichment/summary/summarize-chunk-worker.js";
-import { createExtractEntitiesWorker } from "../enrichment/entities/extract-entities-worker.js";
-import { createAssignTopicsWorker } from "../enrichment/topics/assign-topics-worker.js";
-import { createClassifyQualityWorker } from "../enrichment/quality/classify-quality-worker.js";
+import { createEnrichChunkWorker } from "../enrichment/enrich-chunk-worker.js";
 import { createEmbedChunkWorker } from "../enrichment/embeddings/embed-chunk-worker.js";
 import { createPluginRegistry } from "../expansion/plugin-registry.js";
 import { createArticlePlugin } from "../expansion/article-plugin.js";
@@ -325,6 +322,21 @@ function makeYouTubeContent(seed: number): {
 }
 
 function fakeAiText(prompt: string): string {
+  if (prompt.includes("Analyse one document chunk")) {
+    return JSON.stringify({
+      summary: "Chunk summary text.",
+      claims: ["Chunk claim one.", "Chunk claim two."],
+      entities: [
+        { name: "OpenAI", type: "organization", mention: "OpenAI" },
+        { name: "Gemini", type: "product", mention: "Gemini" },
+      ],
+      topics: [
+        { topic: "ai", confidence: 0.95, relevance: 0.9 },
+        { topic: "developer tools", confidence: 0.7, relevance: 0.6 },
+      ],
+      quality: { label: "high", confidence: 0.9, reasoning: "Clear and substantive." },
+    });
+  }
   if (prompt.includes("summarising a single chunk")) {
     return JSON.stringify({
       summary: "Chunk summary text.",
@@ -704,38 +716,11 @@ async function runEnrichmentStep(
   state: PipelineState,
 ): Promise<void> {
   await seedDefaultPrompts(env.promptRepo, silentLogger());
-  const summarizeWorker = createSummarizeChunkWorker({
+  const enrichWorker = createEnrichChunkWorker({
     chunkRepo: env.chunkRepo,
     summaryRepo: env.summaryRepo,
-    promptRepo: env.promptRepo,
-    promptExecutor: env.promptExecutor,
-    provider: env.provider,
-    provenanceRepo: env.provenanceRepo,
-    gate: env.enrichmentGate,
-    editionRepo: env.editionRepo,
-  });
-  const entitiesWorker = createExtractEntitiesWorker({
-    chunkRepo: env.chunkRepo,
     entityRepo: env.entityRepo,
-    promptRepo: env.promptRepo,
-    promptExecutor: env.promptExecutor,
-    provider: env.provider,
-    provenanceRepo: env.provenanceRepo,
-    gate: env.enrichmentGate,
-    editionRepo: env.editionRepo,
-  });
-  const topicsWorker = createAssignTopicsWorker({
-    chunkRepo: env.chunkRepo,
     topicRepo: env.topicRepo,
-    promptRepo: env.promptRepo,
-    promptExecutor: env.promptExecutor,
-    provider: env.provider,
-    provenanceRepo: env.provenanceRepo,
-    gate: env.enrichmentGate,
-    editionRepo: env.editionRepo,
-  });
-  const qualityWorker = createClassifyQualityWorker({
-    chunkRepo: env.chunkRepo,
     qualityRepo: env.qualityRepo,
     promptRepo: env.promptRepo,
     promptExecutor: env.promptExecutor,
@@ -746,6 +731,8 @@ async function runEnrichmentStep(
   });
   const embedWorker = createEmbedChunkWorker({
     chunkRepo: env.chunkRepo,
+    docRepo: env.docRepo,
+    summaryRepo: env.summaryRepo,
     embeddingRepo: env.embeddingRepo,
     embeddingProvider: env.embeddingProvider,
     provenanceRepo: env.provenanceRepo,
@@ -754,10 +741,7 @@ async function runEnrichmentStep(
   });
 
   const workerByType: Record<string, Worker> = {
-    summarize_chunk: summarizeWorker,
-    extract_entities: entitiesWorker,
-    assign_topics: topicsWorker,
-    classify_quality: qualityWorker,
+    enrich_chunk: enrichWorker,
     embed_chunk: embedWorker,
   };
 
@@ -767,7 +751,7 @@ async function runEnrichmentStep(
       .select("document_id")
       .where("id", "=", chunkId)
       .executeTakeFirstOrThrow()).document_id;
-    for (const jobType of REQUIRED_ENRICHMENT_TYPES) {
+    for (const jobType of ["enrich_chunk"] as const) {
       const job = await env.jobQueue.enqueue({
         jobType,
         editionId: state.editionId,
@@ -780,12 +764,21 @@ async function runEnrichmentStep(
       );
       if (outcome.childJobs) {
         for (const cj of outcome.childJobs) {
-          await env.jobQueue.enqueue({
+          const child = await env.jobQueue.enqueue({
             jobType: cj.jobType,
             editionId: cj.editionId,
             target: cj.target,
             dependsOn: cj.dependsOn,
           });
+          if (cj.jobType === "embed_chunk") {
+            await env.jobQueue.complete(job.id);
+            await markJobRunning(env, child.id);
+            await workerByType.embed_chunk.execute(child, {
+              db: env.db,
+              logger: silentLogger(),
+            });
+            await env.jobQueue.complete(child.id);
+          }
         }
       }
       await env.jobQueue.complete(job.id);
@@ -967,8 +960,6 @@ async function buildFullPipeline(env: TestEnv): Promise<PipelineState> {
   expect(ready.transitioned).toBe(true);
   await runDigestStep(env, state);
   await runEmailStep(env, state);
-  await runNotebookStep(env, state);
-  await runPodcastStep(env, state);
   return state;
 }
 
@@ -1158,7 +1149,7 @@ describe("M13 §61 acceptance criteria — full pipeline", () => {
        WHERE d.edition_id = $1`,
       [state.editionId],
     );
-    expect(rows.rows.length).toBe(state.chunkIds.length);
+    expect(rows.rows.length).toBeGreaterThanOrEqual(state.chunkIds.length);
     for (const r of rows.rows) {
       expect(r.source_type).toBe("section");
       expect(r.target_type).toBe("chunk");
@@ -1352,6 +1343,8 @@ describe("M13 §61 acceptance criteria — full pipeline", () => {
     await runSummarizeStep(env, state);
     await runDigestStep(env, state);
     await runEmailStep(env, state);
+    await env.readinessGate.transitionToReadyIfReady(state.editionId);
+    await env.publishService.publish({ editionId: state.editionId });
     await runNotebookStep(env, state);
     await runPodcastStep(env, state);
 

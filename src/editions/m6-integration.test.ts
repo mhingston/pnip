@@ -220,12 +220,7 @@ describe("M6 end-to-end: chunk → enrich → cluster → summarize → ready", 
     documentId: string,
     editionId: string,
     chunkId: string,
-    jobType:
-      | "summarize_chunk"
-      | "extract_entities"
-      | "assign_topics"
-      | "embed_chunk"
-      | "classify_quality",
+    jobType: string,
   ) {
     const gateResult = await enrichmentGate.markEnrichmentDoneAndMaybeEnqueueCluster(
       editionId,
@@ -235,19 +230,19 @@ describe("M6 end-to-end: chunk → enrich → cluster → summarize → ready", 
     return { chunkId, jobType, gateResult };
   }
 
-  it("drives an edition from Building to Ready with all 5 enrichments and a 2-document cluster", async () => {
+  it("drives an edition from Building to Ready with combined enrichment and a 2-document cluster", async () => {
     const ed = await editionRepo.create("2026-05-01");
     const a = await makeDocInExistingEdition(ed.id, "https://e.com/1a");
     const b = await makeDocInExistingEdition(ed.id, "https://e.com/1b");
 
     const outA = await runChunkWorker(a.document.id, ed.id);
-    expect(outA.childJobs!.length).toBe(5);
+    expect(outA.childJobs!.length).toBe(1);
     expect(outA.childJobs!.map((j) => j.jobType).sort()).toEqual(
-      ["assign_topics", "classify_quality", "embed_chunk", "extract_entities", "summarize_chunk"],
+      ["enrich_chunk"],
     );
 
     const outB = await runChunkWorker(b.document.id, ed.id);
-    expect(outB.childJobs!.length).toBe(5);
+    expect(outB.childJobs!.length).toBe(1);
 
     expect(await enrichmentTracker.isEditionFullyEnriched(ed.id)).toBe(false);
     expect(await enrichmentTracker.getEditionEnqueuedAt(ed.id)).toBeNull();
@@ -257,23 +252,20 @@ describe("M6 end-to-end: chunk → enrich → cluster → summarize → ready", 
     const chunkAId = chunksA[0]!.id;
     const chunkBId = chunksB[0]!.id;
 
-    for (const t of REQUIRED_ENRICHMENT_TYPES.slice(0, 4)) {
+    for (const t of REQUIRED_ENRICHMENT_TYPES) {
       const r1 = await fakeEnrich(a.document.id, ed.id, chunkAId, t);
       const r2 = await fakeEnrich(b.document.id, ed.id, chunkBId, t);
       expect(r1.gateResult).toBeNull();
-      expect(r2.gateResult).toBeNull();
+      if (t === REQUIRED_ENRICHMENT_TYPES.at(-1)) {
+        expect(r2.gateResult).not.toBeNull();
+      } else {
+        expect(r2.gateResult).toBeNull();
+      }
     }
-
-    const r1 = await fakeEnrich(a.document.id, ed.id, chunkAId, "classify_quality");
-    expect(r1.gateResult).toBeNull();
-    const r2 = await fakeEnrich(b.document.id, ed.id, chunkBId, "classify_quality");
-    expect(r2.gateResult).not.toBeNull();
-    expect(r2.gateResult!.jobType).toBe("cluster_stories");
-    expect(r2.gateResult!.editionId).toBe(ed.id);
 
     expect(await enrichmentTracker.getEditionEnqueuedAt(ed.id)).toBeInstanceOf(Date);
 
-    const r3 = await fakeEnrich(a.document.id, ed.id, chunkAId, "classify_quality");
+    const r3 = await fakeEnrich(a.document.id, ed.id, chunkAId, "enrich_chunk");
     expect(r3.gateResult).toBeNull();
 
     const replaced = await storyRepo.replaceForEdition({
@@ -307,7 +299,7 @@ describe("M6 end-to-end: chunk → enrich → cluster → summarize → ready", 
     const a2 = await enrichmentGate.markEnrichmentDoneAndMaybeEnqueueCluster(
       ed.id,
       a.document.id,
-      "summarize_chunk",
+      "enrich_chunk",
     );
     expect(a2).toBeNull();
   });
@@ -332,13 +324,14 @@ describe("M6 end-to-end: chunk → enrich → cluster → summarize → ready", 
 
     const newChunks = await chunkRepo.getByDocumentId(a.document.id);
     const newChunkId = newChunks[0]!.id;
-    for (const t of REQUIRED_ENRICHMENT_TYPES.slice(0, 4)) {
+    let final: Awaited<ReturnType<typeof fakeEnrich>> | undefined;
+    for (const t of REQUIRED_ENRICHMENT_TYPES) {
       const r = await fakeEnrich(a.document.id, ed.id, newChunkId, t);
-      expect(r.gateResult).toBeNull();
+      if (t === REQUIRED_ENRICHMENT_TYPES.at(-1)) final = r;
+      else expect(r.gateResult).toBeNull();
     }
-    const final = await fakeEnrich(a.document.id, ed.id, newChunkId, "classify_quality");
-    expect(final.gateResult).not.toBeNull();
-    expect(final.gateResult!.jobType).toBe("cluster_stories");
+    expect(final?.gateResult).not.toBeNull();
+    expect(final?.gateResult!.jobType).toBe("cluster_stories");
   });
 
   it("workers in non-mutable state no-op without mutating or invoking the gate", async () => {

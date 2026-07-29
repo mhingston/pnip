@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import type { Worker, WorkerContext, WorkerOutcome } from "../../jobs/workers/worker.js";
 import type { ProcessingJob } from "../../database/kysely.js";
 import type { ChunkRepository } from "../../chunking/chunk-repository.js";
+import type { DocumentRepository } from "../../expansion/document-repository.js";
+import type { SummaryRepository } from "../summary/summary-repository.js";
 import type { EmbeddingProvider } from "../../ai/embedding-provider.js";
 import type { ProvenanceRepository } from "../../provenance/provenance-repository.js";
 import type { EmbeddingRepository } from "./embedding-repository.js";
@@ -12,6 +14,8 @@ const ENRICHMENT_TYPE = "embed_chunk";
 
 export interface EmbedChunkDeps {
   chunkRepo: ChunkRepository;
+  docRepo: Pick<DocumentRepository, "getById">;
+  summaryRepo: Pick<SummaryRepository, "getByChunkId">;
   embeddingRepo: EmbeddingRepository;
   embeddingProvider: EmbeddingProvider;
   provenanceRepo: ProvenanceRepository;
@@ -37,6 +41,10 @@ function parseTarget(target: unknown): ChunkTarget {
 
 function hashInput(text: string): string {
   return createHash("sha256").update(text).digest("hex");
+}
+
+function embeddingText(title: string | null, summary: string): string {
+  return `Title: ${title?.trim() || "Untitled"}\n\nSummary: ${summary.trim()}`;
 }
 
 export function createEmbedChunkWorker(deps: EmbedChunkDeps): Worker {
@@ -72,9 +80,17 @@ export function createEmbedChunkWorker(deps: EmbedChunkDeps): Worker {
         return {};
       }
 
-      const inputHash = hashInput(found.content_text);
+      const [document, summary] = await Promise.all([
+        deps.docRepo.getById(documentId),
+        deps.summaryRepo.getByChunkId(chunkId),
+      ]);
+      // The embedding is deliberately document-oriented: title plus the
+      // grounded summary is a substantially better clustering signal than a
+      // raw excerpt. The summary is created by enrich_chunk before this job.
+      const text = embeddingText(document?.title ?? null, summary?.content ?? found.content_text);
+      const inputHash = hashInput(text);
 
-      const result = await deps.embeddingProvider.embed([found.content_text]);
+      const result = await deps.embeddingProvider.embed([text]);
       const vector = result.vectors[0];
       if (!vector) {
         throw new Error("embedding provider returned no vector");
