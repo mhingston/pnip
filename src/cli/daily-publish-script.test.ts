@@ -39,7 +39,9 @@ describe("daily-publish orchestration", () => {
   });
 
   it("coordinates the publication boundary with the digest drain", () => {
-    expect(dailyPublishScript).toContain("/tmp/pnip-edition-boundary.lock");
+    expect(dailyPublishScript).toContain('BOUNDARY_LOCK_DIR="/tmp/pnip-edition-boundary.lock.d"');
+    expect(dailyPublishScript).toContain('BOUNDARY_LOCK_FILE="$BOUNDARY_LOCK_DIR/lock"');
+    expect(digestDrainScript).toContain('BOUNDARY_LOCK_DIR="/tmp/pnip-edition-boundary.lock.d"');
     expect(dailyPublishScript).toContain("flock --exclusive 201");
     expect(digestDrainScript).toContain("flock --shared --nonblock 202");
   });

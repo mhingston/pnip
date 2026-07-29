@@ -65,7 +65,8 @@ if ! flock --nonblock 200; then
   echo "[$(date '+%Y-%m-%d %H:%M:%S %Z')] another daily-publish is in progress (lock=$LOCK_FILE); exiting cleanly"
   exit 0
 fi
-BOUNDARY_LOCK_FILE="/tmp/pnip-edition-boundary.lock"
+BOUNDARY_LOCK_DIR="/tmp/pnip-edition-boundary.lock.d"
+BOUNDARY_LOCK_FILE="$BOUNDARY_LOCK_DIR/lock"
 
 DATE="${PNIP_PUBLISH_DATE:-$(date +%F)}"
 LOG_DIR="${PNIP_LOG_DIR:-$PROJECT_DIR/logs}"
@@ -74,6 +75,7 @@ DRY_RUN="${PNIP_DRY_RUN:-}"
 PUBLISH_PROCESS_MAX_JOBS="${PNIP_PUBLISH_PROCESS_MAX_JOBS:-10000}"
 
 mkdir -p "$LOG_DIR"
+mkdir -p "$BOUNDARY_LOCK_DIR"
 
 log() {
   printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S %Z')" "$*" | tee -a "$LOG_FILE"

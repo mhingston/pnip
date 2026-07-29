@@ -52,12 +52,14 @@ PROCESS_LOCK_FILE="/tmp/pnip-digest-process.lock"
 DRAIN_MAX_JOBS="${PNIP_DRAIN_MAX_JOBS:-500}"
 DRAIN_DATE="$(date +%F)"
 DRAIN_NEXT_DATE="$(date -d "$DRAIN_DATE + 1 day" +%F)"
-BOUNDARY_LOCK_FILE="/tmp/pnip-edition-boundary.lock"
+BOUNDARY_LOCK_DIR="/tmp/pnip-edition-boundary.lock.d"
+BOUNDARY_LOCK_FILE="$BOUNDARY_LOCK_DIR/lock"
 
 # Daily publication takes this lock exclusively while it rolls over and
 # publishes an edition. Hold it shared across discovery + processing so the
 # boundary cannot race a drain that is adding or claiming current-edition
 # documents.
+mkdir -p "$BOUNDARY_LOCK_DIR"
 exec 202>"$BOUNDARY_LOCK_FILE"
 if ! flock --shared --nonblock 202; then
   log "edition publication boundary is in progress (lock=$BOUNDARY_LOCK_FILE); skipping drain"
