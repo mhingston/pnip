@@ -285,7 +285,7 @@ describe("checkCompletion", () => {
     expect(report.missingArtifacts).toContain("email not sent");
   });
 
-  it("reports 'notebook not ready' when status is 'pending' or 'failed'", async () => {
+  it("reports pending or failed notebooks without treating them as missing publication artifacts", async () => {
     const { deps: depsA, mocks: mocksA } = makeFakeDeps();
     mocksA.editionRepo.getById.mockResolvedValue(makeEdition());
     mocksA.markdownDigestRepo.getByEdition.mockResolvedValue(makeMarkdown());
@@ -302,7 +302,7 @@ describe("checkCompletion", () => {
     const svcA = createPublicationService(depsA);
     const reportA = await svcA.checkCompletion("ed-1");
     expect(reportA.notebookReady).toBe(false);
-    expect(reportA.missingArtifacts).toContain("notebook not ready");
+    expect(reportA.missingArtifacts).not.toContain("notebook not ready");
 
     const { deps: depsB, mocks: mocksB } = makeFakeDeps();
     mocksB.editionRepo.getById.mockResolvedValue(makeEdition());
@@ -320,7 +320,7 @@ describe("checkCompletion", () => {
     const svcB = createPublicationService(depsB);
     const reportB = await svcB.checkCompletion("ed-1");
     expect(reportB.notebookReady).toBe(false);
-    expect(reportB.missingArtifacts).toContain("notebook not ready");
+    expect(reportB.missingArtifacts).not.toContain("notebook not ready");
   });
 
   it("reports 'podcast not ready or no URL' when status is 'generating' OR url is null", async () => {
@@ -383,7 +383,6 @@ describe("checkCompletion", () => {
     expect(report.missingArtifacts).toEqual([
       "markdown digest missing or empty",
       "email not sent",
-      "notebook not ready",
     ]);
   });
 
@@ -764,7 +763,7 @@ describe("checkCompletion with partition config", () => {
     expect(mocks.podcastRepo.getByNotebookId).not.toHaveBeenCalled();
   });
 
-  it("enabled partition with pending notebook: gate fails with the partition notebook label", async () => {
+  it("enabled partition with pending notebook remains observable but does not fail the publication gate", async () => {
     const { deps, mocks } = makeFakeDepsWithConfig({
       partitionConfig: { youtube: { min_articles: 5, enabled: true } },
       documentCounts: { master: 19, youtube: 7 },
@@ -774,12 +773,12 @@ describe("checkCompletion with partition config", () => {
     const svc = createPublicationService(deps);
     const report = await svc.checkCompletion("ed-1");
     expect(report.partitionNotebooks[0]?.notebookReady).toBe(false);
-    expect(report.missingArtifacts).toContain(
+    expect(report.missingArtifacts).not.toContain(
       "notebook not ready (partition youtube)",
     );
   });
 
-  it("enabled partition with no notebook row yet: gate fails", async () => {
+  it("enabled partition with no notebook row yet remains observable but does not fail the publication gate", async () => {
     const { deps, mocks } = makeFakeDepsWithConfig({
       partitionConfig: { youtube: { min_articles: 5, enabled: true } },
       documentCounts: { master: 19, youtube: 7 },
@@ -788,7 +787,7 @@ describe("checkCompletion with partition config", () => {
     const svc = createPublicationService(deps);
     const report = await svc.checkCompletion("ed-1");
     expect(report.partitionNotebooks[0]?.notebookReady).toBe(false);
-    expect(report.missingArtifacts).toContain(
+    expect(report.missingArtifacts).not.toContain(
       "notebook not ready (partition youtube)",
     );
   });
@@ -894,12 +893,10 @@ describe("checkCompletion with partition config", () => {
     const labels = report.missingArtifacts.filter((m) =>
       m.startsWith("notebook not ready (partition "),
     );
-    expect(labels).toContain("notebook not ready (partition youtube)");
-    expect(labels).toContain("notebook not ready (partition blogs)");
-    expect(labels).not.toContain("notebook not ready (partition reddit)");
+    expect(labels).toEqual([]);
   });
 
-  it("publish() throws PublicationGateFailedError when a partition notebook is missing", async () => {
+  it("publish() succeeds when a partition notebook is missing", async () => {
     const { deps, mocks } = makeFakeDepsWithConfig({
       partitionConfig: { youtube: { min_articles: 5, enabled: true } },
       documentCounts: { master: 19, youtube: 7 },
@@ -920,14 +917,11 @@ describe("checkCompletion with partition config", () => {
     );
 
     const svc = createPublicationService(deps);
-    await expect(svc.publish({ editionId: "ed-1" })).rejects.toBeInstanceOf(
-      PublicationGateFailedError,
-    );
-    await expect(svc.publish({ editionId: "ed-1" })).rejects.toThrow(
-      /notebook not ready \(partition youtube\)/,
-    );
-    expect(mocks.editionRepo.transition).not.toHaveBeenCalled();
-    expect(mocks.jobQueue.cancelForEdition).not.toHaveBeenCalled();
+    await expect(svc.publish({ editionId: "ed-1" })).resolves.toMatchObject({
+      status: "published",
+    });
+    expect(mocks.editionRepo.transition).toHaveBeenCalled();
+    expect(mocks.jobQueue.cancelForEdition).toHaveBeenCalled();
   });
 });
 

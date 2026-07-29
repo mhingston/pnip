@@ -35,12 +35,16 @@ Feeds, newsletters, YouTube, Reddit, podcasts, PDFs, ...
                               │
                               ▼
                      daily edition assembly
-                         │              │
-                         ▼              ▼
-                  Markdown + email   NotebookLM
-                                         │
-                                         ▼
-                                  optional podcast
+                         │
+                         ▼
+                  Markdown + email publication
+                         │
+                         ├──────────────► NotebookLM background ingestion
+                         │                         │
+                         │                         ▼
+                         │                  optional podcast
+                         ▼
+                  published edition
 ```
 
 Miniflux remains responsible for fetching and aggregating feeds. PNIP consumes the resulting entries and is responsible for content extraction, enrichment, clustering, digest generation, and publication.
@@ -57,7 +61,7 @@ The current implementation deliberately makes several choices that may not suit 
 - Published editions are immutable. Late entries are routed to the next open edition.
 - The canonical Markdown digest retains the complete assembled story and source set.
 - NotebookLM notebooks have a configurable source cap. Sources excluded from NotebookLM remain in the Markdown digest and audit trail.
-- Podcast generation is optional and asynchronous; it does not block publication.
+- NotebookLM ingestion and optional podcast generation are asynchronous; neither blocks publication.
 - The supplied cron configuration applies a 30-day retention policy.
 
 ## Requirements
@@ -132,14 +136,20 @@ npm run digestive -- discover --date "$DATE"
 npm run digestive -- process --date "$DATE" --max-jobs 10000
 npm run digestive -- generate-edition --date "$DATE"
 npm run digestive -- generate-digest --date "$DATE"
-npm run digestive -- generate-notebook --date "$DATE" --wait
 npm run digestive -- generate-email --date "$DATE"
 npm run digestive -- publish-edition --date "$DATE"
 ```
 
-To create an audio overview after the notebook is ready:
+The recommended `notebook-drain.sh` cron job creates and resumes NotebookLM
+notebooks after publication. `podcast-drain.sh` then starts or resumes any
+configured audio overviews once their notebooks are ready. These optional
+artifacts never hold up the email or edition publication.
+
+For a one-off operational catch-up, wait for NotebookLM after the edition has
+been published, then optionally resume the podcast:
 
 ```bash
+npm run digestive -- generate-notebook --date "$DATE" --wait
 npm run digestive -- generate-podcast --date "$DATE" --wait
 ```
 
@@ -158,6 +168,7 @@ The default schedule is:
 | Schedule | Action | Purpose |
 | --- | --- | --- |
 | `*/10 * * * *` | `digest-drain.sh` | Discover Miniflux entries and process a bounded queue batch |
+| `*/10 * * * *` | `notebook-drain.sh` | Create or resume NotebookLM source ingestion after publication |
 | `*/10 * * * *` | `podcast-drain.sh` | Resume NotebookLM audio generation when notebooks are ready |
 | `0 */6 * * *` | maintenance | Clean the queue and apply the 30-day retention policy |
 | `0 6 * * *` | `daily-publish.sh` | Assemble and publish the local day's edition |
@@ -167,6 +178,7 @@ All schedules use the host's local timezone. Customise them during installation:
 ```bash
 scripts/cron-install.sh install \
   --schedule-drain "*/15 * * * *" \
+  --schedule-notebook "*/15 * * * *" \
   --schedule-publish "30 5 * * *"
 ```
 
@@ -347,8 +359,8 @@ All commands support `-h` and `--help`. Date arguments default to today where su
 | `digestive discover` | Ingest new read or unread Miniflux entries and reset Miniflux read state once per new edition boundary. |
 | `digestive process [--date YYYY-MM-DD] [--max-jobs N]` | Drain queued processing jobs, optionally scoped to one edition and bounded to a batch size. |
 | `digestive generate-digest` | Render the canonical Markdown digest. |
-| `digestive generate-notebook` | Create or resume a NotebookLM notebook. Use `--partition` and `--wait` as needed. |
-| `digestive generate-podcast` | Start or resume an optional NotebookLM audio overview. Use `--partition` and `--wait` as needed. |
+| `digestive generate-notebook` | Create or resume a NotebookLM notebook. Without `--wait`, it starts ingestion without blocking; use `--wait` for a manual poll/resume. |
+| `digestive generate-podcast` | Start or resume an optional NotebookLM audio overview after its notebook is ready. Use `--partition` and `--wait` as needed. |
 | `digestive generate-email` | Render and send the HTML email. `--dry-run` skips sending. |
 | `digestive generate-edition` | Evaluate the Building → Ready enrichment gate. |
 | `digestive publish-edition` | Gate-check and publish the edition. `--dry-run` is read-only. |

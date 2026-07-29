@@ -9,6 +9,10 @@ const digestDrainScript = readFileSync(
   new URL("../../scripts/digest-drain.sh", import.meta.url),
   "utf8",
 );
+const cronInstallScript = readFileSync(
+  new URL("../../scripts/cron-install.sh", import.meta.url),
+  "utf8",
+);
 
 describe("daily-publish orchestration", () => {
   it("transitions the edition to ready before generating the digest", () => {
@@ -46,5 +50,15 @@ describe("daily-publish orchestration", () => {
       'active-partitions --date "$DRAIN_NEXT_DATE"',
     );
     expect(digestDrainScript).toContain('run_process "$DRAIN_NEXT_DATE"');
+  });
+
+  it("publishes without waiting for NotebookLM and delegates readiness polling to notebook-drain", () => {
+    expect(dailyPublishScript).not.toMatch(/npm run digestive -- generate-notebook/);
+    expect(dailyPublishScript).not.toMatch(/npm run digestive -- generate-podcast/);
+
+    expect(cronInstallScript).toContain('SCHEDULE_NOTEBOOK="*/10 * * * *"');
+    expect(cronInstallScript).toContain("--schedule-notebook");
+    expect(cronInstallScript).toContain('NOTEBOOK_SCRIPT="$PROJECT_DIR/scripts/notebook-drain.sh"');
+    expect(cronInstallScript).toContain("$SCHEDULE_NOTEBOOK $NOTEBOOK_SCRIPT");
   });
 });

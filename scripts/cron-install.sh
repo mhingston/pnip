@@ -13,6 +13,7 @@
 #
 # The default schedule:
 #   */10 * * * *   digest-drain          (drain Miniflux -> editions)
+#   */10 * * * *   notebook-drain       (resume NotebookLM source ingestion)
 #   */10 * * * *   podcast-drain        (resume ready NotebookLM podcasts)
 #   0 */6 * * *    maintenance apply    (queue + 30-day retention cleanup)
 #   0 6 * * *      daily-publish         (publication at 06:00 local)
@@ -20,6 +21,7 @@
 # To customise the publication time:
 #   scripts/cron-install.sh install --schedule-publish "30 5 * * *"
 #   scripts/cron-install.sh install --schedule-drain "*/15 * * * *"
+#   scripts/cron-install.sh install --schedule-notebook "*/15 * * * *"
 #   scripts/cron-install.sh install --schedule-podcast "*/15 * * * *"
 #   scripts/cron-install.sh install --schedule-maintenance "0 */4 * * *"
 #
@@ -40,6 +42,7 @@ PNIP_TAG="# pnip-managed"
 
 # Defaults (overridable via flags)
 SCHEDULE_DRAIN="*/10 * * * *"
+SCHEDULE_NOTEBOOK="*/10 * * * *"
 SCHEDULE_PODCAST="*/10 * * * *"
 SCHEDULE_MAINTENANCE="0 */6 * * *"
 SCHEDULE_PUBLISH="0 6 * * *"
@@ -54,6 +57,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     install|remove|show|--help|-h) ACTION="${1#--}"; [ "$ACTION" = "help" ] && usage; shift ;;
     --schedule-drain) SCHEDULE_DRAIN="$2"; shift 2 ;;
+    --schedule-notebook) SCHEDULE_NOTEBOOK="$2"; shift 2 ;;
     --schedule-podcast) SCHEDULE_PODCAST="$2"; shift 2 ;;
     --schedule-maintenance) SCHEDULE_MAINTENANCE="$2"; shift 2 ;;
     --schedule-publish) SCHEDULE_PUBLISH="$2"; shift 2 ;;
@@ -65,6 +69,7 @@ done
 [ -z "$ACTION" ] && { echo "action required: install | remove | show" >&2; exit 1; }
 
 DRAIN_SCRIPT="$PROJECT_DIR/scripts/digest-drain.sh"
+NOTEBOOK_SCRIPT="$PROJECT_DIR/scripts/notebook-drain.sh"
 PODCAST_SCRIPT="$PROJECT_DIR/scripts/podcast-drain.sh"
 PUBLISH_SCRIPT="$PROJECT_DIR/scripts/daily-publish.sh"
 
@@ -97,6 +102,10 @@ $SCHEDULE_DRAIN $DRAIN_SCRIPT >> $PROJECT_DIR/logs/digest-drain.log 2>&1
 
 # Resume NotebookLM podcasts only after their notebooks are ready.
 $SCHEDULE_PODCAST $PODCAST_SCRIPT >> $PROJECT_DIR/logs/podcast-drain.log 2>&1
+
+# Resume NotebookLM source ingestion after publication. This is separate from
+# daily-publish so provider readiness never delays the edition.
+$SCHEDULE_NOTEBOOK $NOTEBOOK_SCRIPT >> $PROJECT_DIR/logs/notebook-drain.log 2>&1
 
 # Queue cleanup and 30-day data retention. The command is idempotent and
 # bounded by the CLI's --limit safety cap.

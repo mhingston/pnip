@@ -21,22 +21,19 @@
 #      edition so the source can ship what is ready)
 #   3. digestive generate-edition --date <date>   (building -> ready)
 #   4. digestive generate-digest --date <date>     (master)
-#   5. for each active partition (master + configured):
-#        kick off generate-notebook --partition <key> in fire-and-forget
-#   6. for each active partition, wait on the notebook via --wait
-#   7. after each notebook is ready, kick off generate-podcast for master
-#      and configured with_podcast partitions
-#   8. digestive generate-email --date <date> (with artifact links)
-#   9. digestive publish-edition --date <date> --dry-run
-#  10. digestive publish-edition --date <date>
+#   5. digestive generate-email --date <date>
+#   6. digestive publish-edition --date <date> --dry-run
+#   7. digestive publish-edition --date <date>
+#
+# NotebookLM ingestion and podcast generation continue after publication via
+# notebook-drain.sh and podcast-drain.sh. They are optional artifacts and do
+# not delay the edition email or publication transition.
 #
 # Environment:
 #   PNIP_PUBLISH_DATE     override the edition date (default: today local)
 #   PNIP_LOG_DIR          log directory (default: $PROJECT_DIR/logs)
 #   PNIP_DRY_RUN          if set, stops after the dry-run gate check
-#   PARTITION_CONFIG      JSON object (forwarded to all PNIP commands)
-#   NOTEBOOKLM_MAX_SOURCES_PER_NOTEBOOK
-#                         forwarded to generate-notebook
+#   PARTITION_CONFIG      JSON object used by the edition commands
 #
 # Exit codes:
 #   0  publication completed successfully (or the edition was already
@@ -111,20 +108,6 @@ run() {
   fi
 }
 
-run_effort() {
-  local desc="$1"
-  shift
-  log "-> $desc (best-effort)"
-  if "$@"; then
-    log "OK  $desc"
-    return 0
-  else
-    local rc=$?
-    log "WARN  $desc (exit $rc, continuing)"
-    return 0
-  fi
-}
-
 # Load .env via the Node helper. Sourcing the file directly in bash
 # is unsafe because some values (notably the EMAIL_FROM form) contain
 # angle brackets. The helper uses dotenv and emits export-safe lines.
@@ -182,50 +165,12 @@ run "generate-edition" \
 run "generate-digest" \
   npm run digestive -- generate-digest --date "$DATE"
 
-# 4. Kick off each notebook (fire-and-forget). Do not attempt podcast
-# generation yet: NotebookLM audio requires a ready notebook, while this
-# upload call leaves the notebook pending as its sources are ingested.
-while IFS= read -r line; do
-  [ -z "$line" ] && continue
-  partition="${line%%:*}"
-  run_effort "kickoff notebook (partition=$partition)" \
-    env PARTITION_CONFIG="${PARTITION_CONFIG:-}" \
-    npm run digestive -- generate-notebook --date "$DATE" --partition "$partition"
-done <<< "$PARTITION_LINES"
-
-# 5. Wait for each partition's notebook to be ready. --wait blocks on the
-# NotebookLM API; this is the wall-clock heavy step (~10-20 min per source
-# typical).
-while IFS= read -r line; do
-  [ -z "$line" ] && continue
-  partition="${line%%:*}"
-  run "wait notebook (partition=$partition)" \
-    env PARTITION_CONFIG="${PARTITION_CONFIG:-}" \
-    npm run digestive -- generate-notebook --date "$DATE" --partition "$partition" --wait
-done <<< "$PARTITION_LINES"
-
-# 6. Now that every notebook is ready, start the optional podcasts. This is
-# fire-and-forget; scripts/podcast-drain.sh resumes the provider artifact on
-# later cron runs without issuing a duplicate generation request.
-while IFS= read -r line; do
-  [ -z "$line" ] && continue
-  partition="${line%%:*}"
-  tag="${line#*:}"
-  if [ "$tag" = "with_podcast" ]; then
-    run_effort "kickoff podcast (partition=$partition)" \
-      env PARTITION_CONFIG="${PARTITION_CONFIG:-}" \
-      npm run digestive -- generate-podcast --date "$DATE" --partition "$partition"
-  fi
-done <<< "$PARTITION_LINES"
-
-# 7. Email is rendered after the readiness gate and required notebook waits.
-# The command remains idempotent: an already-sent edition is not delivered
-# twice. If a podcast finishes later, it can be reflected by a deliberate
-# email regeneration.
+# 4. Email is independent of NotebookLM artifacts. The command remains
+# idempotent: an already-sent edition is not delivered twice.
 run "generate-email" \
   npm run digestive -- generate-email --date "$DATE"
 
-# 8. Dry-run gate check. If the gate fails, the script aborts BEFORE
+# 5. Dry-run gate check. If the gate fails, the script aborts BEFORE
 # the real publish so the operator can investigate. The dry-run
 # output is logged for audit.
 run "publish-edition --dry-run" \
@@ -237,7 +182,7 @@ if [ -n "$DRY_RUN" ]; then
   exit 0
 fi
 
-# 9. Real publish
+# 6. Real publish
 run "publish-edition" \
   npm run digestive -- publish-edition --date "$DATE"
 

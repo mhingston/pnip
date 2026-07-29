@@ -48,16 +48,28 @@ Sequence:
 3. `digestive generate-edition --date <local-today>` to transition the
    (now-ready) edition from `building` to `ready`.
 4. `digestive generate-digest --date <local-today>` (master)
-5. Resolve active partitions with the database-backed `enabled` +
-   `min_articles` rule, then fire-and-forget `generate-notebook` for every
-   active partition.
-6. `--wait` on every active partition's notebook, then start podcasts only
-   after their corresponding notebooks are ready. Podcast generation remains
-   asynchronous because podcasts are optional and must not block publication.
-7. `digestive generate-email --date <local-today>` after required notebook
-   artifacts are ready.
-8. Run `publish-edition --dry-run` (gate check).
-9. `digestive publish-edition --date <local-today>` (real publish).
+5. `digestive generate-email --date <local-today>`.
+6. Run `publish-edition --dry-run` (gate check).
+7. `digestive publish-edition --date <local-today>` (real publish).
+
+NotebookLM source ingestion is deliberately outside this critical path. The
+publisher does not call NotebookLM. `notebook-drain.sh` creates or resumes
+notebooks on later cron ticks; `podcast-drain.sh` can then resume optional
+podcasts. A NotebookLM failure is operationally visible in its drain log but
+never retracts or delays the already-published edition.
+
+### `notebook-drain.sh`
+
+Runs every 10 minutes by default. It resolves the active partitions for the
+local edition date and calls `generate-notebook --wait` for each one. It
+creates missing notebooks and polls existing pending source ingestion. This is
+the background NotebookLM path, entirely separate from `daily-publish.sh`.
+
+To catch up a specific edition manually:
+
+```bash
+PNIP_PUBLISH_DATE=YYYY-MM-DD scripts/notebook-drain.sh
+```
 
 ### `podcast-drain.sh`
 
@@ -104,6 +116,7 @@ Default schedule:
 | Cron expression     | Script                  | Purpose                                  |
 | ------------------- | ----------------------- | ---------------------------------------- |
 | `*/10 * * * *`      | `digest-drain.sh`       | Drain Miniflux → editions                |
+| `*/10 * * * *`      | `notebook-drain.sh`     | Create or resume NotebookLM source ingestion |
 | `*/10 * * * *`      | `podcast-drain.sh`      | Resume ready NotebookLM podcasts         |
 | `0 */6 * * *`       | (inline)                | Queue cleanup + 30-day retention purge   |
 | `0 6 * * *`         | `daily-publish.sh`      | Daily publication at 06:00 local         |

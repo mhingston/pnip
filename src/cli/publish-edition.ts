@@ -182,20 +182,18 @@ export async function runPublishEditionCommand(
         `podcast=${report.podcastReady ? "ready" : "pending"}`);
     }
 
-    // Podcasts are best-effort artifacts. The publication service deliberately
-    // does not include them in missingArtifacts, so the read-only gate must
-    // apply the same rule and never reject an otherwise complete edition.
+    // NotebookLM notebooks and podcasts are best-effort post-publication
+    // artifacts. The publication service deliberately does not include them
+    // in missingArtifacts, so the read-only gate must apply the same rule.
     const allReady =
       report.markdownNonEmpty &&
-      report.emailSent &&
-      report.notebookReady &&
-      report.partitionNotebooks.every((p) => p.notebookReady);
+      report.emailSent;
 
     if (allReady) {
       log(
         `publish-edition --dry-run OK for edition ${edition.id} ` +
           `(date=${String(editionDate)}): ` +
-          `markdown=true, email=true, notebook=true, podcast=true`,
+          `markdown=true, email=true, notebook=optional, podcast=optional`,
       );
       return { exitCode: 0, completion: report };
     }
@@ -318,9 +316,10 @@ Flags:
   --date <YYYY-MM-DD>    publication date of the edition (default: today)
   --dry-run              read-only gate check; does not mutate state. Exits 0
                          if the Markdown digest is non-empty, the email is
-                         sent, and every required notebook is ready. Podcasts
-                         are best-effort and never block publication; exits 1
-                         and lists the missing artifacts otherwise.
+                         sent. NotebookLM notebooks and podcasts are
+                         best-effort post-publication artifacts and never
+                         block publication; exits 1 and lists the missing
+                         artifacts otherwise.
   -h, --help             show this help
 
 The command:
@@ -329,10 +328,9 @@ The command:
      breakdown (master plus each configured partition) and the report
   3. (without --dry-run) calls publishForDate({ editionDate }):
        - verifies the completion gate (§49): markdown_digests row exists and
-         is non-empty, email_digests row with delivery_status='sent' exists,
-         notebooks row with status='ready' exists. Podcasts are optional.
-         When PARTITION_CONFIG is set, every active non-master partition must
-         also have a ready notebook. Gate failure
+         is non-empty and email_digests row with delivery_status='sent'
+         exists. NotebookLM notebooks and podcasts are optional
+         post-publication artifacts. Gate failure
          throws PublicationGateFailedError and exits 1.
      - transitions Ready → Publishing → Published (Publishing → Failed is
        handled by InvalidEditionTransitionError from the repo).

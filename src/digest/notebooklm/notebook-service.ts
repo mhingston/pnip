@@ -584,6 +584,33 @@ export function createNotebookService(
     const wait = input.wait ?? false;
     const mode: "wait" | "fire-and-forget" = wait ? "wait" : "fire-and-forget";
 
+    // NotebookLM captures the published edition's final source set. Starting
+    // work while it is still building could upload documents that rollover
+    // later removes, so all creation and polling is deliberately deferred.
+    if (edition.status !== "published") {
+      const skipReason =
+        `edition ${edition.id} is ${edition.status}; ` +
+        "NotebookLM generation begins only after publication";
+      deps.logger?.info("notebook generation skipped before publication", {
+        editionId: input.editionId,
+        partitionKey,
+        editionStatus: edition.status,
+      });
+      return {
+        notebookId: "",
+        edition,
+        notebookExternalId: "",
+        url: "",
+        sourceCount: 0,
+        status: "skipped",
+        alreadyExisted: false,
+        failureReason: null,
+        skipReason,
+        mode,
+        partitionKey,
+      };
+    }
+
     const existing = await deps.notebookRepo.getByEditionAndPartition(
       input.editionId,
       partitionKey,

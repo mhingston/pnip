@@ -112,17 +112,6 @@ export interface PublicationServiceDeps {
 
 const LABEL_MARKDOWN = "markdown digest missing or empty";
 const LABEL_EMAIL = "email not sent";
-const LABEL_NOTEBOOK = "notebook not ready";
-const LABEL_PODCAST = "podcast not ready or no URL";
-
-function partitionNotebookLabel(partitionKey: string): string {
-  return `notebook not ready (partition ${partitionKey})`;
-}
-
-function partitionPodcastLabel(partitionKey: string): string {
-  return `podcast not ready or no URL (partition ${partitionKey})`;
-}
-
 function emptyCompletion(): CompletionReport {
   return {
     markdownExists: true,
@@ -244,7 +233,12 @@ export function createPublicationService(
     const missingArtifacts: string[] = [];
     if (!markdownNonEmpty) missingArtifacts.push(LABEL_MARKDOWN);
     if (!emailSent) missingArtifacts.push(LABEL_EMAIL);
-    if (!notebookReady) missingArtifacts.push(LABEL_NOTEBOOK);
+    if (!notebookReady) {
+      deps.logger?.warn(
+        "notebook not ready, continuing publication without it",
+        { editionId, partitionKey: PARTITION_MASTER },
+      );
+    }
     if (!podcastReady) {
       deps.logger?.warn(
         "podcast not ready, continuing publication without it",
@@ -256,7 +250,10 @@ export function createPublicationService(
     }
     for (const pn of partitionNotebooks) {
       if (!pn.notebookReady) {
-        missingArtifacts.push(partitionNotebookLabel(pn.partitionKey));
+        deps.logger?.warn(
+          "notebook not ready, continuing publication without it",
+          { editionId, partitionKey: pn.partitionKey },
+        );
       }
       if (pn.podcastRequired && !pn.podcastReady) {
         deps.logger?.warn(

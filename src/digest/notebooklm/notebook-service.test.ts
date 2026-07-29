@@ -36,10 +36,10 @@ function makeEdition(overrides: Partial<Edition> = {}): Edition {
   return {
     id: "ed-1",
     publication_date: new Date("2026-07-07T00:00:00Z"),
-    status: "ready",
+    status: "published",
     created_at: new Date(),
     updated_at: new Date(),
-    published_at: null,
+    published_at: new Date(),
     failed_at: null,
     failure_reason: null,
     cluster_stories_enqueued_at: null,
@@ -1307,6 +1307,26 @@ describe("generate — fire-and-forget (default)", () => {
 });
 
 describe("generateForDate", () => {
+  it("skips NotebookLM side effects until the edition is published", async () => {
+    const { deps, mocks } = makeDeps({
+      edition: makeEdition({ status: "building" }),
+    });
+    const svc = createNotebookService(deps);
+
+    const result = await svc.generateForDate({
+      editionDate: "2026-07-07",
+      wait: true,
+    });
+
+    expect(result.status).toBe("skipped");
+    expect(result.skipReason).toMatch(/publication/);
+    expect(mocks.notebookRepo.getByEditionAndPartition).not.toHaveBeenCalled();
+    expect(mocks.notebookRepo.createForEdition).not.toHaveBeenCalled();
+    expect(mocks.notebookLm.createNotebook).not.toHaveBeenCalled();
+    expect(mocks.notebookLm.addSource).not.toHaveBeenCalled();
+    expect(mocks.notebookLm.waitForSource).not.toHaveBeenCalled();
+  });
+
   it("resolves the edition by date then generates", async () => {
     const { deps, mocks } = makeDeps();
     const svc = createNotebookService(deps);

@@ -147,7 +147,7 @@ describe("parsePublishEditionFlags", () => {
 });
 
 describe("runPublishEditionCommand", () => {
-  it("dry-run calls checkCompletion and skips publish/publishForDate; exits 0 when all four booleans true", async () => {
+  it("dry-run calls checkCompletion and skips publish/publishForDate; exits 0 when digest and email are ready", async () => {
     const service = makeFakeService({
       checkCompletion: vi
         .fn()
@@ -172,7 +172,7 @@ describe("runPublishEditionCommand", () => {
     expect(service.publish).not.toHaveBeenCalled();
     expect(logs.some((l) => l.includes("--dry-run OK"))).toBe(true);
     expect(logs.some((l) => l.includes("markdown=true"))).toBe(true);
-    expect(logs.some((l) => l.includes("podcast=true"))).toBe(true);
+    expect(logs.some((l) => l.includes("podcast=optional"))).toBe(true);
   });
 
   it("dry-run refuses to pass an edition that is still building", async () => {
@@ -396,7 +396,7 @@ describe("runPublishEditionCommand", () => {
     expect(logs.some((l) => l.startsWith("  master:"))).toBe(true);
   });
 
-  it("dry-run fails gate when a partition notebook is pending", async () => {
+  it("dry-run does not block when a partition notebook is pending", async () => {
     const service = makeFakeService({
       checkCompletion: vi.fn().mockResolvedValue(
         makeReadyCompletionReport({
@@ -409,7 +409,7 @@ describe("runPublishEditionCommand", () => {
               podcastReady: true,
             },
           ],
-          missingArtifacts: ["notebook not ready (partition youtube)"],
+          missingArtifacts: [],
         }),
       ),
     });
@@ -432,15 +432,11 @@ describe("runPublishEditionCommand", () => {
         logs.push(m);
       },
     });
-    expect(result.exitCode).toBe(1);
+    expect(result.exitCode).toBe(0);
     const ytLine = logs.find((l) => l.startsWith("  youtube:"));
     expect(ytLine).toBeDefined();
     expect(ytLine).toContain("notebook=pending");
-    expect(
-      logs.some((l) =>
-        l.includes("notebook not ready (partition youtube)"),
-      ),
-    ).toBe(true);
+    expect(logs.some((l) => l.includes("--dry-run OK"))).toBe(true);
   });
 
   it("dry-run with podcast-required partition shows notebook AND podcast state", async () => {
