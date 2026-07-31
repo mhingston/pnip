@@ -1,17 +1,15 @@
-import { generateText, embedMany } from "ai";
+import { generateText } from "ai";
 import { openai } from "@ai-sdk/openai";
-import type { AiProvider, ProviderEmbedResult, ProviderTextResult } from "./provider.js";
+import type { AiProvider, ProviderTextResult } from "./provider.js";
 
 export interface VercelAiProviderOptions {
   textModel?: string;
-  embeddingModel?: string;
 }
 
 export function createVercelAiProvider(
   opts: VercelAiProviderOptions = {},
 ): AiProvider {
   const textModel = opts.textModel ?? "gpt-4o-mini";
-  const embeddingModel = opts.embeddingModel ?? "text-embedding-3-small";
 
   return {
     name: "openai",
@@ -30,17 +28,6 @@ export function createVercelAiProvider(
           promptTokens: result.usage.inputTokens ?? undefined,
           completionTokens: result.usage.outputTokens ?? undefined,
         },
-      };
-    },
-    async embed(input): Promise<ProviderEmbedResult> {
-      const result = await embedMany({
-        model: openai.embedding(input.model ?? embeddingModel),
-        values: input.texts,
-      });
-      return {
-        vectors: result.embeddings,
-        model: input.model ?? embeddingModel,
-        provider: "openai",
       };
     },
   };

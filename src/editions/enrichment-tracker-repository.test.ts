@@ -119,14 +119,8 @@ describe("EnrichmentTrackerRepository", () => {
     return { ed, doc };
   }
 
-  it("REQUIRED_ENRICHMENT_TYPES contains the two pipeline jobs", () => {
-    expect(REQUIRED_ENRICHMENT_TYPES.length).toBe(2);
-    expect([...REQUIRED_ENRICHMENT_TYPES].sort()).toEqual(
-      [
-        "embed_chunk",
-        "enrich_chunk",
-      ].sort(),
-    );
+  it("REQUIRED_ENRICHMENT_TYPES contains the enrichment job", () => {
+    expect(REQUIRED_ENRICHMENT_TYPES).toEqual(["enrich_chunk"]);
   });
 
   it("markDone throws InvalidEnrichmentTypeError on unknown enrichment type", async () => {
@@ -154,17 +148,13 @@ describe("EnrichmentTrackerRepository", () => {
   it("getCompletedTypesForDocument returns the set of completed types", async () => {
     const { doc } = await makeEditionAndDoc("2026-01-03", "https://e.com/3");
     await tracker.markDone(doc.id, "enrich_chunk");
-    await tracker.markDone(doc.id, "embed_chunk");
     const got = (await tracker.getCompletedTypesForDocument(doc.id)).sort();
-    expect(got).toEqual(["embed_chunk", "enrich_chunk"]);
+    expect(got).toEqual(["enrich_chunk"]);
   });
 
-  it("isDocumentFullyEnriched is false until both jobs are done, then true", async () => {
+  it("isDocumentFullyEnriched is true after enrichment completes", async () => {
     const { doc } = await makeEditionAndDoc("2026-01-04", "https://e.com/4");
-    expect(await tracker.isDocumentFullyEnriched(doc.id)).toBe(false);
     await tracker.markDone(doc.id, "enrich_chunk");
-    expect(await tracker.isDocumentFullyEnriched(doc.id)).toBe(false);
-    await tracker.markDone(doc.id, "embed_chunk");
     expect(await tracker.isDocumentFullyEnriched(doc.id)).toBe(true);
   });
 
@@ -224,10 +214,9 @@ describe("EnrichmentTrackerRepository", () => {
   it("resetForDocument clears all enrichment rows for one document", async () => {
     const { doc } = await makeEditionAndDoc("2026-01-05", "https://e.com/5");
     await tracker.markDone(doc.id, "enrich_chunk");
-    await tracker.markDone(doc.id, "embed_chunk");
     expect(
       (await tracker.getCompletedTypesForDocument(doc.id)).length,
-    ).toBe(2);
+    ).toBe(1);
     await tracker.resetForDocument(doc.id);
     expect(await tracker.getCompletedTypesForDocument(doc.id)).toEqual([]);
     expect(await tracker.isDocumentFullyEnriched(doc.id)).toBe(false);
@@ -239,11 +228,9 @@ describe("EnrichmentTrackerRepository", () => {
     const d2 = await docRepo.create({ editionId: ed.id, sourceType: "article", sourceUrl: "https://e.com/6b" });
     await tracker.markDone(d1.id, "enrich_chunk");
     await tracker.markDone(d2.id, "enrich_chunk");
-    await tracker.markDone(d2.id, "embed_chunk");
     await tracker.resetForDocument(d1.id);
     expect(await tracker.getCompletedTypesForDocument(d1.id)).toEqual([]);
     expect((await tracker.getCompletedTypesForDocument(d2.id)).sort()).toEqual([
-      "embed_chunk",
       "enrich_chunk",
     ]);
   });
@@ -257,12 +244,11 @@ describe("EnrichmentTrackerRepository", () => {
       await tracker.markDone(d1.id, t);
     }
     await tracker.markDone(d2.id, "enrich_chunk");
-    await tracker.markDone(d2.id, "embed_chunk");
 
     const counts = await tracker.getDocumentCounts(ed.id);
     expect(counts.totalDocuments).toBe(3);
     expect(counts.fullyEnrichedDocuments).toBe(2);
-    expect(counts.totalCompletedTypeRows).toBe(4);
+    expect(counts.totalCompletedTypeRows).toBe(2);
     expect(counts.expectedTypeRows).toBe(3 * REQUIRED_ENRICHMENT_TYPES.length);
 
     expect(d3).toBeDefined();
@@ -352,8 +338,8 @@ describe("EnrichmentTrackerRepository", () => {
     expect(counts).toEqual({
       totalDocuments: 3,
       fullyEnrichedDocuments: 2,
-      totalCompletedTypeRows: 5,
-      expectedTypeRows: 6,
+      totalCompletedTypeRows: 2,
+      expectedTypeRows: 3,
     });
   });
 

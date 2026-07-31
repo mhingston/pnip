@@ -41,7 +41,6 @@ export interface EditionAssemblyDeps {
   storyRepo: StoryRepository;
   storySummaryRepo: StorySummaryRepository;
   enrichmentTracker: EnrichmentTrackerRepository;
-  editorialMode?: "legacy" | "llm";
 }
 
 function sortStoriesDeterministically(stories: AssembledStory[]): AssembledStory[] {
@@ -81,10 +80,6 @@ export function createEditionAssemblyService(
           .where("edition_id", "=", editionId)
           .execute(),
       ]);
-      if (deps.editorialMode === "llm") {
-        const completionRows = await deps.db.selectFrom("documents").leftJoin("document_enrichment_status", "document_enrichment_status.document_id", "documents.id").select("documents.id").select((eb) => eb.fn.count("document_enrichment_status.document_id").filterWhere("document_enrichment_status.enrichment_type", "=", "enrich_chunk").filterWhere("document_enrichment_status.status", "=", "done").as("completed")).where("documents.edition_id", "=", editionId).groupBy("documents.id").execute();
-        counts = { totalDocuments: completionRows.length, fullyEnrichedDocuments: completionRows.filter((row) => Number(row.completed) > 0).length, totalCompletedTypeRows: completionRows.reduce((n, row) => n + (Number(row.completed) > 0 ? 1 : 0), 0), expectedTypeRows: completionRows.length };
-      }
       let storiesWithSummaries = 0;
       for (const s of stories) {
         const summary = await deps.storySummaryRepo.getByStoryId(s.story.id);
@@ -105,9 +100,7 @@ export function createEditionAssemblyService(
         counts.fullyEnrichedDocuments === counts.totalDocuments;
       const everyDocumentClustered =
         documents.length > 0 && clusteredDocumentCount === documents.length;
-      const editorialPlan = deps.editorialMode === "llm"
-        ? await deps.db.selectFrom("editorial_plans").select("input_hash").where("edition_id", "=", editionId).executeTakeFirst()
-        : true;
+      const editorialPlan = await deps.db.selectFrom("editorial_plans").select("input_hash").where("edition_id", "=", editionId).executeTakeFirst();
       const everyStorySummarized =
         stories.length === 0 ? false : storiesWithSummaries === stories.length;
       const isReady =
@@ -117,12 +110,12 @@ export function createEditionAssemblyService(
       let reason: string;
       if (isReady) {
         reason =
-          "all documents fully enriched, represented by story clusters, and all stories have summaries";
+          "all documents fully enriched, represented by editorial stories, and all stories have summaries";
       } else if (counts.totalDocuments === 0) {
         reason = "no documents in edition";
       } else if (!everyDocumentFullyEnriched) {
         reason = `${counts.fullyEnrichedDocuments}/${counts.totalDocuments} documents fully enriched`;
-      } else if (deps.editorialMode === "llm" && editorialPlan === undefined) {
+      } else if (editorialPlan === undefined) {
         reason = "no editorial plan exists";
       } else if (!everyDocumentClustered) {
         reason = `${clusteredDocumentCount}/${documents.length} documents represented by story clusters`;

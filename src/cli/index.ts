@@ -15,10 +15,6 @@ import { createEditionRepository } from "../editions/edition-repository.js";
 import { createEditionRolloverService } from "../editions/edition-rollover-service.js";
 import { createEnrichmentTrackerRepository } from "../editions/enrichment-tracker-repository.js";
 import { createEnrichmentGateService } from "../editions/enrichment-gate-service.js";
-import {
-  reconcileLegacyEnrichmentJobs,
-  reconcileMissingClusterJobs,
-} from "../editions/cluster-reconciliation.js";
 import { createDiscoveryRepository } from "../discovery/discovery-repository.js";
 import { createProcessingJobQueue } from "../jobs/queue/processing-job-queue.js";
 import { createDiscoveryService } from "../discovery/discovery-service.js";
@@ -35,8 +31,6 @@ import { createPromptExecutionService } from "../ai/prompt-execution.js";
 import { createVercelAiProvider } from "../ai/vercel-provider.js";
 import { createOpenAICompatibleProvider } from "../ai/openai-compatible-provider.js";
 import { createFakeProvider } from "../ai/fake-provider.js";
-import { createTransformersJsEmbeddingProvider } from "../ai/transformersjs-embedding-provider.js";
-import { createFakeEmbeddingProvider } from "../ai/fake-embedding-provider.js";
 import { createEditorialPlanRepository } from "../editorial/editorial-plan-repository.js";
 import { createEditorialPlanService } from "../editorial/editorial-plan-service.js";
 import { seedDefaultPrompts } from "../prompts/seed-default-prompts.js";
@@ -45,9 +39,6 @@ import { createEnrichChunkWorker } from "../enrichment/enrich-chunk-worker.js";
 import { createEntityRepository } from "../enrichment/entities/entity-repository.js";
 import { createTopicRepository } from "../enrichment/topics/topic-repository.js";
 import { createQualityRepository } from "../enrichment/quality/quality-repository.js";
-import { createEmbeddingRepository } from "../enrichment/embeddings/embedding-repository.js";
-import { createEmbedChunkWorker } from "../enrichment/embeddings/embed-chunk-worker.js";
-import { createClusterStoriesWorker } from "../clustering/cluster-stories-worker.js";
 import { createSummarizeStoryWorker } from "../clustering/summarize-story-worker.js";
 import { buildPluginRegistry } from "./process-registry.js";
 import { parseCommand } from "./args.js";
@@ -302,7 +293,7 @@ async function main(): Promise<number> {
 
       const chunkRepo = createChunkRepository(db);
       const enrichmentTracker = createEnrichmentTrackerRepository(db);
-      const enrichmentGate = createEnrichmentGateService({ db, tracker: enrichmentTracker, editorialMode: cfg.DIGEST_EDITORIAL_MODE });
+      const enrichmentGate = createEnrichmentGateService({ db, tracker: enrichmentTracker });
 
       const chunkWorker = createChunkDocumentWorker({
         docRepo,
@@ -349,19 +340,6 @@ async function main(): Promise<number> {
       });
 
       const workers = [expandWorker, chunkWorker, enrichWorker, summarizeStoryWorker];
-      if (cfg.DIGEST_EDITORIAL_MODE === "legacy") {
-        const embeddingProvider = cfg.AI_PROVIDER === "fake"
-          ? createFakeEmbeddingProvider({ dimension: 8 })
-          : createTransformersJsEmbeddingProvider({ model: cfg.EMBEDDING_MODEL, cacheDir: cfg.EMBEDDING_CACHE_DIR });
-        const embeddingRepo = createEmbeddingRepository(db);
-        const embedWorker = createEmbedChunkWorker({ chunkRepo, docRepo, summaryRepo, embeddingRepo, embeddingProvider, provenanceRepo, gate: enrichmentGate, editionRepo });
-        const clusterStoriesWorker = createClusterStoriesWorker({
-          docRepo, summaryRepo, topicRepo: createTopicRepository(db), embeddingRepo, storyRepo, provenanceRepo, signalRepo, sourceTrustRepo,
-          enrichmentTracker: createEnrichmentTrackerRepository(db), youtubeFocusChannels,
-          options: { minStories: cfg.DIGEST_MIN_STORIES, targetStories: cfg.DIGEST_MAX_STORIES },
-        });
-        workers.push(embedWorker, clusterStoriesWorker);
-      }
       const runtime = createWorkerRuntime({
         db,
         queue,
@@ -381,24 +359,6 @@ async function main(): Promise<number> {
         processLogger.info("recovered stale running jobs at start of drain", {
           recovered,
           thresholdMs: STALE_LOCK_THRESHOLD_MS,
-        });
-      }
-
-      const reconciledLegacyEnrichment = cfg.DIGEST_EDITORIAL_MODE === "legacy"
-        ? await reconcileLegacyEnrichmentJobs(db)
-        : 0;
-      if (reconciledLegacyEnrichment > 0) {
-        processLogger.info("replaced legacy enrichment jobs with combined enrichment", {
-          jobCount: reconciledLegacyEnrichment,
-        });
-      }
-
-      const requeuedClusters = cfg.DIGEST_EDITORIAL_MODE === "legacy"
-        ? await reconcileMissingClusterJobs(db)
-        : 0;
-      if (requeuedClusters > 0) {
-        processLogger.info("requeued cluster jobs for fully enriched editions with unclustered documents", {
-          editionCount: requeuedClusters,
         });
       }
 
@@ -438,18 +398,6 @@ async function main(): Promise<number> {
         }),
       );
       const processed = processedByWorker.reduce((total, count) => total + count, 0);
-      // A bounded drain can finish the final enrichment for an edition after
-      // the start-of-drain reconciliation has already run. Reconcile again so
-      // the next bounded drain can immediately process the resulting cluster
-      // job instead of waiting for another unrelated recovery path.
-      const requeuedClustersAfterDrain = cfg.DIGEST_EDITORIAL_MODE === "legacy"
-        ? await reconcileMissingClusterJobs(db)
-        : 0;
-      if (requeuedClustersAfterDrain > 0) {
-        processLogger.info("requeued cluster jobs after enrichment drain", {
-          editionCount: requeuedClustersAfterDrain,
-        });
-      }
       const scope = parsed.editionDate
         ? ` for edition date ${parsed.editionDate}`
         : "";
@@ -553,7 +501,6 @@ async function main(): Promise<number> {
         storyRepo,
         storySummaryRepo,
         enrichmentTracker: createEnrichmentTrackerRepository(db),
-        editorialMode: cfg.DIGEST_EDITORIAL_MODE,
       });
       const service = createMarkdownDigestService({
         db,
@@ -782,7 +729,6 @@ async function main(): Promise<number> {
         storyRepo,
         storySummaryRepo,
         enrichmentTracker,
-        editorialMode: cfg.DIGEST_EDITORIAL_MODE,
       });
       const readinessGate = createEditionReadinessGate({
         db,

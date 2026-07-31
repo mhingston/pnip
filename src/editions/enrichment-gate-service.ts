@@ -1,6 +1,5 @@
 import { Kysely, Transaction, sql } from "kysely";
 import type { Database } from "../database/kysely.js";
-import type { EnqueueJobInput } from "../jobs/workers/worker.js";
 import {
   type EnrichmentTrackerRepository,
   REQUIRED_ENRICHMENT_TYPES,
@@ -8,21 +7,24 @@ import {
   getDocumentEnrichmentCompletionsForEdition,
 } from "./enrichment-tracker-repository.js";
 
-const CLUSTER_STORIES_JOB_TYPE = "cluster_stories";
-
 export interface EnrichmentGateServiceDeps {
   db: Kysely<Database>;
   tracker: EnrichmentTrackerRepository;
-  editorialMode?: "legacy" | "llm";
 }
 
 export interface EnrichmentGateService {
+  markEnrichmentDone?(
+    editionId: string,
+    documentId: string,
+    enrichmentType: string,
+    chunkId?: string,
+  ): Promise<null>;
   markEnrichmentDoneAndMaybeEnqueueCluster(
     editionId: string,
     documentId: string,
     enrichmentType: string,
     chunkId?: string,
-  ): Promise<EnqueueJobInput | null>;
+  ): Promise<null>;
 }
 
 interface TrackedCounts {
@@ -33,16 +35,8 @@ interface TrackedCounts {
 async function countFullyEnrichedInTransaction(
   trx: Transaction<Database>,
   editionId: string,
-  editorialMode: "legacy" | "llm" = "legacy",
 ): Promise<TrackedCounts> {
-  if (editorialMode === "llm") {
-    const rows = await trx.selectFrom("documents").leftJoin("document_enrichment_status", "document_enrichment_status.document_id", "documents.id").select("documents.id").select((eb) => eb.fn.count("document_enrichment_status.document_id").filterWhere("document_enrichment_status.enrichment_type", "=", "enrich_chunk").filterWhere("document_enrichment_status.status", "=", "done").as("completed")).where("documents.edition_id", "=", editionId).groupBy("documents.id").execute();
-    return { totalDocuments: rows.length, fullyEnrichedDocuments: rows.filter((row) => Number(row.completed) > 0).length };
-  }
-  const completions = await getDocumentEnrichmentCompletionsForEdition(
-    trx,
-    editionId,
-  );
+  const completions = await getDocumentEnrichmentCompletionsForEdition(trx, editionId);
   const totalDocuments = completions.size;
 
   if (totalDocuments === 0) {
@@ -94,32 +88,6 @@ async function documentEnrichmentHasCompletedAllChunks(
   return completedChunkIds.size >= totalChunks;
 }
 
-async function claimEditionForClusterInTransaction(
-  trx: Transaction<Database>,
-  editionId: string,
-): Promise<Date | null> {
-  const activeClusterJob = await trx
-    .selectFrom("processing_jobs")
-    .select("id")
-    .where("edition_id", "=", editionId)
-    .where("job_type", "=", CLUSTER_STORIES_JOB_TYPE)
-    .where("status", "in", ["pending", "running"])
-    .executeTakeFirst();
-  if (activeClusterJob) return null;
-
-  const updated = await trx
-    .updateTable("editions")
-    .set({
-      cluster_stories_enqueued_at: sql<Date>`now()`,
-      updated_at: sql<Date>`now()`,
-    })
-    .where("id", "=", editionId)
-    .where("cluster_stories_enqueued_at", "is", null)
-    .returning(["cluster_stories_enqueued_at"])
-    .executeTakeFirst();
-  return updated?.cluster_stories_enqueued_at ?? null;
-}
-
 async function markDoneInTransaction(
   trx: Transaction<Database>,
   documentId: string,
@@ -147,7 +115,7 @@ export function createEnrichmentGateService(
   deps: EnrichmentGateServiceDeps,
 ): EnrichmentGateService {
   return {
-    async markEnrichmentDoneAndMaybeEnqueueCluster(
+    async markEnrichmentDone(
       editionId,
       documentId,
       enrichmentType,
@@ -170,20 +138,17 @@ export function createEnrichmentGateService(
         }
         await markDoneInTransaction(trx, documentId, enrichmentType);
 
-        const counts = await countFullyEnrichedInTransaction(trx, editionId, deps.editorialMode);
-        if (counts.totalDocuments === 0) return null;
-        if (counts.fullyEnrichedDocuments !== counts.totalDocuments) return null;
-
-        if (deps.editorialMode === "llm") return null;
-
-        const claimedAt = await claimEditionForClusterInTransaction(trx, editionId);
-        if (claimedAt === null) return null;
-
-        return {
-          jobType: CLUSTER_STORIES_JOB_TYPE,
-          editionId,
-          target: { editionId },
-        } satisfies EnqueueJobInput;
+        return null;
+      });
+    },
+    async markEnrichmentDoneAndMaybeEnqueueCluster(editionId, documentId, enrichmentType, chunkId) {
+      assertValidEnrichmentType(enrichmentType);
+      return deps.db.transaction().execute(async (trx) => {
+        if (chunkId !== undefined && !(await documentEnrichmentHasCompletedAllChunks(
+          trx, editionId, documentId, enrichmentType, chunkId,
+        ))) return null;
+        await markDoneInTransaction(trx, documentId, enrichmentType);
+        return null;
       });
     },
   };

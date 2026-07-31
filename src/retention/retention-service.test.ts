@@ -66,7 +66,7 @@ describe("retention-service", () => {
     await closePool(pool);
   });
 
-  it("purges edition-linked content, embeddings, lineage, and old jobs while retaining recent editions", async () => {
+  it("purges edition-linked content, lineage, and old jobs while retaining recent editions", async () => {
     const oldCreatedAt = new Date(Date.now() - 31 * DAY_MS);
     const oldEdition = await db
       .insertInto("editions")
@@ -125,17 +125,6 @@ describe("retention-service", () => {
         paragraph_end: 0,
       })
       .execute();
-    const vector = `[${Array(384).fill("0").join(",")}]`;
-    await db
-      .insertInto("embeddings")
-      .values({
-        chunk_id: "00000000000000000000000000000001",
-        vector,
-        model: "fake",
-        provider: "fake",
-        input_hash: "old-hash",
-      })
-      .execute();
     await db
       .insertInto("document_lineage")
       .values({
@@ -174,7 +163,6 @@ describe("retention-service", () => {
 
     expect(await db.selectFrom("editions").select("id").execute()).toHaveLength(1);
     expect(await db.selectFrom("documents").select("id").execute()).toHaveLength(0);
-    expect(await db.selectFrom("embeddings").select("id").execute()).toHaveLength(0);
     expect(await db.selectFrom("document_lineage").select("id").execute()).toHaveLength(0);
     expect(await db.selectFrom("discovery_events").select("id").execute()).toHaveLength(0);
     expect(await db.selectFrom("processing_jobs").select("id").execute()).toHaveLength(1);

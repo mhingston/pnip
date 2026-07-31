@@ -1,1 +1,1 @@
-CREATE EXTENSION IF NOT EXISTS vector;
+-- Legacy no-op. PNIP no longer requires the pgvector extension.

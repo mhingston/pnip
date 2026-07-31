@@ -19,11 +19,11 @@ Processing queue
           ├─ chunk summaries
           ├─ entities
           ├─ topics
-          ├─ embeddings (legacy mode)
+          ├─ bounded editorial plan
           └─ quality labels/confidence
                          │
                          ▼
-                 legacy story clustering or LLM editorial plan
+                 bounded LLM editorial plan
                          │
                          ▼
                  story summaries + citations
@@ -101,9 +101,9 @@ Expansion converts an ingested URL into a canonical document. Plugins currently 
 
 Canonical documents are split into ordered sections. Chunk IDs and lineage edges are deterministic, so downstream enrichment can be retried without losing provenance.
 
-The enrichment workers produce grounded chunk summaries, entities, topics, quality classifications, and (in legacy mode) embeddings. Legacy embeddings drive clustering. In LLM mode, the runtime registers only extraction, chunking, enrichment, and story-summary workers; `compose-edition` builds clipped item briefs from persisted summaries and sampled chunks, validates complete corpus accounting, and persists the editorial plan before story synthesis. Quality labels and confidence remain available for NotebookLM source selection.
+The enrichment workers produce grounded chunk summaries, entities, topics, and quality classifications. The runtime registers extraction, chunking, enrichment, and story-summary workers; `compose-edition` builds clipped item briefs from persisted summaries and sampled chunks, validates complete corpus accounting, and persists the editorial plan before story synthesis. Quality labels and confidence remain available for NotebookLM source selection.
 
-Story clustering creates ordered story clusters in legacy mode. The LLM path maps validated editorial stories into the existing story tables for compatibility. Story summaries contain a narrative summary plus key claims tied to source chunks. The Markdown renderer keeps the source links but deliberately omits numbered citation tokens from the reader-facing output.
+The editorial planner creates ordered stories from the frozen enriched corpus and maps validated results into the existing story tables for compatibility. Story summaries contain a narrative summary plus key claims tied to source chunks. The Markdown renderer keeps the source links but deliberately omits numbered citation tokens from the reader-facing output.
 
 ## Digest and output policy
 
@@ -128,22 +128,22 @@ A non-master partition is active when enabled and its document count reaches min
 
 Notebook source ranking is deterministic:
 
-1. minimum story cluster order;
+1. minimum story order;
 2. best quality label (high, medium, low, then unclassified);
 3. average quality confidence, descending; and
 4. document ID ascending.
 
 ## Feedback and trust
 
-Signals are written for story votes, muted sources, starred chunks, clustering, digest lead selection, and notebook exclusions. Source identities normalize publishers/hosts/subreddits so feedback can apply across URLs.
+Signals are written for story votes, muted sources, starred chunks, editorial composition, digest lead selection, and notebook exclusions. Source identities normalize publishers/hosts/subreddits so feedback can apply across URLs.
 
-DIGEST_BIAS_ENABLED is opt-in. It removes a story only when all of its documents belong to muted sources and moves down-rated stories later. Source-trust tiers can reorder clusters during clustering.
+DIGEST_BIAS_ENABLED is opt-in. It removes a story only when all of its documents belong to muted sources and moves down-rated stories later. Source-trust tiers can inform editorial ordering.
 
 ## Queue, retries, and maintenance
 
 Jobs have pending, running, completed, failed, and archived states. Worker claims are lease-based, and stale running jobs can be recovered. Retry requeues failed jobs; maintenance archives old completed/failed jobs and purges old archived jobs.
 
-Maintenance runs a 30-day retention transaction when invoked with `--apply`: it removes old edition-linked source data, sections/chunks, enrichment rows, embeddings, artifact rows, discovery events, lineage, and old jobs. Queue archive/purge defaults also retain archived jobs for 30 days. The edition delete cascades through the relational content graph; lineage is explicitly cleaned because it is intentionally schema-less. External NotebookLM assets and already-downloaded podcast files are outside PostgreSQL retention. The cron installer schedules this apply pass every six hours with a row limit safety cap.
+Maintenance runs a 30-day retention transaction when invoked with `--apply`: it removes old edition-linked source data, sections/chunks, enrichment rows, artifact rows, discovery events, lineage, and old jobs. Queue archive/purge defaults also retain archived jobs for 30 days. The edition delete cascades through the relational content graph; lineage is explicitly cleaned because it is intentionally schema-less. External NotebookLM assets and already-downloaded podcast files are outside PostgreSQL retention. The cron installer schedules this apply pass every six hours with a row limit safety cap.
 
 The cron helpers are operational conveniences, not part of the scheduler runtime:
 

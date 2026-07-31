@@ -287,7 +287,7 @@ Durations accept a number with a unit suffix:
   s (seconds), m (minutes), h (hours), d (days). No suffix => ms.
 
 Recommended cadence: run with --apply from cron every few hours. Edition-linked
-source data, embeddings, enrichment rows, artifacts, discovery events, lineage,
+source data, enrichment rows, artifacts, discovery events, lineage,
 old jobs, and their NotebookLM notebooks are deleted after 30 days by default
 when NotebookLM is configured.
 `;

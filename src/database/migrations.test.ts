@@ -76,6 +76,7 @@ describe("migration runner", () => {
       "029_add_miniflux_read_reset_at.sql",
       "030_add_processing_jobs_target_lookup_idx.sql",
       "031_create_editorial_plans.sql",
+      "032_drop_legacy_embedding_storage.sql",
     ]);
     expect(res.skipped).toEqual([]);
 
@@ -111,6 +112,7 @@ describe("migration runner", () => {
       "029_add_miniflux_read_reset_at.sql",
       "030_add_processing_jobs_target_lookup_idx.sql",
       "031_create_editorial_plans.sql",
+      "032_drop_legacy_embedding_storage.sql",
     ]);
 
     const r = await pool.query("SELECT to_regclass('__smoke') AS exists");
@@ -178,6 +180,7 @@ describe("migration runner", () => {
       "029_add_miniflux_read_reset_at.sql",
       "030_add_processing_jobs_target_lookup_idx.sql",
       "031_create_editorial_plans.sql",
+      "032_drop_legacy_embedding_storage.sql",
     ]);
 
     expect(await getAppliedMigrations(pool)).toEqual([
@@ -212,6 +215,7 @@ describe("migration runner", () => {
       "029_add_miniflux_read_reset_at.sql",
       "030_add_processing_jobs_target_lookup_idx.sql",
       "031_create_editorial_plans.sql",
+      "032_drop_legacy_embedding_storage.sql",
     ]);
   });
 

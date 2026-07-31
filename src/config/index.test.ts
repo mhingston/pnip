@@ -140,14 +140,6 @@ describe("config", () => {
     expect(config.DIGEST_QUIET_EDITION_REASON).toBe("low_significance");
   });
 
-  it("parses small-edition clustering settings", () => {
-    process.env.DATABASE_URL = "postgres://localhost/db";
-    process.env.DIGEST_SMALL_EDITION_MAX_DOCUMENTS = "24";
-    process.env.DIGEST_SMALL_EDITION_SIMILARITY_THRESHOLD = "0.55";
-    const config = loadConfig();
-    expect(config.DIGEST_SMALL_EDITION_MAX_DOCUMENTS).toBe(24);
-    expect(config.DIGEST_SMALL_EDITION_SIMILARITY_THRESHOLD).toBeCloseTo(0.55);
-  });
 
   it("parses the minimum story and discovery coverage settings", () => {
     process.env.DATABASE_URL = "postgres://localhost/db";
@@ -190,14 +182,6 @@ describe("config", () => {
     process.env.DIGEST_MAX_STORIES_PER_SOURCE = "8";
     process.env.DIGEST_MAX_DOCUMENTS_PER_SOURCE = "0";
     expect(() => loadConfig({ force: true })).toThrow(/DIGEST_MAX_DOCUMENTS_PER_SOURCE/);
-  });
-
-  it("rejects a small-edition similarity threshold outside 0..1", () => {
-    process.env.DATABASE_URL = "postgres://localhost/db";
-    process.env.DIGEST_SMALL_EDITION_SIMILARITY_THRESHOLD = "1.1";
-    expect(() => loadConfig()).toThrow(
-      /DIGEST_SMALL_EDITION_SIMILARITY_THRESHOLD/,
-    );
   });
 
   it("rejects unsupported quiet-edition claims", () => {

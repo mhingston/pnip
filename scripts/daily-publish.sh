@@ -159,12 +159,8 @@ run "finish current edition processing" \
 run "rollover-unenriched" \
   npm run digestive -- rollover-unenriched --date "$DATE"
 
-if [ "${DIGEST_EDITORIAL_MODE:-legacy}" = "llm" ]; then
-  run "compose-edition" \
-    npm run digestive -- compose-edition --date "$DATE"
-else
-  log "DIGEST_EDITORIAL_MODE is legacy; retaining embedding-based composition"
-fi
+run "compose-edition" \
+  npm run digestive -- compose-edition --date "$DATE"
 
 run "process story summaries" \
   npm run digestive -- process --date "$DATE" --max-jobs "$PUBLISH_PROCESS_MAX_JOBS"

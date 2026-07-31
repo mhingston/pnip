@@ -1,4 +1,4 @@
-import type { EnqueueJobInput, Worker, WorkerContext, WorkerOutcome } from "../jobs/workers/worker.js";
+import type { Worker, WorkerContext, WorkerOutcome } from "../jobs/workers/worker.js";
 import type { ProcessingJob } from "../database/kysely.js";
 import type { ChunkRepository, DocumentChunkRow } from "../chunking/chunk-repository.js";
 import type { PromptRepository } from "../prompts/prompt-repository.js";
@@ -76,16 +76,8 @@ export function createEnrichChunkWorker(deps: EnrichChunkDeps): Worker {
       for (const topic of topics.topics) await deps.provenanceRepo.recordLineage({ sourceType: "chunk", sourceId: chunk.id, targetType: "topic", targetId: topic.id, relation: "assigned_to" });
       for (const assignment of topics.assignments) await deps.provenanceRepo.recordLineage({ sourceType: "topic", sourceId: assignment.topic_id, targetType: "chunk", targetId: assignment.chunk_id, relation: "covers" });
       await deps.provenanceRepo.recordLineage({ sourceType: "chunk", sourceId: chunk.id, targetType: "quality_classification", targetId: qualityResult.id, relation: "classified_as" });
-      const childJob = await deps.gate.markEnrichmentDoneAndMaybeEnqueueCluster(editionId, documentId, "enrich_chunk", chunkId);
-      // The embedding uses this newly persisted summary as its input, so it
-      // must be enqueued only after the combined enrichment succeeds.
-      const childJobs: EnqueueJobInput[] = [{
-        jobType: "embed_chunk",
-        editionId,
-        target: { chunkId, documentId },
-      }];
-      if (childJob) childJobs.push(childJob);
-      return { childJobs };
+      await deps.gate.markEnrichmentDoneAndMaybeEnqueueCluster(editionId, documentId, "enrich_chunk", chunkId);
+      return {};
     },
   };
 }

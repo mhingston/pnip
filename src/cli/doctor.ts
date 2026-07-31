@@ -37,8 +37,6 @@ const KNOWN_WORKERS = [
   "expand_document",
   "chunk_document",
   "enrich_chunk",
-  "embed_chunk",
-  "cluster_stories",
   "summarize_story",
 ];
 

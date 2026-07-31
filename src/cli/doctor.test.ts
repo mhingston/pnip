@@ -445,7 +445,7 @@ describe("runDoctorCommand", () => {
     const check = r.report.checks.find((c) => c.name === "workers");
     expect(check?.ok).toBe(true);
     expect(check?.detail).toContain("expand_document");
-    expect(check?.detail).toContain("cluster_stories");
+    expect(check?.detail).toContain("summarize_story");
   });
 
   it("summary: exitCode 0 when all checks pass", async () => {

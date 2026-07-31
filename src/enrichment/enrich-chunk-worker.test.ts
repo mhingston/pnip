@@ -44,9 +44,7 @@ describe("EnrichChunkWorker", () => {
     expect(gate.markEnrichmentDoneAndMaybeEnqueueCluster).toHaveBeenCalledWith("edition", "doc", "enrich_chunk", "chunk");
     expect(provenanceRepo.recordLineage).toHaveBeenCalledWith(expect.objectContaining({ relation: "mentioned_in", sourceId: "entity", targetId: "chunk" }));
     expect(provenanceRepo.recordLineage).toHaveBeenCalledWith(expect.objectContaining({ relation: "covers", sourceId: "topic", targetId: "chunk" }));
-    expect(outcome.childJobs).toEqual([
-      { jobType: "embed_chunk", editionId: "edition", target: { chunkId: "chunk", documentId: "doc" } },
-    ]);
+    expect(outcome.childJobs).toBeUndefined();
   });
 
   it("uses grounded/empty fallbacks for malformed structured output", async () => {

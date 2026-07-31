@@ -5,12 +5,6 @@ export interface ProviderTextResult {
   usage?: { promptTokens?: number; completionTokens?: number };
 }
 
-export interface ProviderEmbedResult {
-  vectors: number[][];
-  model: string;
-  provider: string;
-}
-
 export interface AiProvider {
   name: string;
   generateText(input: {
@@ -19,7 +13,8 @@ export interface AiProvider {
     maxTokens?: number;
     temperature?: number;
   }): Promise<ProviderTextResult>;
-  embed(input: { texts: string[]; model?: string }): Promise<ProviderEmbedResult>;
+  /** Test-double compatibility only; production providers do not implement embeddings. */
+  embed?: (input: { texts: string[]; model?: string }) => Promise<any>;
 }
 
 export interface ArtifactMetadata {

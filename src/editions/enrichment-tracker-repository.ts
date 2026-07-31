@@ -3,7 +3,6 @@ import type { Database } from "../database/kysely.js";
 
 export const REQUIRED_ENRICHMENT_TYPES = [
   "enrich_chunk",
-  "embed_chunk",
 ] as const;
 
 export type EnrichmentType = (typeof REQUIRED_ENRICHMENT_TYPES)[number];
@@ -60,6 +59,7 @@ export interface EnrichmentTrackerRepository {
   ) => Promise<DocumentEnrichmentCompletionMap>;
   getDocumentCounts(editionId: string): Promise<EditionEnrichmentCounts>;
   isEditionFullyEnriched(editionId: string): Promise<boolean>;
+  /** Compatibility read/write helpers for the removed cluster claim marker. */
   getEditionEnqueuedAt(editionId: string): Promise<Date | null>;
   claimEditionEnqueue(editionId: string): Promise<Date | null>;
   resetEditionEnqueue(editionId: string): Promise<void>;

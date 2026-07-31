@@ -75,10 +75,6 @@ function expiredDataCtes(cutoff: Date, limit: number) {
       SELECT id FROM quality_classifications
       WHERE document_id IN (SELECT id FROM expired_documents)
     ),
-    expired_embeddings AS (
-      SELECT id FROM embeddings
-      WHERE chunk_id IN (SELECT id FROM expired_chunks)
-    ),
     expired_stories AS (
       SELECT id FROM story_clusters
       WHERE edition_id IN (SELECT id FROM expired_editions)
@@ -96,7 +92,6 @@ function expiredDataCtes(cutoff: Date, limit: number) {
       UNION ALL SELECT 'entity', id::text FROM expired_entities
       UNION ALL SELECT 'topic', id::text FROM expired_topics
       UNION ALL SELECT 'quality_classification', id::text FROM expired_quality
-      UNION ALL SELECT 'embedding', id::text FROM expired_embeddings
       UNION ALL SELECT 'story', id::text FROM expired_stories
       UNION ALL SELECT 'story_summary', id::text FROM expired_story_summaries
     )

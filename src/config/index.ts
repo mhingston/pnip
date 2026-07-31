@@ -20,11 +20,8 @@ const configSchema = z.object({
   GOOGLE_GENERATIVE_AI_API_KEY: z.string().optional(),
   AI_PROVIDER: z.enum(["openai", "fake", "openai-compatible"]).default("openai"),
   AI_TEXT_MODEL: z.string().optional(),
-  DIGEST_EDITORIAL_MODE: z.enum(["legacy", "llm"]).default("legacy"),
   EDITORIAL_PLAN_MODEL: z.string().optional(),
   EDITORIAL_PLAN_MAX_DOCUMENTS: z.coerce.number().int().positive().default(100),
-  EMBEDDING_MODEL: z.string().optional(),
-  EMBEDDING_CACHE_DIR: z.string().optional(),
   RESEND_API_KEY: z.string().optional(),
   EMAIL_FROM: z.string().optional(),
   EMAIL_RECIPIENT: z.string().optional(),
@@ -46,13 +43,6 @@ const configSchema = z.object({
   DIGEST_DISCOVERY_LOOKBACK_DAYS: z.coerce.number().int().nonnegative().default(7),
   DIGEST_SOURCE_BALANCE: z.enum(["true", "false"]).default("true"),
   DIGEST_TARGET_READING_MINUTES: z.coerce.number().int().positive().optional(),
-  DIGEST_SMALL_EDITION_MAX_DOCUMENTS: z.coerce.number().int().positive().optional(),
-  DIGEST_SMALL_EDITION_SIMILARITY_THRESHOLD: z
-    .coerce
-    .number()
-    .min(0)
-    .max(1)
-    .optional(),
   DIGEST_QUIET_EDITION_REASON: z
     .enum(["low_significance", "low_novelty"])
     .optional(),

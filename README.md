@@ -51,16 +51,14 @@ Feeds, newsletters, YouTube, Reddit, podcasts, PDFs, ...
                   published edition
 ```
 
-Miniflux remains responsible for fetching and aggregating feeds. PNIP consumes the resulting entries and is responsible for content extraction, enrichment, bounded editorial composition, digest generation, and publication. In `DIGEST_EDITORIAL_MODE=llm`, the planner receives only persisted, clipped item briefs from the frozen edition corpus; it does not browse or choose arbitrary URLs.
+Miniflux remains responsible for fetching and aggregating feeds. PNIP consumes the resulting entries and is responsible for content extraction, enrichment, bounded editorial composition, digest generation, and publication. The planner receives only persisted, clipped item briefs from the frozen edition corpus; it does not browse or choose arbitrary URLs.
 
 For ordinary articles, PNIP stores one document-level chunk and performs one
 combined AI enrichment call that produces the summary, entities, topics, and
 quality assessment. Long documents and timed material such as transcripts keep
 the smaller chunk representation so coverage and timestamp-level provenance are
-preserved. In legacy mode, normal-article embeddings use the title plus grounded
-summary; chunk-level embedding remains the fallback for long or timed material.
-In LLM mode, the planner receives clipped summaries and sampled evidence from
-the persisted edition corpus instead.
+preserved. The planner receives clipped summaries and sampled evidence from
+the persisted edition corpus instead of full transcripts.
 
 ## Opinionated defaults
 
@@ -231,7 +229,7 @@ PNIP loads `.env` through `dotenv`. `DATABASE_URL` is the only globally required
 
 PNIP's discovery call reads all entries exposed by the configured Miniflux account. Limit the source collection in Miniflux itself when only specific categories or feeds should be available to PNIP.
 
-### AI and embeddings
+### AI and bounded editorial composition
 
 | Variable | Required | Default | Description |
 | --- | --- | --- | --- |
@@ -239,14 +237,11 @@ PNIP's discovery call reads all entries exposed by the configured Miniflux accou
 | `OPENAI_API_KEY` | For OpenAI providers | — | API key used by the OpenAI or OpenAI-compatible provider. |
 | `OPENAI_BASE_URL` | No | provider-dependent | Overrides the OpenAI-compatible API base URL. The local fallback for `openai-compatible` is `http://localhost:20128/v1`. |
 | `AI_TEXT_MODEL` | No | provider default | Overrides the model used for text enrichment and story summarisation. |
-| `DIGEST_EDITORIAL_MODE` | No | `legacy` | `legacy` uses embedding clustering; `llm` uses bounded edition-level editorial composition. |
 | `EDITORIAL_PLAN_MODEL` | No | `AI_TEXT_MODEL` | Model override for the editorial planner. |
 | `EDITORIAL_PLAN_MAX_DOCUMENTS` | No | `100` | Maximum documents supplied to one editorial planning call. |
-| `EMBEDDING_MODEL` | No | `Xenova/all-MiniLM-L6-v2` | Hugging Face Transformers.js embedding model. The default produces 384-dimensional vectors. |
-| `EMBEDDING_CACHE_DIR` | No | library default | Local cache directory for the embedding model. |
 | `GOOGLE_GENERATIVE_AI_API_KEY` | No | — | Reserved in the current configuration schema. It is not used by the currently selectable AI providers. |
 
-`AI_PROVIDER=fake` uses deterministic providers intended for development and tests. One text-model call supplies the combined document or chunk enrichment. In `DIGEST_EDITORIAL_MODE=llm`, `compose-edition` makes one bounded planning call, allows one repair call for invalid output, and otherwise falls back to singleton stories. The planner receives no full transcripts, arbitrary URLs, or database IDs outside the frozen item briefs.
+`AI_PROVIDER=fake` uses deterministic providers intended for development and tests. One text-model call supplies the combined document or chunk enrichment. `compose-edition` makes one bounded planning call, allows one repair call for invalid output, and otherwise falls back to singleton stories. The planner receives no full transcripts, arbitrary URLs, or database IDs outside the frozen item briefs.
 
 ### Content extraction
 
@@ -280,15 +275,13 @@ The master NotebookLM notebook normally receives the curated source URLs or file
 
 | Variable | Required | Default | Description |
 | --- | --- | --- | --- |
-| `DIGEST_MIN_STORIES` | No | `25` | Best-effort minimum story-cluster target. It also drives discovery fill. |
-| `DIGEST_MAX_STORIES` | No | `25` | Hard maximum number of stories rendered in the canonical digest; also the target story-cluster count when clustering can merge enough related documents. |
+| `DIGEST_MIN_STORIES` | No | `25` | Best-effort discovery-fill target; it does not force unrelated documents to merge. |
+| `DIGEST_MAX_STORIES` | No | `25` | Presentation cap for stories rendered in the canonical digest. |
 | `DIGEST_MAX_STORIES_PER_SOURCE` | No | `8` | Maximum number of rendered stories led by one source identity; later stories from other sources are preferred. |
 | `DIGEST_MAX_DOCUMENTS_PER_SOURCE` | No | `12` | Maximum number of source links shown for one source identity in the digest. |
 | `DIGEST_DISCOVERY_LOOKBACK_DAYS` | No | `7` | Number of recent days searched for unprocessed entries when the current cursor yields too few items. Set to `0` to disable historical fill. |
 | `DIGEST_SOURCE_BALANCE` | No | `true` | When `true`, historical fill prefers articles and YouTube over Reddit. |
 | `DIGEST_TARGET_READING_MINUTES` | No | — | Presentation calibration affecting lead-story prominence. |
-| `DIGEST_SMALL_EDITION_MAX_DOCUMENTS` | No | internal default | Positive document-count cutoff for using the small-edition clustering policy. |
-| `DIGEST_SMALL_EDITION_SIMILARITY_THRESHOLD` | No | internal default | Similarity threshold from `0` to `1` used for small editions. |
 | `DIGEST_QUIET_EDITION_REASON` | No | — | Explicit editorial framing: `low_significance` or `low_novelty`. |
 | `DIGEST_BIAS_ENABLED` | No | `false` | Set to `true` to apply feedback-derived muted-source suppression and move down-rated stories later. |
 | `YOUTUBE_FOCUS_CHANNELS` | No | empty | Comma-separated channel names or handles that receive ranking and deeper transcript-analysis emphasis. |
@@ -375,12 +368,12 @@ All commands support `-h` and `--help`. Date arguments default to today where su
 | --- | --- |
 | `digestive discover` | Ingest new read or unread Miniflux entries and reset Miniflux read state once per new edition boundary. |
 | `digestive process [--date YYYY-MM-DD] [--max-jobs N]` | Drain queued processing jobs, optionally scoped to one edition and bounded to a batch size. |
-| `digestive compose-edition --date YYYY-MM-DD` | In LLM mode, create or reuse the validated editorial plan for the frozen enriched edition corpus. |
+| `digestive compose-edition --date YYYY-MM-DD` | Create or reuse the validated editorial plan for the frozen enriched edition corpus. |
 | `digestive generate-digest` | Render the canonical Markdown digest. |
 | `digestive generate-notebook` | Create or resume a NotebookLM notebook. Without `--wait`, it starts ingestion without blocking; use `--wait` for a manual poll/resume. |
 | `digestive generate-podcast` | Start or resume an optional NotebookLM audio overview after its notebook is ready. Use `--partition` and `--wait` as needed. |
 | `digestive generate-email` | Render and send the HTML email. `--dry-run` skips sending. |
-| `digestive generate-edition` | Evaluate the Building → Ready gate. Legacy mode requires embeddings and clusters; LLM mode requires an editorial plan and source-grounded story summaries. |
+| `digestive generate-edition` | Evaluate the Building → Ready gate: enrichment, editorial plan, complete story accounting, and source-grounded summaries. |
 | `digestive publish-edition` | Gate-check and publish the edition. `--dry-run` is read-only. |
 
 ### Operations
@@ -443,8 +436,8 @@ src/database        PostgreSQL schema, migrations, and Kysely types
 src/discovery       Miniflux client, discovery cursor, and partition routing
 src/expansion       Article, YouTube, podcast, PDF, and Reddit plugins
 src/chunking        Document-level chunks plus long/timed-content splitting and provenance
-src/enrichment      Combined summary/entity/topic/quality enrichment and embeddings
-src/clustering      Story clustering and story summaries
+src/enrichment      Combined summary/entity/topic/quality enrichment
+src/clustering      Compatibility story repositories and story summaries
 src/editions        Edition lifecycle, readiness, and assembly
 src/digest          Markdown, email, NotebookLM, and podcast outputs
 src/publication     Publication gate and state transitions

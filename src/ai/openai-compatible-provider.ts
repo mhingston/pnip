@@ -1,4 +1,4 @@
-import type { AiProvider, ProviderEmbedResult, ProviderTextResult } from "./provider.js";
+import type { AiProvider, ProviderTextResult } from "./provider.js";
 
 export interface OpenAICompatibleProviderOptions {
   baseURL: string;
@@ -79,35 +79,6 @@ export function createOpenAICompatibleProvider(
             }
           : undefined,
       };
-    },
-    async embed(input): Promise<ProviderEmbedResult> {
-      const model = input.model ?? "text-embedding-3-small";
-      const res = await fetch(`${baseURL}/embeddings`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${opts.apiKey}`,
-        },
-        body: JSON.stringify({ model, input: input.texts }),
-      });
-      if (!res.ok) {
-        const text = await res.text();
-        throw new Error(
-          `openai-compatible ${baseURL}/embeddings ${res.status}: ${text.slice(0, 500)}`,
-        );
-      }
-      const data = (await res.json()) as {
-        model: string;
-        data: { embedding: number[]; index: number }[];
-      };
-      const vectors = new Array<number[]>(input.texts.length);
-      for (const item of data.data) {
-        vectors[item.index] = item.embedding;
-      }
-      for (let i = 0; i < vectors.length; i++) {
-        if (!vectors[i]) throw new Error(`openai-compatible embed missing index ${i}`);
-      }
-      return { vectors, model: data.model ?? model, provider: providerName };
     },
   };
 }

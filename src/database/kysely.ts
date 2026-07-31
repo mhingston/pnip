@@ -273,15 +273,6 @@ export interface Database {
     input_hash: string;
     created_at: Generated<Date>;
   };
-  embeddings: {
-    id: Generated<string>;
-    chunk_id: string;
-    vector: unknown;
-    model: string;
-    provider: string;
-    input_hash: string;
-    created_at: Generated<Date>;
-  };
   story_clusters: {
     id: Generated<string>;
     edition_id: string;
