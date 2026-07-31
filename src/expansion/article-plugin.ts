@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import type { ExpansionPlugin, ExpandContext, ExpandResult, SectionData } from "./types.js";
 import { loadConfig } from "../config/index.js";
+import { envWithHomeLocalBin } from "../util/process-env.js";
 
 export type ContentFetcher = (url: string) => Promise<string>;
 
@@ -108,13 +109,22 @@ function reindexSections(sections: SectionData[]): SectionData[] {
 async function defaultFetchContent(url: string): Promise<string> {
   const bin = loadConfig().FABRIC_BIN ?? "fabric";
   return new Promise((resolve, reject) => {
-    const proc = execFile(bin, ["-u", url], { timeout: 60_000, maxBuffer: 10 * 1024 * 1024 }, (err, stdout) => {
-      if (err) {
-        reject(err);
-        return;
-      }
-      resolve(stdout);
-    });
+    const proc = execFile(
+      bin,
+      ["-u", url],
+      {
+        timeout: 60_000,
+        maxBuffer: 10 * 1024 * 1024,
+        env: envWithHomeLocalBin(),
+      },
+      (err, stdout) => {
+        if (err) {
+          reject(err);
+          return;
+        }
+        resolve(stdout);
+      },
+    );
     if (proc.stdin) {
       proc.stdin.end();
     }

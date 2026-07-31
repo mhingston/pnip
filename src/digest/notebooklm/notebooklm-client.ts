@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { Logger } from "../../logging/logger.js";
+import { envWithHomeLocalBin } from "../../util/process-env.js";
 
 export class NotebookLmError extends Error {
   readonly name = "NotebookLmError";
@@ -247,10 +248,7 @@ function envFromConfig(
   profile: string | undefined,
   storage: string | undefined,
 ): Record<string, string> {
-  const env: Record<string, string> = {};
-  for (const [k, v] of Object.entries(process.env)) {
-    if (typeof v === "string") env[k] = v;
-  }
+  const env = envWithHomeLocalBin();
   if (profile !== undefined) env.NOTEBOOKLM_PROFILE = profile;
   if (storage !== undefined) {
     env.NOTEBOOKLM_STORAGE_PATH = storage;

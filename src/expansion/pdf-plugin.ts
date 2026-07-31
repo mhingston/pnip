@@ -10,6 +10,7 @@ import type {
   SectionData,
 } from "./types.js";
 import { loadConfig } from "../config/index.js";
+import { envWithHomeLocalBin } from "../util/process-env.js";
 
 export type PdfDownloader = (url: string) => Promise<string>;
 export type MarkdownFetcher = (filePath: string) => Promise<string>;
@@ -43,7 +44,11 @@ async function defaultMarkdownFetcher(filePath: string): Promise<string> {
       const proc = execFile(
         bin,
         [filePath],
-        { timeout: MARKITDOWN_TIMEOUT_MS, maxBuffer: MAX_BUFFER },
+        {
+          timeout: MARKITDOWN_TIMEOUT_MS,
+          maxBuffer: MAX_BUFFER,
+          env: envWithHomeLocalBin(),
+        },
         (err, out) => {
           if (err) { reject(err); return; }
           resolve(out);

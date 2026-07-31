@@ -10,6 +10,7 @@ import type {
   SectionData,
 } from "./types.js";
 import { loadConfig } from "../config/index.js";
+import { envWithHomeLocalBin } from "../util/process-env.js";
 
 export type AudioDownloader = (url: string) => Promise<string>;
 export type TranscribeFetcher = (filePath: string) => Promise<string>;
@@ -77,7 +78,11 @@ async function defaultTranscribeFetcher(
       const proc = execFile(
         bin,
         ["--transcribe-file", filePath, "--transcribe-model", model],
-        { timeout: TRANSCRIBE_TIMEOUT_MS, maxBuffer: MAX_BUFFER },
+        {
+          timeout: TRANSCRIBE_TIMEOUT_MS,
+          maxBuffer: MAX_BUFFER,
+          env: envWithHomeLocalBin(),
+        },
         (err, out) => {
           if (err) { reject(err); return; }
           resolve(out);

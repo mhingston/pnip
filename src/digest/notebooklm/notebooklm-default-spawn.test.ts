@@ -81,7 +81,10 @@ describe("default spawn wires through node:child_process.spawn", () => {
     expect(cpMock.__calls[0]?.bin).toBe("notebooklm");
     expect(cpMock.__calls[0]?.args).toEqual(["create", "Hello", "--json"]);
     expect(cpMock.__calls[0]?.opts.stdio).toEqual(["ignore", "pipe", "pipe"]);
-    expect(cpMock.__calls[0]?.opts.env.PATH).toBe(process.env.PATH);
+    const expectedPath = process.env.HOME
+      ? `${process.env.HOME}/.local/bin:${(process.env.PATH ?? "").split(":").filter((e) => e !== `${process.env.HOME}/.local/bin`).join(":")}`
+      : process.env.PATH;
+    expect(cpMock.__calls[0]?.opts.env.PATH).toBe(expectedPath);
   });
 
   it("sets stdio to pipe stdin when writing a payload", async () => {
