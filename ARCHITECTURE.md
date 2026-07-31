@@ -15,15 +15,15 @@ Processing queue
    │
    ├─ expansion plugins → canonical documents → sections
    ├─ deterministic chunks + provenance
-   └─ five enrichment workers
+   └─ enrichment workers
           ├─ chunk summaries
           ├─ entities
           ├─ topics
-          ├─ embeddings
+          ├─ embeddings (legacy mode)
           └─ quality labels/confidence
                          │
                          ▼
-                 story clustering
+                 legacy story clustering or LLM editorial plan
                          │
                          ▼
                  story summaries + citations
@@ -76,7 +76,7 @@ building → ready → publishing → published
 
 Discovery starts with the edition date supplied to the command (normally today). If that date's edition is ready, publishing, or published, discovery walks forward to the next open date and creates or reuses a mutable edition there. The entry publication timestamp is stored for provenance but does not otherwise move an entry between editions.
 
-The readiness gate requires every edition document to complete the five enrichment types and every story to have a story summary. generate-edition evaluates that gate and transitions Building to Ready.
+The readiness gate requires every edition document to complete required enrichment, every document to be assigned exactly once by a validated editorial plan, and every story to have a story summary. generate-edition evaluates that gate and transitions Building to Ready.
 
 Publication requires:
 
@@ -101,9 +101,9 @@ Expansion converts an ingested URL into a canonical document. Plugins currently 
 
 Canonical documents are split into ordered sections. Chunk IDs and lineage edges are deterministic, so downstream enrichment can be retried without losing provenance.
 
-The five enrichment workers produce chunk summaries, entities, topics, embeddings, and quality classifications. Embeddings drive clustering; quality labels and confidence are also used for NotebookLM source selection. The processing drain reconciles fully enriched mutable editions that still contain unclustered documents, covering the late-discovery race where a cluster job ran before all sources finished enrichment.
+The enrichment workers produce grounded chunk summaries, entities, topics, quality classifications, and (in legacy mode) embeddings. Legacy embeddings drive clustering. In LLM mode, the runtime registers only extraction, chunking, enrichment, and story-summary workers; `compose-edition` builds clipped item briefs from persisted summaries and sampled chunks, validates complete corpus accounting, and persists the editorial plan before story synthesis. Quality labels and confidence remain available for NotebookLM source selection.
 
-Story clustering creates ordered story clusters. Story summaries contain a narrative summary plus key claims tied to source chunks. The Markdown renderer keeps the source links but deliberately omits numbered citation tokens from the reader-facing output.
+Story clustering creates ordered story clusters in legacy mode. The LLM path maps validated editorial stories into the existing story tables for compatibility. Story summaries contain a narrative summary plus key claims tied to source chunks. The Markdown renderer keeps the source links but deliberately omits numbered citation tokens from the reader-facing output.
 
 ## Digest and output policy
 

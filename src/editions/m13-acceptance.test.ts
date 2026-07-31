@@ -64,6 +64,8 @@ import {
 } from "../publication/publication-service.js";
 import { createSignalRepository } from "../signals/signal-repository.js";
 import { createSourceTrustRepository } from "../signals/source-trust-repository.js";
+import { createEditorialPlanRepository } from "../editorial/editorial-plan-repository.js";
+import { createEditorialPlanService } from "../editorial/editorial-plan-service.js";
 import { runFeedbackHide, runFeedbackRate } from "../cli/feedback.js";
 import { getBiasView } from "../signals/bias-view.js";
 import { createExpandDocumentWorker } from "../expansion/expand-document-worker.js";
@@ -128,6 +130,7 @@ const migrationSqlPaths = [
   "../database/migrations/027_add_notebook_podcast_partition.sql",
   "../database/migrations/028_create_miniflux_ingestion_state.sql",
   "../database/migrations/029_add_miniflux_read_reset_at.sql",
+  "../database/migrations/031_create_editorial_plans.sql",
 ];
 
 function readMigrationSql(relativePath: string): Promise<string> {
@@ -1031,6 +1034,7 @@ describe("M13 §61 acceptance criteria — full pipeline", () => {
     await pool.query(`TRUNCATE TABLE ${schema}.editions CASCADE`);
     await pool.query(`TRUNCATE TABLE ${schema}.document_lineage CASCADE`);
     await pool.query(`TRUNCATE TABLE ${schema}.prompt_versions CASCADE`);
+    await pool.query(`TRUNCATE TABLE ${schema}.editorial_plans CASCADE`);
   });
 
   afterAll(async () => {
@@ -1042,6 +1046,62 @@ describe("M13 §61 acceptance criteria — full pipeline", () => {
       client.release();
     }
     if (pool) await closePool(pool);
+  });
+
+  itWithDb("LLM editorial composition accounts for a frozen corpus and is idempotent", async () => {
+    const edition = await env.editionRepo.create("2026-07-31");
+    const documents = await Promise.all([
+      env.docRepo.create({ editionId: edition.id, sourceType: "article", sourceUrl: "https://example.com/one", title: "First development" }),
+      env.docRepo.create({ editionId: edition.id, sourceType: "article", sourceUrl: "https://example.com/two", title: "Second development" }),
+    ]);
+    for (const document of documents) await env.enrichmentTracker.markDone(document.id, "enrich_chunk");
+    await seedDefaultPrompts(env.promptRepo, silentLogger());
+
+    let plannerCalls = 0;
+    const plannerProvider: AiProvider = {
+      ...env.provider,
+      name: "fake-editorial",
+      async generateText(input) {
+        plannerCalls += 1;
+        const ids = [...new Set(input.prompt.match(/[0-9a-f]{8}-[0-9a-f-]{27,}/gi) ?? [])];
+        return {
+          content: JSON.stringify({ stories: ids.map((id, index) => ({
+            key: `story-${index + 1}`,
+            title: index === 0 ? "First development" : "Second development",
+            documentIds: [id],
+            leadDocumentId: id,
+            importance: 1 - index * 0.1,
+            mergeReason: "singleton",
+          })) }),
+          model: "fake-editorial-model",
+          provider: "fake-editorial",
+        };
+      },
+    };
+    const service = createEditorialPlanService({
+      db: env.db,
+      docRepo: env.docRepo,
+      chunkRepo: env.chunkRepo,
+      summaryRepo: env.summaryRepo,
+      promptRepo: env.promptRepo,
+      promptExecutor: createPromptExecutionService(),
+      provider: plannerProvider,
+      planRepo: createEditorialPlanRepository(env.db),
+      storyRepo: env.storyRepo,
+      queue: env.jobQueue,
+      enrichmentTracker: env.enrichmentTracker,
+      sourceTrustRepo: env.sourceTrustRepo,
+      model: "fake-editorial-model",
+    });
+
+    const first = await service.compose(edition.id);
+    expect(first.status).toBe("generated");
+    expect(first.storyCount).toBe(2);
+    expect((await env.storyRepo.getByEdition(edition.id)).flatMap((story) => story.members)).toHaveLength(2);
+    expect(plannerCalls).toBe(1);
+    const second = await service.compose(edition.id);
+    expect(second.status).toBe("reused");
+    expect(plannerCalls).toBe(1);
   });
 
   async function insertJob(

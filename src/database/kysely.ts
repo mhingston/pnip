@@ -47,6 +47,20 @@ export interface PromptVersion {
   created_at: Date;
 }
 
+export interface EditorialPlanRow {
+  id: string;
+  edition_id: string;
+  input_hash: string;
+  plan: unknown;
+  prompt_id: string;
+  prompt_version: number;
+  model: string;
+  provider: string;
+  used_fallback: boolean;
+  created_at: Date;
+  updated_at: Date;
+}
+
 export interface LineageEdge {
   id: string;
   source_type: string;
@@ -117,6 +131,19 @@ export interface Database {
     template: string;
     purpose: string;
     created_at: Generated<Date>;
+  };
+  editorial_plans: {
+    id: Generated<string>;
+    edition_id: string;
+    input_hash: string;
+    plan: unknown;
+    prompt_id: string;
+    prompt_version: number;
+    model: string;
+    provider: string;
+    used_fallback: Generated<boolean>;
+    created_at: Generated<Date>;
+    updated_at: Generated<Date>;
   };
   document_lineage: {
     id: Generated<string>;
