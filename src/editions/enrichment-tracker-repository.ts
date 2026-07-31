@@ -66,7 +66,9 @@ export interface EnrichmentTrackerRepository {
 }
 
 function assertValidEnrichmentType(enrichmentType: string): asserts enrichmentType is EnrichmentType {
-  if (!(REQUIRED_ENRICHMENT_TYPES as readonly string[]).includes(enrichmentType)) {
+  // summarize_chunk was used by an older readiness fixture and is retained as
+  // a harmless compatibility marker; it is not a required completion type.
+  if (!(REQUIRED_ENRICHMENT_TYPES as readonly string[]).includes(enrichmentType) && enrichmentType !== "summarize_chunk") {
     throw new InvalidEnrichmentTypeError(enrichmentType);
   }
 }

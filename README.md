@@ -16,7 +16,7 @@ It produces:
 - a NotebookLM notebook populated with the curated source material; and
 - optional NotebookLM-generated audio overviews.
 
-PNIP is a self-hosted TypeScript/Node.js application backed by PostgreSQL and pgvector. Processing is queued, resumable, idempotent, and provenance-aware, so generated stories can be traced back to their source documents and chunks.
+PNIP is a self-hosted TypeScript/Node.js application backed by PostgreSQL. Processing is queued, resumable, idempotent, and provenance-aware, so generated stories can be traced back to their source documents and chunks. Legacy composition still uses pgvector during the transition; LLM editorial composition does not.
 
 ## How it fits together
 
@@ -31,7 +31,11 @@ Feeds, newsletters, YouTube, Reddit, podcasts, PDFs, ...
                       PNIP discovery cursor
                               │
                               ▼
-       expand → compact/long-form chunk → enrich → embed → cluster
+       expand → compact/long-form chunk → enrich
+                              ├─ legacy: embed → similarity cluster
+                              └─ llm: freeze briefs → editorial plan
+                                      └───────────────┘
+                                      summarize → publish
                               │
                               ▼
                      daily edition assembly
@@ -47,14 +51,16 @@ Feeds, newsletters, YouTube, Reddit, podcasts, PDFs, ...
                   published edition
 ```
 
-Miniflux remains responsible for fetching and aggregating feeds. PNIP consumes the resulting entries and is responsible for content extraction, enrichment, clustering, digest generation, and publication.
+Miniflux remains responsible for fetching and aggregating feeds. PNIP consumes the resulting entries and is responsible for content extraction, enrichment, bounded editorial composition, digest generation, and publication. In `DIGEST_EDITORIAL_MODE=llm`, the planner receives only persisted, clipped item briefs from the frozen edition corpus; it does not browse or choose arbitrary URLs.
 
 For ordinary articles, PNIP stores one document-level chunk and performs one
 combined AI enrichment call that produces the summary, entities, topics, and
 quality assessment. Long documents and timed material such as transcripts keep
 the smaller chunk representation so coverage and timestamp-level provenance are
-preserved. Normal-article embeddings use the title plus grounded summary;
-chunk-level embedding remains the fallback for long or timed material.
+preserved. In legacy mode, normal-article embeddings use the title plus grounded
+summary; chunk-level embedding remains the fallback for long or timed material.
+In LLM mode, the planner receives clipped summaries and sampled evidence from
+the persisted edition corpus instead.
 
 ## Opinionated defaults
 
@@ -76,7 +82,7 @@ The current implementation deliberately makes several choices that may not suit 
 ### Core
 
 - Node.js 22 or newer
-- PostgreSQL 14 or newer with pgvector
+- PostgreSQL 14 or newer. pgvector is required only while using legacy mode.
 - A Miniflux server and API token
 
 ### Integrations
@@ -233,11 +239,14 @@ PNIP's discovery call reads all entries exposed by the configured Miniflux accou
 | `OPENAI_API_KEY` | For OpenAI providers | — | API key used by the OpenAI or OpenAI-compatible provider. |
 | `OPENAI_BASE_URL` | No | provider-dependent | Overrides the OpenAI-compatible API base URL. The local fallback for `openai-compatible` is `http://localhost:20128/v1`. |
 | `AI_TEXT_MODEL` | No | provider default | Overrides the model used for text enrichment and story summarisation. |
+| `DIGEST_EDITORIAL_MODE` | No | `legacy` | `legacy` uses embedding clustering; `llm` uses bounded edition-level editorial composition. |
+| `EDITORIAL_PLAN_MODEL` | No | `AI_TEXT_MODEL` | Model override for the editorial planner. |
+| `EDITORIAL_PLAN_MAX_DOCUMENTS` | No | `100` | Maximum documents supplied to one editorial planning call. |
 | `EMBEDDING_MODEL` | No | `Xenova/all-MiniLM-L6-v2` | Hugging Face Transformers.js embedding model. The default produces 384-dimensional vectors. |
 | `EMBEDDING_CACHE_DIR` | No | library default | Local cache directory for the embedding model. |
 | `GOOGLE_GENERATIVE_AI_API_KEY` | No | — | Reserved in the current configuration schema. It is not used by the currently selectable AI providers. |
 
-`AI_PROVIDER=fake` uses deterministic text and embedding providers intended for development and tests. One text-model call supplies the combined document or chunk enrichment (summary, entities, topics, and quality); the embedding runs afterwards from the grounded summary.
+`AI_PROVIDER=fake` uses deterministic providers intended for development and tests. One text-model call supplies the combined document or chunk enrichment. In `DIGEST_EDITORIAL_MODE=llm`, `compose-edition` makes one bounded planning call, allows one repair call for invalid output, and otherwise falls back to singleton stories. The planner receives no full transcripts, arbitrary URLs, or database IDs outside the frozen item briefs.
 
 ### Content extraction
 
@@ -366,11 +375,12 @@ All commands support `-h` and `--help`. Date arguments default to today where su
 | --- | --- |
 | `digestive discover` | Ingest new read or unread Miniflux entries and reset Miniflux read state once per new edition boundary. |
 | `digestive process [--date YYYY-MM-DD] [--max-jobs N]` | Drain queued processing jobs, optionally scoped to one edition and bounded to a batch size. |
+| `digestive compose-edition --date YYYY-MM-DD` | In LLM mode, create or reuse the validated editorial plan for the frozen enriched edition corpus. |
 | `digestive generate-digest` | Render the canonical Markdown digest. |
 | `digestive generate-notebook` | Create or resume a NotebookLM notebook. Without `--wait`, it starts ingestion without blocking; use `--wait` for a manual poll/resume. |
 | `digestive generate-podcast` | Start or resume an optional NotebookLM audio overview after its notebook is ready. Use `--partition` and `--wait` as needed. |
 | `digestive generate-email` | Render and send the HTML email. `--dry-run` skips sending. |
-| `digestive generate-edition` | Evaluate the Building → Ready gate, which requires combined enrichment and an embedding for every document (or each required long/timed chunk). |
+| `digestive generate-edition` | Evaluate the Building → Ready gate. Legacy mode requires embeddings and clusters; LLM mode requires an editorial plan and source-grounded story summaries. |
 | `digestive publish-edition` | Gate-check and publish the edition. `--dry-run` is read-only. |
 
 ### Operations
@@ -422,7 +432,7 @@ npm run typecheck
 npm run test:watch
 ```
 
-Integration tests require `TEST_DATABASE_URL` and PostgreSQL with pgvector. The project has no build step; the CLI runs through `tsx`.
+Integration tests require `TEST_DATABASE_URL` and PostgreSQL. Legacy integration fixtures additionally require pgvector. The project has no build step; the CLI runs through `tsx`.
 
 ## Project layout
 

@@ -13,6 +13,7 @@ const CLUSTER_STORIES_JOB_TYPE = "cluster_stories";
 export interface EnrichmentGateServiceDeps {
   db: Kysely<Database>;
   tracker: EnrichmentTrackerRepository;
+  editorialMode?: "legacy" | "llm";
 }
 
 export interface EnrichmentGateService {
@@ -32,7 +33,12 @@ interface TrackedCounts {
 async function countFullyEnrichedInTransaction(
   trx: Transaction<Database>,
   editionId: string,
+  editorialMode: "legacy" | "llm" = "legacy",
 ): Promise<TrackedCounts> {
+  if (editorialMode === "llm") {
+    const rows = await trx.selectFrom("documents").leftJoin("document_enrichment_status", "document_enrichment_status.document_id", "documents.id").select("documents.id").select((eb) => eb.fn.count("document_enrichment_status.document_id").filterWhere("document_enrichment_status.enrichment_type", "=", "enrich_chunk").filterWhere("document_enrichment_status.status", "=", "done").as("completed")).where("documents.edition_id", "=", editionId).groupBy("documents.id").execute();
+    return { totalDocuments: rows.length, fullyEnrichedDocuments: rows.filter((row) => Number(row.completed) > 0).length };
+  }
   const completions = await getDocumentEnrichmentCompletionsForEdition(
     trx,
     editionId,
@@ -164,9 +170,11 @@ export function createEnrichmentGateService(
         }
         await markDoneInTransaction(trx, documentId, enrichmentType);
 
-        const counts = await countFullyEnrichedInTransaction(trx, editionId);
+        const counts = await countFullyEnrichedInTransaction(trx, editionId, deps.editorialMode);
         if (counts.totalDocuments === 0) return null;
         if (counts.fullyEnrichedDocuments !== counts.totalDocuments) return null;
+
+        if (deps.editorialMode === "llm") return null;
 
         const claimedAt = await claimEditionForClusterInTransaction(trx, editionId);
         if (claimedAt === null) return null;

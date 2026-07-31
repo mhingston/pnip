@@ -17,13 +17,15 @@
 #
 # Sequence:
 #   1. recover discovery if no edition exists for the date
-#   2. digestive rollover-unenriched --date <date> (move unready docs to next
-#      edition so the source can ship what is ready)
-#   3. digestive generate-edition --date <date>   (building -> ready)
-#   4. digestive generate-digest --date <date>     (master)
-#   5. digestive generate-email --date <date>
-#   6. digestive publish-edition --date <date> --dry-run
-#   7. digestive publish-edition --date <date>
+#   2. process pending extraction/enrichment
+#   3. rollover-unenriched --date <date>
+#   4. compose-edition --date <date>
+#   5. process composition-derived story summaries
+#   6. generate-edition --date <date> (building -> ready)
+#   7. generate-digest --date <date> (master)
+#   8. generate-email --date <date>
+#   9. publish-edition --date <date> --dry-run
+#  10. publish-edition --date <date>
 #
 # NotebookLM ingestion and podcast generation continue after publication via
 # notebook-drain.sh and podcast-drain.sh. They are optional artifacts and do
@@ -141,7 +143,11 @@ while IFS= read -r line; do
   log "  - $line"
 done <<< "$PARTITION_LINES"
 
-# 1. Roll over unready documents to the next edition if the current one is not
+# 1. Give pending extraction and enrichment a final chance.
+run "finish current edition processing" \
+  npm run digestive -- process --date "$DATE" --max-jobs "$PUBLISH_PROCESS_MAX_JOBS"
+
+# 2. Roll over unready documents to the next edition if the current one is not
 # fully ready. A late enrichment, a missing story summary, or an unfinished
 # cluster can all keep the readiness gate from succeeding at the publish
 # deadline. Rolling the unready documents over lets today's edition ship what
@@ -153,10 +159,17 @@ done <<< "$PARTITION_LINES"
 run "rollover-unenriched" \
   npm run digestive -- rollover-unenriched --date "$DATE"
 
-run "finish current edition processing" \
+if [ "${DIGEST_EDITORIAL_MODE:-legacy}" = "llm" ]; then
+  run "compose-edition" \
+    npm run digestive -- compose-edition --date "$DATE"
+else
+  log "DIGEST_EDITORIAL_MODE is legacy; retaining embedding-based composition"
+fi
+
+run "process story summaries" \
   npm run digestive -- process --date "$DATE" --max-jobs "$PUBLISH_PROCESS_MAX_JOBS"
 
-# 2. Evaluate the building -> ready transition before rendering the digest.
+# 3. Evaluate the building -> ready transition before rendering the digest.
 # The Markdown service intentionally refuses to render a building edition, so
 # this gate must run before generate-digest. It is idempotent for ready and
 # published editions.

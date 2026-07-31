@@ -37,6 +37,8 @@ import { createOpenAICompatibleProvider } from "../ai/openai-compatible-provider
 import { createFakeProvider } from "../ai/fake-provider.js";
 import { createTransformersJsEmbeddingProvider } from "../ai/transformersjs-embedding-provider.js";
 import { createFakeEmbeddingProvider } from "../ai/fake-embedding-provider.js";
+import { createEditorialPlanRepository } from "../editorial/editorial-plan-repository.js";
+import { createEditorialPlanService } from "../editorial/editorial-plan-service.js";
 import { seedDefaultPrompts } from "../prompts/seed-default-prompts.js";
 import { createSummaryRepository } from "../enrichment/summary/summary-repository.js";
 import { createEnrichChunkWorker } from "../enrichment/enrich-chunk-worker.js";
@@ -142,6 +144,7 @@ import {
   parseProcessFlags,
   resolveProcessMaxJobs,
 } from "./process.js";
+import { COMPOSE_EDITION_HELP, parseComposeEditionFlags, runComposeEditionCommand } from "./compose-edition.js";
 
 const DEFAULT_WORKER_CONCURRENCY = 4;
 const MAX_WORKER_CONCURRENCY = 16;
@@ -286,13 +289,6 @@ async function main(): Promise<number> {
               })
             : createVercelAiProvider({ textModel: cfg.AI_TEXT_MODEL });
 
-      const embeddingProvider = cfg.AI_PROVIDER === "fake"
-        ? createFakeEmbeddingProvider({ dimension: 8 })
-        : createTransformersJsEmbeddingProvider({
-            model: cfg.EMBEDDING_MODEL,
-            cacheDir: cfg.EMBEDDING_CACHE_DIR,
-          });
-
       const promptExecutor = createPromptExecutionService();
 
       const registry = buildPluginRegistry();
@@ -306,7 +302,7 @@ async function main(): Promise<number> {
 
       const chunkRepo = createChunkRepository(db);
       const enrichmentTracker = createEnrichmentTrackerRepository(db);
-      const enrichmentGate = createEnrichmentGateService({ db, tracker: enrichmentTracker });
+      const enrichmentGate = createEnrichmentGateService({ db, tracker: enrichmentTracker, editorialMode: cfg.DIGEST_EDITORIAL_MODE });
 
       const chunkWorker = createChunkDocumentWorker({
         docRepo,
@@ -333,50 +329,9 @@ async function main(): Promise<number> {
         model: cfg.AI_TEXT_MODEL,
       });
 
-      const entityRepo = createEntityRepository(db);
-      const topicRepo = createTopicRepository(db);
-
-      const embeddingRepo = createEmbeddingRepository(db);
-      const embedWorker = createEmbedChunkWorker({
-        chunkRepo,
-        docRepo,
-        summaryRepo,
-        embeddingRepo,
-        embeddingProvider,
-        provenanceRepo,
-        gate: enrichmentGate,
-        editionRepo,
-      });
-
       const storyRepo = createStoryRepository(db);
       const signalRepo = createSignalRepository(db);
       const sourceTrustRepo = createSourceTrustRepository(db);
-
-      const clusterStoriesWorker = createClusterStoriesWorker({
-        docRepo,
-        summaryRepo,
-        topicRepo,
-        embeddingRepo,
-        storyRepo,
-        provenanceRepo,
-        signalRepo,
-        sourceTrustRepo,
-        enrichmentTracker: createEnrichmentTrackerRepository(db),
-        youtubeFocusChannels,
-        options: {
-          minStories: cfg.DIGEST_MIN_STORIES,
-          targetStories: cfg.DIGEST_MAX_STORIES,
-          ...(cfg.DIGEST_SMALL_EDITION_MAX_DOCUMENTS !== undefined
-            ? { smallEditionMaxDocuments: cfg.DIGEST_SMALL_EDITION_MAX_DOCUMENTS }
-            : {}),
-          ...(cfg.DIGEST_SMALL_EDITION_SIMILARITY_THRESHOLD !== undefined
-            ? {
-                smallEditionSimilarityThreshold:
-                  cfg.DIGEST_SMALL_EDITION_SIMILARITY_THRESHOLD,
-              }
-            : {}),
-        },
-      });
 
       const summarizeStoryWorker = createSummarizeStoryWorker({
         storyRepo,
@@ -393,17 +348,24 @@ async function main(): Promise<number> {
         model: cfg.AI_TEXT_MODEL,
       });
 
+      const workers = [expandWorker, chunkWorker, enrichWorker, summarizeStoryWorker];
+      if (cfg.DIGEST_EDITORIAL_MODE === "legacy") {
+        const embeddingProvider = cfg.AI_PROVIDER === "fake"
+          ? createFakeEmbeddingProvider({ dimension: 8 })
+          : createTransformersJsEmbeddingProvider({ model: cfg.EMBEDDING_MODEL, cacheDir: cfg.EMBEDDING_CACHE_DIR });
+        const embeddingRepo = createEmbeddingRepository(db);
+        const embedWorker = createEmbedChunkWorker({ chunkRepo, docRepo, summaryRepo, embeddingRepo, embeddingProvider, provenanceRepo, gate: enrichmentGate, editionRepo });
+        const clusterStoriesWorker = createClusterStoriesWorker({
+          docRepo, summaryRepo, topicRepo: createTopicRepository(db), embeddingRepo, storyRepo, provenanceRepo, signalRepo, sourceTrustRepo,
+          enrichmentTracker: createEnrichmentTrackerRepository(db), youtubeFocusChannels,
+          options: { minStories: cfg.DIGEST_MIN_STORIES, targetStories: cfg.DIGEST_MAX_STORIES },
+        });
+        workers.push(embedWorker, clusterStoriesWorker);
+      }
       const runtime = createWorkerRuntime({
         db,
         queue,
-        workers: [
-          expandWorker,
-          chunkWorker,
-          enrichWorker,
-          embedWorker,
-          clusterStoriesWorker,
-          summarizeStoryWorker,
-        ],
+        workers,
         logger: createLogger({ baseFields: { worker: "runtime" } }),
         retry: {
           maxAttempts: resolvePositiveInt(cfg.RETRY_MAX_ATTEMPTS, 5, 20),
@@ -422,14 +384,18 @@ async function main(): Promise<number> {
         });
       }
 
-      const reconciledLegacyEnrichment = await reconcileLegacyEnrichmentJobs(db);
+      const reconciledLegacyEnrichment = cfg.DIGEST_EDITORIAL_MODE === "legacy"
+        ? await reconcileLegacyEnrichmentJobs(db)
+        : 0;
       if (reconciledLegacyEnrichment > 0) {
         processLogger.info("replaced legacy enrichment jobs with combined enrichment", {
           jobCount: reconciledLegacyEnrichment,
         });
       }
 
-      const requeuedClusters = await reconcileMissingClusterJobs(db);
+      const requeuedClusters = cfg.DIGEST_EDITORIAL_MODE === "legacy"
+        ? await reconcileMissingClusterJobs(db)
+        : 0;
       if (requeuedClusters > 0) {
         processLogger.info("requeued cluster jobs for fully enriched editions with unclustered documents", {
           editionCount: requeuedClusters,
@@ -476,7 +442,9 @@ async function main(): Promise<number> {
       // the start-of-drain reconciliation has already run. Reconcile again so
       // the next bounded drain can immediately process the resulting cluster
       // job instead of waiting for another unrelated recovery path.
-      const requeuedClustersAfterDrain = await reconcileMissingClusterJobs(db);
+      const requeuedClustersAfterDrain = cfg.DIGEST_EDITORIAL_MODE === "legacy"
+        ? await reconcileMissingClusterJobs(db)
+        : 0;
       if (requeuedClustersAfterDrain > 0) {
         processLogger.info("requeued cluster jobs after enrichment drain", {
           editionCount: requeuedClustersAfterDrain,
@@ -496,6 +464,44 @@ async function main(): Promise<number> {
         }
         processLockClient.release();
       }
+    }
+
+    if (command === "compose-edition") {
+      const parsed = parseComposeEditionFlags({ args: rest });
+      if (parsed.help) { console.log(COMPOSE_EDITION_HELP); return 0; }
+      if (parsed.errors.length > 0) { for (const error of parsed.errors) console.error(error); console.log(COMPOSE_EDITION_HELP); return 2; }
+
+      const provider = cfg.AI_PROVIDER === "fake"
+        ? createFakeProvider()
+        : cfg.AI_PROVIDER === "openai-compatible"
+          ? createOpenAICompatibleProvider({ baseURL: cfg.OPENAI_BASE_URL ?? "http://localhost:20128/v1", apiKey: cfg.OPENAI_API_KEY ?? "", textModel: cfg.AI_TEXT_MODEL })
+          : createVercelAiProvider({ textModel: cfg.AI_TEXT_MODEL });
+      const promptRepo = createPromptRepository(db);
+      await seedDefaultPrompts(promptRepo);
+      const editionRepo = createEditionRepository(db);
+      const service = createEditorialPlanService({
+        db,
+        docRepo: createDocumentRepository(db),
+        chunkRepo: createChunkRepository(db),
+        summaryRepo: createSummaryRepository(db),
+        promptRepo,
+        promptExecutor: createPromptExecutionService(),
+        provider,
+        planRepo: createEditorialPlanRepository(db),
+        storyRepo: createStoryRepository(db),
+        queue: createProcessingJobQueue(db),
+        enrichmentTracker: createEnrichmentTrackerRepository(db),
+        sourceTrustRepo: createSourceTrustRepository(db),
+        signalRepo: createSignalRepository(db),
+        model: cfg.EDITORIAL_PLAN_MODEL ?? cfg.AI_TEXT_MODEL,
+        maxDocuments: cfg.EDITORIAL_PLAN_MAX_DOCUMENTS,
+      });
+      const { exitCode } = await runComposeEditionCommand({
+        editionDate: parsed.editionDate,
+        getEdition: (date) => editionRepo.getByDate(date),
+        compose: (editionId) => service.compose(editionId),
+      });
+      return exitCode;
     }
 
     if (command === "maintenance") {
@@ -547,6 +553,7 @@ async function main(): Promise<number> {
         storyRepo,
         storySummaryRepo,
         enrichmentTracker: createEnrichmentTrackerRepository(db),
+        editorialMode: cfg.DIGEST_EDITORIAL_MODE,
       });
       const service = createMarkdownDigestService({
         db,
@@ -775,6 +782,7 @@ async function main(): Promise<number> {
         storyRepo,
         storySummaryRepo,
         enrichmentTracker,
+        editorialMode: cfg.DIGEST_EDITORIAL_MODE,
       });
       const readinessGate = createEditionReadinessGate({
         db,

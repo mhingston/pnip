@@ -11,6 +11,27 @@ export interface PromptDefinition {
 
 export const DEFAULT_PROMPTS: readonly PromptDefinition[] = [
   {
+    name: "edition_editorial_plan",
+    purpose: "Bounded edition-level grouping and editorial ordering",
+    template: `You are an editor operating over a frozen RSS-derived corpus. Return ONLY JSON matching the supplied schema.
+
+Group documents only when they describe substantially the same underlying development: the same release, announcement, research, event, policy decision, or direct discussion of that specific development. Shared broad topics such as AI, agents, a company, or a programming language are not enough. When uncertain, keep documents as singleton stories.
+
+Every document ID must appear exactly once. Use only IDs in the item briefs. Choose a lead document using primary, direct, complete, and trustworthy evidence. Do not generate claims or prose beyond a short grounded title and optional editorial note.
+
+Schema contract: {{schema}}
+Contract version: {{contract_version}}
+Item briefs:
+{{item_briefs}}
+
+If this is a repair, the invalid response was:
+{{invalid_response}}
+Validation errors were:
+{{validation_errors}}
+
+Return only the JSON object.`,
+  },
+  {
     name: "enrichment",
     purpose: "Combined per-chunk summary, entity, topic, and quality enrichment",
     template: `Analyse one document chunk. Return ONLY a JSON object with:
