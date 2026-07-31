@@ -175,6 +175,8 @@ Install the recommended cron schedule with:
 scripts/cron-install.sh install
 ```
 
+The script installs into the crontab of the **operator user** — the account whose `$HOME/.local/bin` holds the per-user CLI installs (fabric, markitdown, etc.) that the drain scripts spawn. Running cron under a different user means those CLIs are not on `$PATH` and the workers fail to start. When invoked under `sudo`, the script defaults to the invoking user (`SUDO_USER`); override with `--user <name>`.
+
 The default schedule is:
 
 | Schedule | Action | Purpose |

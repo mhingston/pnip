@@ -6,10 +6,22 @@
 # no-op once the entries are gone.
 #
 # Usage:
-#   scripts/cron-install.sh install [--schedule "..."]
-#   scripts/cron-install.sh remove
-#   scripts/cron-install.sh show
+#   scripts/cron-install.sh install [--user <name>] [--schedule "..."]
+#   scripts/cron-install.sh remove  [--user <name>]
+#   scripts/cron-install.sh show    [--user <name>]
 #   scripts/cron-install.sh --help
+#
+# Target user:
+#   By default the script installs into the crontab of the user that
+#   invoked it. When invoked under `sudo`, it defaults to the invoking
+#   user (SUDO_USER) instead, so `sudo scripts/cron-install.sh install`
+#   from an operator shell installs into the operator's crontab rather
+#   than root's. Override with --user <name> for explicit control.
+#
+#   The target user should be the operator whose $HOME holds the
+#   per-user CLI installs (fabric, markitdown, etc.). Running cron
+#   under a different user (e.g. root) means those CLIs are not in
+#   the script's $PATH and worker spawns fail with ENOENT.
 #
 # The default schedule:
 #   */10 * * * *   digest-drain          (drain Miniflux -> editions)
@@ -47,6 +59,7 @@ SCHEDULE_PODCAST="*/10 * * * *"
 SCHEDULE_MAINTENANCE="0 */6 * * *"
 SCHEDULE_PUBLISH="0 6 * * *"
 ACTION=""
+TARGET_USER=""
 
 usage() {
   sed -n '2,30p' "$0"
@@ -56,6 +69,7 @@ usage() {
 while [ $# -gt 0 ]; do
   case "$1" in
     install|remove|show|--help|-h) ACTION="${1#--}"; [ "$ACTION" = "help" ] && usage; shift ;;
+    --user) TARGET_USER="$2"; shift 2 ;;
     --schedule-drain) SCHEDULE_DRAIN="$2"; shift 2 ;;
     --schedule-notebook) SCHEDULE_NOTEBOOK="$2"; shift 2 ;;
     --schedule-podcast) SCHEDULE_PODCAST="$2"; shift 2 ;;
@@ -67,6 +81,40 @@ while [ $# -gt 0 ]; do
 done
 
 [ -z "$ACTION" ] && { echo "action required: install | remove | show" >&2; exit 1; }
+
+CURRENT_USER="$(id -un)"
+if [ -z "$TARGET_USER" ]; then
+  if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
+    TARGET_USER="$SUDO_USER"
+  else
+    TARGET_USER="$CURRENT_USER"
+  fi
+fi
+if ! id -u "$TARGET_USER" >/dev/null 2>&1; then
+  echo "error: target user '$TARGET_USER' does not exist" >&2
+  exit 1
+fi
+if [ "$TARGET_USER" = "root" ] && [ "$CURRENT_USER" != "root" ]; then
+  echo "warning: installing PNIP cron entries into root's crontab." >&2
+  echo "         the PNIP scripts assume the operator's \$HOME/.local/bin" >&2
+  echo "         (fabric, markitdown, ...); cron-as-root will fail to" >&2
+  echo "         spawn those CLIs. Re-run with --user <operator> if this" >&2
+  echo "         is unintended." >&2
+fi
+
+run_crontab() {
+  if [ "$TARGET_USER" = "$CURRENT_USER" ]; then
+    crontab "$@"
+  else
+    sudo -n -u "$TARGET_USER" crontab "$@"
+  fi
+}
+
+TARGET_HOME="$(getent passwd "$TARGET_USER" | cut -d: -f6)"
+if [ -z "$TARGET_HOME" ]; then
+  echo "error: could not resolve home directory for '$TARGET_USER'" >&2
+  exit 1
+fi
 
 DRAIN_SCRIPT="$PROJECT_DIR/scripts/digest-drain.sh"
 NOTEBOOK_SCRIPT="$PROJECT_DIR/scripts/notebook-drain.sh"
@@ -85,17 +133,19 @@ build_fragment() {
 #   scripts/cron-install.sh remove
 # to delete the block entirely.
 #
+# Target user: $TARGET_USER (HOME=$TARGET_HOME)
+#
 # Local time: crontab fires entries on the system clock's local
 # time, which is the operator's local time. The daily publish
 # sequence uses the local date as the edition date.
 #
 # PATH: cron runs with a minimal PATH by default. The PNIP scripts
-# set their own PATH internally (with the operator's $HOME/.local/bin
+# set their own PATH internally (with the operator's \$HOME/.local/bin
 # prepended so fabric, markitdown, etc. are findable). This PATH=
 # line is a safety net for any future inline command that may need
 # it, and also covers the case where cron strips HOME from the
 # environment.
-PATH=/root/.local/bin:/home/mark/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+PATH=$TARGET_HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # Drain Miniflux -> editions. Idempotent. Tight interval.
 $SCHEDULE_DRAIN $DRAIN_SCRIPT >> $PROJECT_DIR/logs/digest-drain.log 2>&1
@@ -123,18 +173,18 @@ EOF
 # timestamped file under $PROJECT_DIR/logs so the operator can find it.
 backup_crontab() {
   local dest="$PROJECT_DIR/logs/crontab.backup.$(date +%Y%m%dT%H%M%S).txt"
-  if crontab -l >/dev/null 2>&1; then
-    crontab -l > "$dest" 2>/dev/null || true
-    echo "Backed up current crontab to $dest"
+  if run_crontab -l >/dev/null 2>&1; then
+    run_crontab -l > "$dest" 2>/dev/null || true
+    echo "Backed up current crontab ($TARGET_USER) to $dest"
   else
-    echo "(no existing crontab; nothing to back up)" > "$dest"
+    echo "(no existing crontab for $TARGET_USER; nothing to back up)" > "$dest"
   fi
 }
 
 remove_block() {
   local current
-  if ! current="$(crontab -l 2>/dev/null)"; then
-    echo "(no crontab; nothing to remove)"
+  if ! current="$(run_crontab -l 2>/dev/null)"; then
+    echo "(no crontab for $TARGET_USER; nothing to remove)"
     return 0
   fi
   local filtered
@@ -145,11 +195,11 @@ remove_block() {
   ')"
   if [ -z "$filtered" ]; then
     # crontab rejects empty input; remove the file entirely
-    crontab -r 2>/dev/null || true
-    echo "Removed crontab (was only PNIP entries)"
+    run_crontab -r 2>/dev/null || true
+    echo "Removed crontab for $TARGET_USER (was only PNIP entries)"
   else
-    printf '%s\n' "$filtered" | crontab -
-    echo "Removed PNIP cron block"
+    printf '%s\n' "$filtered" | run_crontab -
+    echo "Removed PNIP cron block from $TARGET_USER's crontab"
   fi
 }
 
@@ -157,25 +207,25 @@ install_block() {
   backup_crontab
   remove_block
   local current
-  current="$(crontab -l 2>/dev/null || true)"
+  current="$(run_crontab -l 2>/dev/null || true)"
   local fragment
   fragment="$(build_fragment)"
   if [ -z "$current" ]; then
-    printf '%s\n' "$fragment" | crontab -
+    printf '%s\n' "$fragment" | run_crontab -
   else
-    printf '%s\n%s\n' "$current" "$fragment" | crontab -
+    printf '%s\n%s\n' "$current" "$fragment" | run_crontab -
   fi
-  echo "Installed PNIP cron block"
+  echo "Installed PNIP cron block into $TARGET_USER's crontab"
   echo
-  echo "Current crontab:"
-  crontab -l | sed -n "/$PNIP_TAG/,/$PNIP_TAG/p"
+  echo "Current crontab for $TARGET_USER:"
+  run_crontab -l | sed -n "/$PNIP_TAG/,/$PNIP_TAG/p"
 }
 
 show_block() {
-  if crontab -l 2>/dev/null | grep -q "$PNIP_TAG"; then
-    crontab -l | sed -n "/$PNIP_TAG/,/$PNIP_TAG/p"
+  if run_crontab -l 2>/dev/null | grep -q "$PNIP_TAG"; then
+    run_crontab -l | sed -n "/$PNIP_TAG/,/$PNIP_TAG/p"
   else
-    echo "(no PNIP cron block installed)"
+    echo "(no PNIP cron block installed for $TARGET_USER)"
   fi
 }
 
