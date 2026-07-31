@@ -17,6 +17,7 @@ import type {
   WorkerErrorPayload,
   WorkerOutcome,
 } from "./worker.js";
+import { isPermanentExpansionError } from "../../expansion/permanent-expansion-error.js";
 
 export interface WorkerRuntime {
   runOne(workerId: string, opts?: ClaimOptions): Promise<boolean>;
@@ -216,7 +217,12 @@ export function createWorkerRuntime(
             stack: payload.stack,
           },
         });
-        if (TRANSIENT_FAILURE_RE.test(payload.message)) {
+        if (isPermanentExpansionError(err)) {
+          await markFailed(job, payload);
+          log.warn("worker execute failed, permanent failure (no retry)", {
+            permanentKind: "PermanentExpansionError",
+          });
+        } else if (TRANSIENT_FAILURE_RE.test(payload.message)) {
           await deferTransientFailure(job, payload, log);
         } else {
           await scheduleRetryOrFail(job, payload, log);

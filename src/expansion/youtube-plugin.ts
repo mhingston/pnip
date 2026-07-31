@@ -6,6 +6,10 @@ import type {
   SectionData,
 } from "./types.js";
 import { loadConfig } from "../config/index.js";
+import {
+  looksLikePermanentFabricFailure,
+  PermanentExpansionError,
+} from "./permanent-expansion-error.js";
 
 export type TranscriptFetcher = (url: string) => Promise<string>;
 export type MetadataFetcher = (url: string) => Promise<YouTubeMetadata>;
@@ -31,8 +35,16 @@ async function defaultTranscriptFetcher(url: string): Promise<string> {
       bin,
       ["-y", url, "--transcript-with-timestamps"],
       { timeout: 120_000, maxBuffer: 10 * 1024 * 1024 },
-      (err, stdout) => {
+      (err, stdout, stderr) => {
         if (err) {
+          if (looksLikePermanentFabricFailure(err.message, stderr)) {
+            reject(
+              new PermanentExpansionError(
+                `fabric has no transcript for ${url}: ${(stderr ?? err.message ?? "").trim()}`,
+              ),
+            );
+            return;
+          }
           reject(err);
           return;
         }
@@ -163,7 +175,7 @@ export function createYouTubePlugin(opts?: {
       const meta = await metadataFetcher(context.url);
       const raw = await transcriptFetcher(context.url);
       if (raw.trim() === "") {
-        throw new Error(`no transcript available for ${context.url}`);
+        throw new PermanentExpansionError(`no transcript available for ${context.url}`);
       }
       const segments = parseTranscript(raw);
       const sections = buildTranscriptSections(segments);

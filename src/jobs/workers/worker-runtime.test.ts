@@ -24,6 +24,7 @@ import {
 import { createLogger } from "../../logging/logger.js";
 import { createWorkerRuntime } from "./worker-runtime.js";
 import type { Worker } from "./worker.js";
+import { PermanentExpansionError } from "../../expansion/permanent-expansion-error.js";
 
 const migrationSqlPath = fileURLToPath(
   new URL(
@@ -296,6 +297,35 @@ describe("WorkerRuntime", () => {
     expect(job).toBeDefined();
     expect(job!.status).toBe("failed");
     expect((job!.last_error as { type: string }).type).toBe("NoWorkerError");
+    expect(job!.retry_count).toBe(1);
+
+    expect(await rowCount()).toBe(1);
+  });
+
+  it("PermanentExpansionError: marks failed immediately, no retries even with maxAttempts>1", async () => {
+    const boomWorker: Worker = {
+      supports: (t) => t === "boom",
+      execute: async () => {
+        throw new PermanentExpansionError("fabric: no VTT files found in directory");
+      },
+    };
+    const runtime = createWorkerRuntime({
+      db,
+      queue,
+      workers: [boomWorker],
+      logger: silentLogger(),
+      retry: { maxAttempts: 5 },
+    });
+
+    const enqueued = await queue.enqueue({ jobType: "boom" });
+    const result = await runtime.runOne("w1");
+    expect(result).toBe(true);
+
+    const job = await queue.getJob(enqueued.id);
+    expect(job).toBeDefined();
+    expect(job!.status).toBe("failed");
+    expect((job!.last_error as { type: string }).type).toBe("PermanentExpansionError");
+    expect((job!.last_error as { message: string }).message).toMatch(/no VTT files/);
     expect(job!.retry_count).toBe(1);
 
     expect(await rowCount()).toBe(1);

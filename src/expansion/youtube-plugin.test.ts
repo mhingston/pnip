@@ -9,6 +9,10 @@ import {
   type YouTubeMetadata,
   type TranscriptSegment,
 } from "./youtube-plugin.js";
+import {
+  isPermanentExpansionError,
+  PermanentExpansionError,
+} from "./permanent-expansion-error.js";
 import type { ExpandContext } from "./types.js";
 
 const ctx: ExpandContext = {
@@ -171,7 +175,10 @@ describe("YouTubePlugin.expand", () => {
     const metadataFetcher: MetadataFetcher = vi.fn().mockResolvedValue(metadata);
     const plugin = createYouTubePlugin({ transcriptFetcher, metadataFetcher });
 
-    await expect(plugin.expand(ctx)).rejects.toThrow(/no transcript available/);
+    const err = await plugin.expand(ctx).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(PermanentExpansionError);
+    expect(isPermanentExpansionError(err)).toBe(true);
+    expect((err as Error).message).toMatch(/no transcript available/);
   });
 
   it("throws when metadata fetch rejects", async () => {
